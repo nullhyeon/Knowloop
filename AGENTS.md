@@ -91,7 +91,7 @@ Responsibilities:
 Operating rule:
 
 - default to review mode before edit mode
-- prefer `codex review --uncommitted` for a fast structured pass
+- prefer `.\scripts\run-codex-review.ps1` for the repository's pinned reviewer path
 - if patching issues directly, update docs and verification results too
 
 ## Skill System

@@ -1,0 +1,1310 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+from knowloop_api.core.config import Settings
+from knowloop_api.db.audit import (
+    begin_mutation_request,
+    create_audit_event,
+    list_audit_events,
+    mark_mutation_request_applied,
+)
+
+
+class ActorRole(StrEnum):
+    STUDENT = "student"
+    INSTRUCTOR = "instructor"
+    OPERATOR = "operator"
+    VALIDATOR = "validator"
+    SYSTEM = "system"
+
+
+class CandidateKind(StrEnum):
+    MISCONCEPTION = "misconception"
+    FAQ = "faq"
+    INTERVENTION = "intervention"
+    UNRESOLVED_QUESTION = "unresolved_question"
+    OPERATIONS_NOTE = "operations_note"
+
+
+class CandidateStatus(StrEnum):
+    OPEN = "open"
+    PROMOTED = "promoted"
+    MERGED = "merged"
+    DROPPED = "dropped"
+
+
+class SourceRef(BaseModel):
+    source_id: str
+    source_type: str
+    chunk_id: str | None = None
+
+
+class CandidateItem(BaseModel):
+    candidate_id: str
+    kind: CandidateKind
+    status: CandidateStatus
+    title: str
+    summary: str
+    class_id: str
+    course_id: str
+    actor_role: ActorRole | None = None
+    confidence: float = Field(ge=0, le=1)
+    tags: list[str] = Field(default_factory=list)
+    source_refs: list[SourceRef] = Field(min_length=1)
+    session_refs: list[str] = Field(default_factory=list)
+    created_at: datetime
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    merged_into: str | None = None
+    related_page_id: str | None = None
+
+
+class CandidateNotFoundError(FileNotFoundError):
+    """Raised when a candidate file cannot be located."""
+
+
+class CandidateStateError(ValueError):
+    """Raised when a candidate transition is invalid."""
+
+
+CANDIDATE_KIND_DIRECTORIES = {
+    CandidateKind.MISCONCEPTION: "misconceptions",
+    CandidateKind.FAQ: "faq",
+    CandidateKind.INTERVENTION: "interventions",
+    CandidateKind.UNRESOLVED_QUESTION: "unresolved-questions",
+    CandidateKind.OPERATIONS_NOTE: "operations-notes",
+}
+
+PROMOTION_PAGE_PREFIXES = {
+    CandidateKind.FAQ: "page-faq-",
+    CandidateKind.MISCONCEPTION: "page-misconceptions-",
+    CandidateKind.OPERATIONS_NOTE: "page-operations-",
+}
+
+CREATE_REQUEST_ENTITY_TYPE = "candidate_registration"
+CREATE_REQUEST_ENTITY_ID = "candidate_store"
+CREATE_ACTION = "candidate_created"
+
+
+def create_candidate(
+    settings: Settings,
+    candidate: CandidateItem,
+    *,
+    actor_role: ActorRole,
+    actor_id: str | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    notes: str | None = None,
+) -> CandidateItem:
+    if candidate.status is not CandidateStatus.OPEN:
+        raise CandidateStateError("new candidates must start in the open state")
+    if candidate.actor_role is not None and candidate.actor_role is not actor_role:
+        raise CandidateStateError("candidate actor_role must match the creating actor role")
+
+    candidate = candidate.model_copy(update={"actor_role": actor_role})
+    mutation_request = _begin_create_candidate_request(
+        settings,
+        candidate=candidate,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
+    )
+    replayed_candidate = _finalize_or_replay_create_candidate(
+        settings,
+        mutation_request=mutation_request,
+        idempotency_key=idempotency_key,
+    )
+    if replayed_candidate is not None:
+        return replayed_candidate
+
+    candidate_path = build_candidate_path(settings, candidate)
+    existing_candidate = _find_existing_candidate(settings, candidate.candidate_id)
+    if existing_candidate is not None:
+        if existing_candidate == candidate:
+            _ensure_candidate_created_audit(
+                settings,
+                candidate=existing_candidate,
+                actor_role=actor_role,
+                actor_id=actor_id,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                notes=notes,
+            )
+            _mark_create_candidate_applied(
+                settings,
+                idempotency_key=idempotency_key,
+                updated_at=datetime.now(UTC),
+            )
+            return existing_candidate
+        raise FileExistsError(f"candidate already exists: {candidate.candidate_id}")
+
+    _apply_candidate_transaction(
+        {
+            candidate_path: candidate,
+        },
+        expected_current={
+            candidate_path: None,
+        },
+        persist_audit=lambda: create_audit_event(
+            settings,
+            entity_type="candidate",
+            entity_id=candidate.candidate_id,
+            action=CREATE_ACTION,
+            actor_role=actor_role.value,
+            actor_id=actor_id,
+            from_status=None,
+            to_status=candidate.status.value,
+            notes=notes,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            created_at=candidate.created_at,
+        ),
+        mark_applied=lambda: _mark_create_candidate_applied(
+            settings,
+            idempotency_key=idempotency_key,
+            updated_at=candidate.created_at,
+        ),
+    )
+    return candidate
+
+
+def get_candidate(settings: Settings, candidate_id: str) -> CandidateItem:
+    candidate_path = find_candidate_path(settings, candidate_id)
+    payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+    return CandidateItem.model_validate(payload)
+
+
+def list_candidates(
+    settings: Settings,
+    *,
+    kind: CandidateKind | None = None,
+    status: CandidateStatus | None = None,
+    class_id: str | None = None,
+) -> list[CandidateItem]:
+    candidate_root = settings.data_root / "candidate"
+    if not candidate_root.exists():
+        return []
+
+    candidates = [
+        CandidateItem.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(candidate_root.glob("**/*.json"))
+    ]
+
+    if kind is not None:
+        candidates = [candidate for candidate in candidates if candidate.kind is kind]
+    if status is not None:
+        candidates = [candidate for candidate in candidates if candidate.status is status]
+    if class_id is not None:
+        candidates = [candidate for candidate in candidates if candidate.class_id == class_id]
+
+    return sorted(
+        candidates,
+        key=lambda candidate: (candidate.created_at, candidate.candidate_id),
+        reverse=True,
+    )
+
+
+def promote_candidate(
+    settings: Settings,
+    candidate_id: str,
+    *,
+    approved_by: str,
+    actor_role: ActorRole,
+    actor_id: str | None = None,
+    related_page_id: str | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    notes: str | None = None,
+    approved_at: datetime | None = None,
+) -> CandidateItem:
+    current_candidate = get_candidate(settings, candidate_id)
+    _assert_review_authorized(
+        current_candidate,
+        actor_role=actor_role,
+        action="candidate_promoted",
+    )
+    _assert_approver_identity(approved_by=approved_by, actor_id=actor_id)
+
+    transition_at = approved_at or datetime.now(UTC)
+    target_page_id = related_page_id or current_candidate.related_page_id
+    if target_page_id is None:
+        raise CandidateStateError("promoted candidates must reference a target wiki page")
+    _assert_promotion_target(current_candidate, target_page_id=target_page_id)
+
+    updated_candidate = current_candidate.model_copy(
+        update={
+            "status": CandidateStatus.PROMOTED,
+            "approved_by": approved_by,
+            "approved_at": transition_at,
+            "related_page_id": target_page_id,
+        }
+    )
+    mutation_request = _begin_transition_request(
+        settings,
+        entity_id=candidate_id,
+        action="candidate_promoted",
+        actor_role=actor_role,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=_build_request_fingerprint(
+            candidate_id=candidate_id,
+            action="candidate_promoted",
+            actor_role=actor_role,
+            actor_id=actor_id,
+            approved_by=approved_by,
+            related_page_id=target_page_id,
+            requested_approved_at=_serialize_optional_timestamp(approved_at),
+            notes=notes,
+        ),
+        created_at=transition_at,
+    )
+    replayed_candidate = _finalize_or_replay_promote(
+        settings,
+        mutation_request=mutation_request,
+        current_candidate=current_candidate,
+        expected_candidate=updated_candidate,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        notes=notes,
+    )
+    if replayed_candidate is not None:
+        return replayed_candidate
+
+    _assert_status(current_candidate, expected=CandidateStatus.OPEN)
+    candidate_path = find_candidate_path(settings, candidate_id)
+    try:
+        _apply_candidate_transaction(
+            {
+                candidate_path: updated_candidate,
+            },
+            expected_current={
+                candidate_path: current_candidate,
+            },
+            persist_audit=lambda: create_audit_event(
+                settings,
+                entity_type="candidate",
+                entity_id=candidate_id,
+                action="candidate_promoted",
+                actor_role=actor_role.value,
+                actor_id=actor_id,
+                from_status=current_candidate.status.value,
+                to_status=updated_candidate.status.value,
+                notes=notes,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                created_at=transition_at,
+            ),
+            mark_applied=lambda: _mark_transition_applied(
+                settings,
+                entity_id=candidate_id,
+                action="candidate_promoted",
+                idempotency_key=idempotency_key,
+                updated_at=transition_at,
+            ),
+        )
+    except CandidateStateError as exc:
+        replayed_candidate = _retry_changed_transition(
+            exc,
+            current_candidate_loader=lambda: get_candidate(settings, candidate_id),
+            finalize=lambda latest_candidate: _finalize_or_replay_promote(
+                settings,
+                mutation_request=mutation_request,
+                current_candidate=latest_candidate,
+                expected_candidate=updated_candidate,
+                actor_role=actor_role,
+                actor_id=actor_id,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                notes=notes,
+            ),
+        )
+        if replayed_candidate is not None:
+            return replayed_candidate
+        raise
+    return updated_candidate
+
+
+def merge_candidate(
+    settings: Settings,
+    candidate_id: str,
+    *,
+    target_candidate_id: str,
+    actor_role: ActorRole,
+    actor_id: str | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    notes: str | None = None,
+    merged_at: datetime | None = None,
+) -> CandidateItem:
+    if candidate_id == target_candidate_id:
+        raise CandidateStateError("cannot merge a candidate into itself")
+
+    current_candidate = get_candidate(settings, candidate_id)
+    current_target = get_candidate(settings, target_candidate_id)
+    _assert_review_actor_id(actor_id)
+    _assert_review_authorized(
+        current_candidate,
+        actor_role=actor_role,
+        action="candidate_merged",
+    )
+    if current_target.status not in {CandidateStatus.OPEN, CandidateStatus.PROMOTED}:
+        raise CandidateStateError("target candidate must remain active to receive a merge")
+    if current_candidate.kind is not current_target.kind:
+        raise CandidateStateError("merge target must have the same candidate kind")
+    if current_candidate.class_id != current_target.class_id:
+        raise CandidateStateError("merge target must belong to the same class scope")
+    if current_candidate.course_id != current_target.course_id:
+        raise CandidateStateError("merge target must belong to the same course scope")
+
+    transition_at = merged_at or datetime.now(UTC)
+    updated_target = current_target.model_copy(
+        update={
+            "tags": _merge_unique_strings(current_target.tags, current_candidate.tags),
+            "session_refs": _merge_unique_strings(
+                current_target.session_refs, current_candidate.session_refs
+            ),
+            "source_refs": _merge_source_refs(
+                current_target.source_refs,
+                current_candidate.source_refs,
+            ),
+        }
+    )
+    updated_candidate = current_candidate.model_copy(
+        update={
+            "status": CandidateStatus.MERGED,
+            "merged_into": target_candidate_id,
+            "approved_by": actor_id,
+            "approved_at": transition_at,
+        }
+    )
+    mutation_request = _begin_transition_request(
+        settings,
+        entity_id=candidate_id,
+        action="candidate_merged",
+        actor_role=actor_role,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=_build_request_fingerprint(
+            candidate_id=candidate_id,
+            action="candidate_merged",
+            actor_role=actor_role,
+            actor_id=actor_id,
+            target_candidate_id=target_candidate_id,
+            requested_merged_at=_serialize_optional_timestamp(merged_at),
+            expected_candidate=_candidate_state_fingerprint(
+                updated_candidate,
+                exclude={"approved_at"},
+            ),
+            expected_target=_candidate_state_fingerprint(updated_target),
+            notes=notes,
+        ),
+        created_at=transition_at,
+    )
+    replayed_candidate = _finalize_or_replay_merge(
+        settings,
+        mutation_request=mutation_request,
+        current_candidate=current_candidate,
+        current_target=current_target,
+        expected_target=updated_target,
+        target_candidate_id=target_candidate_id,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        notes=notes,
+    )
+    if replayed_candidate is not None:
+        return replayed_candidate
+
+    _assert_status(current_candidate, expected=CandidateStatus.OPEN)
+    candidate_path = find_candidate_path(settings, candidate_id)
+    target_candidate_path = find_candidate_path(settings, target_candidate_id)
+    try:
+        _apply_candidate_transaction(
+            {
+                target_candidate_path: updated_target,
+                candidate_path: updated_candidate,
+            },
+            expected_current={
+                target_candidate_path: current_target,
+                candidate_path: current_candidate,
+            },
+            persist_audit=lambda: create_audit_event(
+                settings,
+                entity_type="candidate",
+                entity_id=candidate_id,
+                action="candidate_merged",
+                actor_role=actor_role.value,
+                actor_id=actor_id,
+                from_status=current_candidate.status.value,
+                to_status=updated_candidate.status.value,
+                notes=notes,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                created_at=transition_at,
+            ),
+            mark_applied=lambda: _mark_transition_applied(
+                settings,
+                entity_id=candidate_id,
+                action="candidate_merged",
+                idempotency_key=idempotency_key,
+                updated_at=transition_at,
+            ),
+        )
+    except CandidateStateError as exc:
+        replayed_candidate = _retry_changed_transition(
+            exc,
+            current_candidate_loader=lambda: (
+                get_candidate(settings, candidate_id),
+                get_candidate(settings, target_candidate_id),
+            ),
+            finalize=lambda latest: _finalize_or_replay_merge(
+                settings,
+                mutation_request=mutation_request,
+                current_candidate=latest[0],
+                current_target=latest[1],
+                expected_target=updated_target,
+                target_candidate_id=target_candidate_id,
+                actor_role=actor_role,
+                actor_id=actor_id,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                notes=notes,
+            ),
+        )
+        if replayed_candidate is not None:
+            return replayed_candidate
+        raise
+    return updated_candidate
+
+
+def drop_candidate(
+    settings: Settings,
+    candidate_id: str,
+    *,
+    actor_role: ActorRole,
+    actor_id: str | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    notes: str | None = None,
+    dropped_at: datetime | None = None,
+) -> CandidateItem:
+    current_candidate = get_candidate(settings, candidate_id)
+    _assert_review_actor_id(actor_id)
+    _assert_review_authorized(
+        current_candidate,
+        actor_role=actor_role,
+        action="candidate_dropped",
+    )
+
+    transition_at = dropped_at or datetime.now(UTC)
+    updated_candidate = current_candidate.model_copy(
+        update={
+            "status": CandidateStatus.DROPPED,
+            "approved_by": actor_id,
+            "approved_at": transition_at,
+        }
+    )
+    mutation_request = _begin_transition_request(
+        settings,
+        entity_id=candidate_id,
+        action="candidate_dropped",
+        actor_role=actor_role,
+        actor_id=actor_id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=_build_request_fingerprint(
+            candidate_id=candidate_id,
+            action="candidate_dropped",
+            actor_role=actor_role,
+            actor_id=actor_id,
+            requested_dropped_at=_serialize_optional_timestamp(dropped_at),
+            notes=notes,
+        ),
+        created_at=transition_at,
+    )
+    replayed_candidate = _finalize_or_replay_drop(
+        settings,
+        mutation_request=mutation_request,
+        current_candidate=current_candidate,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        notes=notes,
+    )
+    if replayed_candidate is not None:
+        return replayed_candidate
+
+    _assert_status(current_candidate, expected=CandidateStatus.OPEN)
+    candidate_path = find_candidate_path(settings, candidate_id)
+    try:
+        _apply_candidate_transaction(
+            {
+                candidate_path: updated_candidate,
+            },
+            expected_current={
+                candidate_path: current_candidate,
+            },
+            persist_audit=lambda: create_audit_event(
+                settings,
+                entity_type="candidate",
+                entity_id=candidate_id,
+                action="candidate_dropped",
+                actor_role=actor_role.value,
+                actor_id=actor_id,
+                from_status=current_candidate.status.value,
+                to_status=updated_candidate.status.value,
+                notes=notes,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                created_at=transition_at,
+            ),
+            mark_applied=lambda: _mark_transition_applied(
+                settings,
+                entity_id=candidate_id,
+                action="candidate_dropped",
+                idempotency_key=idempotency_key,
+                updated_at=transition_at,
+            ),
+        )
+    except CandidateStateError as exc:
+        replayed_candidate = _retry_changed_transition(
+            exc,
+            current_candidate_loader=lambda: get_candidate(settings, candidate_id),
+            finalize=lambda latest_candidate: _finalize_or_replay_drop(
+                settings,
+                mutation_request=mutation_request,
+                current_candidate=latest_candidate,
+                actor_role=actor_role,
+                actor_id=actor_id,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                notes=notes,
+            ),
+        )
+        if replayed_candidate is not None:
+            return replayed_candidate
+        raise
+    return updated_candidate
+
+
+def build_candidate_path(settings: Settings, candidate: CandidateItem) -> Path:
+    kind_directory = CANDIDATE_KIND_DIRECTORIES[candidate.kind]
+    return (
+        settings.data_root
+        / "candidate"
+        / kind_directory
+        / candidate.class_id
+        / f"{candidate.candidate_id}.json"
+    )
+
+
+def find_candidate_path(settings: Settings, candidate_id: str) -> Path:
+    candidate_root = settings.data_root / "candidate"
+    if not candidate_root.exists():
+        raise CandidateNotFoundError(f"candidate store does not exist: {candidate_id}")
+
+    matches = sorted(candidate_root.glob(f"**/{candidate_id}.json"))
+    if not matches:
+        raise CandidateNotFoundError(f"candidate not found: {candidate_id}")
+    if len(matches) > 1:
+        raise CandidateStateError(f"candidate id is ambiguous: {candidate_id}")
+    return matches[0]
+
+
+def _write_candidate(path: Path, candidate: CandidateItem) -> None:
+    payload = candidate.model_dump(mode="json", exclude_none=True)
+    _write_text_atomically(path, json.dumps(payload, indent=2) + "\n")
+
+
+def _assert_status(candidate: CandidateItem, *, expected: CandidateStatus) -> None:
+    if candidate.status is not expected:
+        raise CandidateStateError(
+            "candidate "
+            f"{candidate.candidate_id} must be {expected.value}, "
+            f"got {candidate.status.value}"
+        )
+
+
+def _assert_review_authorized(
+    candidate: CandidateItem,
+    *,
+    actor_role: ActorRole,
+    action: str,
+) -> None:
+    allowed_roles = _allowed_review_roles(candidate.kind, action=action)
+    if actor_role not in allowed_roles:
+        allowed_values = ", ".join(role.value for role in sorted(allowed_roles, key=str))
+        raise CandidateStateError(
+            f"{action} is not allowed for role {actor_role.value}; "
+            f"expected one of: {allowed_values}"
+        )
+
+
+def _allowed_review_roles(kind: CandidateKind, *, action: str) -> set[ActorRole]:
+    if kind is CandidateKind.OPERATIONS_NOTE:
+        return {ActorRole.VALIDATOR}
+    return {ActorRole.INSTRUCTOR, ActorRole.VALIDATOR}
+
+
+def _assert_promotion_target(candidate: CandidateItem, *, target_page_id: str) -> None:
+    expected_prefix = PROMOTION_PAGE_PREFIXES.get(candidate.kind)
+    if expected_prefix is None:
+        raise CandidateStateError(
+            f"{candidate.kind.value} candidates cannot be promoted directly to the formal wiki"
+        )
+    if not target_page_id.startswith(expected_prefix):
+        raise CandidateStateError(
+            f"{candidate.kind.value} candidates must target {expected_prefix} pages"
+        )
+
+
+def _assert_approver_identity(*, approved_by: str, actor_id: str | None) -> None:
+    if actor_id is None:
+        raise CandidateStateError("actor_id is required for review actions")
+    if approved_by != actor_id:
+        raise CandidateStateError("approved_by must match actor_id for review actions")
+
+
+def _assert_review_actor_id(actor_id: str | None) -> None:
+    if actor_id is None:
+        raise CandidateStateError("actor_id is required for review actions")
+
+
+def _begin_create_candidate_request(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    idempotency_key: str | None,
+):
+    if idempotency_key is None:
+        return None
+
+    request_fingerprint = _build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id=actor_id,
+    )
+    mutation_request = begin_mutation_request(
+        settings,
+        entity_type=CREATE_REQUEST_ENTITY_TYPE,
+        entity_id=CREATE_REQUEST_ENTITY_ID,
+        action=CREATE_ACTION,
+        idempotency_key=idempotency_key,
+        actor_role=actor_role.value,
+        actor_id=actor_id,
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+    if mutation_request.request_fingerprint != request_fingerprint:
+        raise CandidateStateError("idempotency_key already exists for a different request")
+    return mutation_request
+
+
+def _begin_transition_request(
+    settings: Settings,
+    *,
+    entity_id: str,
+    action: str,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    idempotency_key: str | None,
+    request_fingerprint: str,
+    created_at: datetime,
+):
+    if idempotency_key is None:
+        return None
+
+    mutation_request = begin_mutation_request(
+        settings,
+        entity_type="candidate",
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+        actor_role=actor_role.value,
+        actor_id=actor_id,
+        request_fingerprint=request_fingerprint,
+        created_at=created_at,
+    )
+    if mutation_request.request_fingerprint != request_fingerprint:
+        raise CandidateStateError("idempotency_key already exists for a different request")
+    return mutation_request
+
+
+def _mark_transition_applied(
+    settings: Settings,
+    *,
+    entity_id: str,
+    action: str,
+    idempotency_key: str | None,
+    updated_at: datetime,
+) -> None:
+    if idempotency_key is None:
+        return
+
+    mark_mutation_request_applied(
+        settings,
+        entity_type="candidate",
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+        updated_at=updated_at,
+    )
+
+
+def _build_request_fingerprint(**payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_candidate_create_request_fingerprint(
+    candidate: CandidateItem,
+    *,
+    actor_id: str | None,
+) -> str:
+    candidate_payload = candidate.model_dump(
+        mode="json",
+        exclude={"candidate_id", "created_at"},
+        exclude_none=True,
+    )
+    return _build_request_fingerprint(
+        candidate=candidate_payload,
+        actor_id=actor_id,
+    )
+
+
+def _candidate_state_fingerprint(
+    candidate: CandidateItem,
+    *,
+    exclude: set[str] | None = None,
+) -> str:
+    return _build_request_fingerprint(
+        candidate=candidate.model_dump(
+            mode="json",
+            exclude=exclude or set(),
+            exclude_none=True,
+        )
+    )
+
+
+def _serialize_optional_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _ensure_transition_audit(
+    settings: Settings,
+    *,
+    entity_id: str,
+    action: str,
+    idempotency_key: str | None,
+    persist_audit,
+) -> None:
+    if idempotency_key is None:
+        return
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    if not audit_events:
+        persist_audit()
+
+
+def _ensure_candidate_created_audit(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    actor_role: ActorRole | None = None,
+    actor_id: str | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    notes: str | None = None,
+) -> None:
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=CREATE_ACTION,
+    )
+    if audit_events:
+        return
+
+    create_audit_event(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=CREATE_ACTION,
+        actor_role=(actor_role or candidate.actor_role or ActorRole.SYSTEM).value,
+        actor_id=actor_id,
+        from_status=None,
+        to_status=candidate.status.value,
+        notes=notes or "Recovered missing candidate_created audit from existing candidate file.",
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        created_at=candidate.created_at,
+    )
+
+
+def _finalize_or_replay_create_candidate(
+    settings: Settings,
+    *,
+    mutation_request,
+    idempotency_key: str | None,
+) -> CandidateItem | None:
+    if mutation_request is None or idempotency_key is None:
+        return None
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        action=CREATE_ACTION,
+        idempotency_key=idempotency_key,
+    )
+    if not audit_events:
+        if mutation_request.status == "applied":
+            raise CandidateStateError(
+                "stored created candidate does not match the idempotent request"
+            )
+        return None
+    if len(audit_events) > 1:
+        raise CandidateStateError("stored created candidate replay is ambiguous")
+
+    try:
+        candidate = get_candidate(settings, audit_events[0].entity_id)
+    except CandidateNotFoundError as exc:
+        raise CandidateStateError(
+            "stored created candidate does not match the idempotent request"
+        ) from exc
+    expected_fingerprint = _build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id=mutation_request.actor_id,
+    )
+    if expected_fingerprint != mutation_request.request_fingerprint:
+        raise CandidateStateError(
+            "stored created candidate does not match the idempotent request"
+        )
+
+    _mark_create_candidate_applied(
+        settings,
+        idempotency_key=idempotency_key,
+        updated_at=datetime.now(UTC),
+    )
+    return candidate
+
+
+def _mark_create_candidate_applied(
+    settings: Settings,
+    *,
+    idempotency_key: str | None,
+    updated_at: datetime,
+) -> None:
+    if idempotency_key is None:
+        return
+
+    mark_mutation_request_applied(
+        settings,
+        entity_type=CREATE_REQUEST_ENTITY_TYPE,
+        entity_id=CREATE_REQUEST_ENTITY_ID,
+        action=CREATE_ACTION,
+        idempotency_key=idempotency_key,
+        updated_at=updated_at,
+    )
+
+
+def _finalize_or_replay_promote(
+    settings: Settings,
+    *,
+    mutation_request,
+    current_candidate: CandidateItem,
+    expected_candidate: CandidateItem,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    request_id: str | None,
+    idempotency_key: str | None,
+    notes: str | None,
+) -> CandidateItem | None:
+    if mutation_request is None:
+        return None
+
+    if _candidate_matches_promote(
+        current_candidate,
+        expected_candidate=expected_candidate,
+        replay_started_at=mutation_request.created_at,
+    ):
+        _ensure_transition_audit(
+            settings,
+            entity_id=current_candidate.candidate_id,
+            action="candidate_promoted",
+            idempotency_key=idempotency_key,
+            persist_audit=lambda: create_audit_event(
+                settings,
+                entity_type="candidate",
+                entity_id=current_candidate.candidate_id,
+                action="candidate_promoted",
+                actor_role=actor_role.value,
+                actor_id=actor_id,
+                from_status=CandidateStatus.OPEN.value,
+                to_status=CandidateStatus.PROMOTED.value,
+                notes=notes,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                created_at=mutation_request.created_at,
+            ),
+        )
+        _mark_transition_applied(
+            settings,
+            entity_id=current_candidate.candidate_id,
+            action="candidate_promoted",
+            idempotency_key=idempotency_key,
+            updated_at=datetime.now(UTC),
+        )
+        return current_candidate
+
+    if mutation_request.status == "applied":
+        raise CandidateStateError("stored promoted candidate does not match the idempotent request")
+
+    return None
+
+
+def _finalize_or_replay_merge(
+    settings: Settings,
+    *,
+    mutation_request,
+    current_candidate: CandidateItem,
+    current_target: CandidateItem,
+    expected_target: CandidateItem,
+    target_candidate_id: str,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    request_id: str | None,
+    idempotency_key: str | None,
+    notes: str | None,
+) -> CandidateItem | None:
+    if mutation_request is None:
+        return None
+
+    if _merge_transition_applied(
+        current_candidate=current_candidate,
+        current_target=current_target,
+        expected_target=expected_target,
+        target_candidate_id=target_candidate_id,
+        actor_id=actor_id,
+        replay_started_at=mutation_request.created_at,
+    ):
+        _ensure_transition_audit(
+            settings,
+            entity_id=current_candidate.candidate_id,
+            action="candidate_merged",
+            idempotency_key=idempotency_key,
+            persist_audit=lambda: create_audit_event(
+                settings,
+                entity_type="candidate",
+                entity_id=current_candidate.candidate_id,
+                action="candidate_merged",
+                actor_role=actor_role.value,
+                actor_id=actor_id,
+                from_status=CandidateStatus.OPEN.value,
+                to_status=CandidateStatus.MERGED.value,
+                notes=notes,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                created_at=mutation_request.created_at,
+            ),
+        )
+        _mark_transition_applied(
+            settings,
+            entity_id=current_candidate.candidate_id,
+            action="candidate_merged",
+            idempotency_key=idempotency_key,
+            updated_at=datetime.now(UTC),
+        )
+        return current_candidate
+
+    if mutation_request.status == "applied":
+        raise CandidateStateError("stored merged candidate does not match the idempotent request")
+
+    return None
+
+
+def _finalize_or_replay_drop(
+    settings: Settings,
+    *,
+    mutation_request,
+    current_candidate: CandidateItem,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    request_id: str | None,
+    idempotency_key: str | None,
+    notes: str | None,
+) -> CandidateItem | None:
+    if mutation_request is None:
+        return None
+
+    if _candidate_matches_drop(
+        current_candidate,
+        actor_id=actor_id,
+        replay_started_at=mutation_request.created_at,
+    ):
+        _ensure_transition_audit(
+            settings,
+            entity_id=current_candidate.candidate_id,
+            action="candidate_dropped",
+            idempotency_key=idempotency_key,
+            persist_audit=lambda: create_audit_event(
+                settings,
+                entity_type="candidate",
+                entity_id=current_candidate.candidate_id,
+                action="candidate_dropped",
+                actor_role=actor_role.value,
+                actor_id=actor_id,
+                from_status=CandidateStatus.OPEN.value,
+                to_status=CandidateStatus.DROPPED.value,
+                notes=notes,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                created_at=mutation_request.created_at,
+            ),
+        )
+        _mark_transition_applied(
+            settings,
+            entity_id=current_candidate.candidate_id,
+            action="candidate_dropped",
+            idempotency_key=idempotency_key,
+            updated_at=datetime.now(UTC),
+        )
+        return current_candidate
+
+    if mutation_request.status == "applied":
+        raise CandidateStateError("stored dropped candidate does not match the idempotent request")
+
+    return None
+
+
+def _candidate_matches_promote(
+    current_candidate: CandidateItem,
+    *,
+    expected_candidate: CandidateItem,
+    replay_started_at: datetime,
+) -> bool:
+    return (
+        current_candidate.status is CandidateStatus.PROMOTED
+        and current_candidate.approved_by == expected_candidate.approved_by
+        and current_candidate.approved_at is not None
+        and current_candidate.approved_at == replay_started_at
+        and current_candidate.related_page_id == expected_candidate.related_page_id
+    )
+
+
+def _candidate_matches_drop(
+    current_candidate: CandidateItem,
+    *,
+    actor_id: str | None,
+    replay_started_at: datetime,
+) -> bool:
+    return (
+        actor_id is not None
+        and current_candidate.status is CandidateStatus.DROPPED
+        and current_candidate.approved_by == actor_id
+        and current_candidate.approved_at is not None
+        and current_candidate.approved_at == replay_started_at
+    )
+
+
+def _merge_transition_applied(
+    *,
+    current_candidate: CandidateItem,
+    current_target: CandidateItem,
+    expected_target: CandidateItem,
+    target_candidate_id: str,
+    actor_id: str | None,
+    replay_started_at: datetime,
+) -> bool:
+    return (
+        current_candidate.status is CandidateStatus.MERGED
+        and current_candidate.merged_into == target_candidate_id
+        and actor_id is not None
+        and current_candidate.approved_by == actor_id
+        and current_candidate.approved_at is not None
+        and current_candidate.approved_at == replay_started_at
+        and _candidate_replay_metadata_matches(
+            current_target,
+            expected_target,
+            exclude={"tags", "session_refs", "source_refs"},
+        )
+        and set(expected_target.tags).issubset(current_target.tags)
+        and set(expected_target.session_refs).issubset(current_target.session_refs)
+        and _source_refs_subset(
+            expected_target.source_refs,
+            current_target.source_refs,
+        )
+    )
+
+
+def _source_refs_subset(expected: list[SourceRef], current: list[SourceRef]) -> bool:
+    current_keys = {
+        (source_ref.source_id, source_ref.source_type, source_ref.chunk_id)
+        for source_ref in current
+    }
+    expected_keys = {
+        (source_ref.source_id, source_ref.source_type, source_ref.chunk_id)
+        for source_ref in expected
+    }
+    return expected_keys.issubset(current_keys)
+
+
+def _candidate_replay_metadata_matches(
+    current_candidate: CandidateItem,
+    expected_candidate: CandidateItem,
+    *,
+    exclude: set[str],
+) -> bool:
+    return current_candidate.model_dump(
+        mode="json",
+        exclude=exclude,
+    ) == expected_candidate.model_dump(
+        mode="json",
+        exclude=exclude,
+    )
+
+
+def _find_existing_candidate(settings: Settings, candidate_id: str) -> CandidateItem | None:
+    candidate_root = settings.data_root / "candidate"
+    if not candidate_root.exists():
+        return None
+
+    matches = sorted(candidate_root.glob(f"**/{candidate_id}.json"))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise CandidateStateError(f"candidate id is ambiguous: {candidate_id}")
+
+    payload = json.loads(matches[0].read_text(encoding="utf-8"))
+    return CandidateItem.model_validate(payload)
+
+
+def _retry_changed_transition(
+    exc: CandidateStateError,
+    *,
+    current_candidate_loader,
+    finalize,
+):
+    if str(exc) != "candidate changed during transition":
+        raise exc
+
+    latest_state = current_candidate_loader()
+    return finalize(latest_state)
+
+
+def _apply_candidate_transaction(
+    changes: dict[Path, CandidateItem],
+    *,
+    expected_current: dict[Path, CandidateItem | None],
+    persist_audit,
+    mark_applied=None,
+) -> None:
+    lock_paths = _acquire_candidate_locks(changes.keys())
+    try:
+        snapshots = {
+            path: path.read_text(encoding="utf-8") if path.exists() else None
+            for path in changes
+        }
+
+        for path, expected_candidate in expected_current.items():
+            snapshot = snapshots[path]
+            if expected_candidate is None:
+                if snapshot is not None:
+                    raise CandidateStateError("candidate changed during transition")
+                continue
+            if snapshot is None:
+                raise CandidateStateError("candidate changed during transition")
+            current_candidate = CandidateItem.model_validate(json.loads(snapshot))
+            if current_candidate != expected_candidate:
+                raise CandidateStateError("candidate changed during transition")
+
+        try:
+            for path, candidate in changes.items():
+                _write_candidate(path, candidate)
+            persist_audit()
+        except Exception:
+            for path, previous_contents in snapshots.items():
+                if previous_contents is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                _write_text_atomically(path, previous_contents)
+            raise
+
+        if mark_applied is not None:
+            mark_applied()
+    finally:
+        _release_candidate_locks(lock_paths)
+
+
+def _write_text_atomically(path: Path, contents: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".tmp-{uuid.uuid4().hex[:8]}"
+    temp_path.write_text(contents, encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _acquire_candidate_locks(paths) -> list[Path]:
+    lock_paths: list[Path] = []
+    for path in sorted({Path(item) for item in paths}, key=str):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
+        lock_path = path.parent / f".lock-{digest}"
+        try:
+            with lock_path.open("x", encoding="utf-8") as handle:
+                handle.write(path.name)
+        except FileExistsError as exc:
+            _release_candidate_locks(lock_paths)
+            raise CandidateStateError("candidate changed during transition") from exc
+        lock_paths.append(lock_path)
+    return lock_paths
+
+
+def _release_candidate_locks(lock_paths: list[Path]) -> None:
+    for lock_path in lock_paths:
+        lock_path.unlink(missing_ok=True)
+
+
+def _merge_unique_strings(base: list[str], extra: list[str]) -> list[str]:
+    seen = set(base)
+    merged = list(base)
+    for item in extra:
+        if item not in seen:
+            merged.append(item)
+            seen.add(item)
+    return merged
+
+
+def _merge_source_refs(base: list[SourceRef], extra: list[SourceRef]) -> list[SourceRef]:
+    merged = list(base)
+    seen = {
+        (source_ref.source_id, source_ref.source_type, source_ref.chunk_id)
+        for source_ref in base
+    }
+
+    for source_ref in extra:
+        key = (source_ref.source_id, source_ref.source_type, source_ref.chunk_id)
+        if key not in seen:
+            merged.append(source_ref)
+            seen.add(key)
+
+    return merged

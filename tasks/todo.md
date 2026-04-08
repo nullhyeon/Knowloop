@@ -20,7 +20,9 @@
 - [x] Codex Builder: implement storage bootstrap for `sessions.db` and `audit.db`
 - [x] Codex Reviewer: review the storage bootstrap slice for contract drift and missing tests
 - [x] Codex Builder: create the first canonical fixture pack from `docs/product/fixture-catalog.md`
-- [ ] Codex Builder: define candidate lifecycle write helpers
+- [x] Codex Builder: define candidate lifecycle write helpers
+- [ ] Gemini Pro Critic: review the candidate lifecycle slice for idempotency, ordering, and role-boundary drift
+- [x] Codex Reviewer: review the candidate lifecycle slice for contract drift and missing tests
 
 ## After First Storage Slice
 
