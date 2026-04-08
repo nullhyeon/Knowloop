@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WikiPatch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operation",
+    "title",
+    "summary",
+    "domain",
+    "course_id",
+    "class_id",
+    "source_refs",
+    "created_at"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "target_path"
+      ]
+    },
+    {
+      "required": [
+        "target_page_id"
+      ]
+    }
+  ],
+  "properties": {
+    "target_page_id": {
+      "type": "string"
+    },
+    "target_path": {
+      "type": "string"
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "create",
+        "update",
+        "merge"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "concepts",
+        "faq",
+        "misconceptions",
+        "courses",
+        "operations"
+      ]
+    },
+    "course_id": {
+      "type": "string"
+    },
+    "class_id": {
+      "type": "string"
+    },
+    "actor_role": {
+      "type": "string",
+      "enum": [
+        "instructor",
+        "validator",
+        "system"
+      ]
+    },
+    "change_plan": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_id",
+          "source_type"
+        ],
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "source_type": {
+            "type": "string"
+          },
+          "chunk_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "candidate_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "approved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "approved",
+        "rejected"
+      ]
+    }
+  }
+}

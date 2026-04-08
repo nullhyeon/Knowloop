@@ -1,0 +1,56 @@
+# Documentation Guide
+
+This directory is organized so product, architecture, research, and development docs stay easy to navigate in GitHub and easy to load for AI agents.
+
+## Recommended Reading Order
+
+1. `product/product-overview.md`
+2. `architecture/system-architecture.md`
+3. `architecture/system-diagrams.md`
+4. `product/mvp-scope.md`
+5. `architecture/data-contracts.md`
+6. `architecture/query-writeback-policy.md`
+7. `architecture/api-contracts.md`
+8. `architecture/promotion-policy.md`
+9. `product/role-permissions.md`
+10. `product/evaluation-plan.md`
+11. `product/fixture-catalog.md`
+12. `product/demo-script.md`
+13. `product/pre-implementation-planning-checklist.md`
+14. `product/mvp-patterns.md`
+15. `development/agent-harness.md`
+16. `research/reference-reading-guide.md` (optional deep-dive)
+
+## Directory Map
+
+- `product/`: product framing, scope, and MVP decisions
+- `architecture/`: system layers, flows, and diagrams
+- `research/`: external reference reading guides and investigation notes
+- `development/`: agent workflow and repository operating conventions
+- `adr/`: architectural decision records tied to implementation changes
+
+## What Each Core Doc Covers
+
+- `product/product-overview.md`: the problem, target users, core value, and MVP scope
+- `product/mvp-scope.md`: the locked MVP scope, non-goals, and primary demo scenario
+- `product/pre-implementation-planning-checklist.md`: the decisions that should be locked before implementation starts
+- `product/role-permissions.md`: the MVP read/write boundaries for each role
+- `product/demo-script.md`: the recommended demo sequence, talk track, and must-show moments
+- `product/evaluation-plan.md`: the success criteria, acceptance criteria, and fixture-based evaluation rules
+- `product/fixture-catalog.md`: the repository-safe fixture inventory for tests, demos, and storage seeding
+- `architecture/system-architecture.md`: the knowledge-layer model and operational design
+- `architecture/data-contracts.md`: IDs, entities, metadata, and file/path conventions
+- `architecture/query-writeback-policy.md`: the retrieval priority, answer basis, and write-back rules after each query
+- `architecture/api-contracts.md`: the HTTP surface, request/response envelopes, role access, and workflow endpoints
+- `architecture/promotion-policy.md`: the candidate lifecycle, approval, merge, and drop rules
+- `architecture/system-diagrams.md`: mermaid diagrams for use cases, data flow, and sequences
+- `product/mvp-patterns.md`: which external patterns were adopted or intentionally excluded
+- `development/agent-harness.md`: how Codex and Gemini work inside this repository
+- `development/planning-audit.md`: the current cross-document audit status before implementation
+- `research/reference-reading-guide.md`: the research trail behind the architecture decisions
+
+## Public Repo Notes
+
+- Public-facing docs avoid draft-only wording when the content is meant to represent the current direction.
+- Internal research remains available, but it lives under `research/` so it does not read like product documentation.
+- Secrets and local runtime settings belong in `apps/api/.env`, with defaults documented in `apps/api/.env.example`.
