@@ -1,0 +1,30 @@
+{
+  "fixture_id": "qf-operator-policy-01",
+  "description": "Operator asks about refund policy in the operations domain.",
+  "request_headers": {
+    "X-Knowloop-Role": "operator",
+    "X-Knowloop-Actor-Id": "ops-academic-office",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "operations",
+    "X-Request-Id": "req-fixture-operator-policy-01"
+  },
+  "request_body": {
+    "message": "What should we tell students about refund requests?",
+    "attachment_source_ids": [],
+    "allow_raw_source_fallback": true,
+    "response_mode": "review"
+  },
+  "expected": {
+    "answer_basis": [
+      "formal_wiki",
+      "raw_source_fallback"
+    ],
+    "writeback_plan_kinds": [
+      "session",
+      "candidate"
+    ],
+    "candidate_kind": "operations_note",
+    "candidate_status": "open"
+  }
+}

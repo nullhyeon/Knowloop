@@ -1,0 +1,44 @@
+[
+  {
+    "session_id": "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260407T133000Z",
+    "role": "student",
+    "user_id": "stu-kim-minji",
+    "class_id": "class-calculus-1-2026-spring-a",
+    "course_id": "course-calculus-1",
+    "question": "Why is the outside derivative evaluated after the inside function?",
+    "answer": "Because the chain rule differentiates the outer function with the inner function still inside it.",
+    "created_at": "2026-04-07T13:30:00Z",
+    "tags": [
+      "chain-rule",
+      "week-03"
+    ],
+    "source_refs": [
+      {
+        "source_id": "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z",
+        "source_type": "lecture_note",
+        "chunk_id": "core-rule"
+      }
+    ]
+  },
+  {
+    "session_id": "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260408T114000Z",
+    "role": "student",
+    "user_id": "stu-kim-minji",
+    "class_id": "class-calculus-1-2026-spring-a",
+    "course_id": "course-calculus-1",
+    "question": "Can substitution be used for every integral in this class?",
+    "answer": "Not always. The current course wiki does not yet fully cover the boundary cases.",
+    "created_at": "2026-04-08T11:40:00Z",
+    "tags": [
+      "integrals",
+      "unresolved"
+    ],
+    "source_refs": [
+      {
+        "source_id": "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z",
+        "source_type": "lecture_note",
+        "chunk_id": "scope-gap"
+      }
+    ]
+  }
+]

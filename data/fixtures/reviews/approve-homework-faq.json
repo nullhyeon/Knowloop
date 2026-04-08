@@ -1,0 +1,25 @@
+{
+  "fixture_id": "rvf-approve-homework-faq",
+  "description": "Approve the homework FAQ candidate into the shared FAQ wiki page.",
+  "request_headers": {
+    "X-Knowloop-Role": "instructor",
+    "X-Knowloop-Actor-Id": "ins-calculus-team",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "review",
+    "X-Request-Id": "req-fixture-approve-homework-faq",
+    "Idempotency-Key": "idem-fixture-approve-homework-faq"
+  },
+  "request_body": {
+    "target_page_id": "page-faq-homework-submission",
+    "target_path": "data/wiki/faq/homework-submission.md",
+    "approval_notes": "Promote to shared FAQ for the course wiki."
+  },
+  "expected": {
+    "candidate_id": "cand-faq-class-calculus-1-2026-spring-a-homework-deadline-20260408T112500Z",
+    "from_status": "open",
+    "to_status": "promoted",
+    "wiki_page_id": "page-faq-homework-submission",
+    "audit_action": "candidate_promoted"
+  }
+}

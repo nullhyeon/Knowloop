@@ -1,0 +1,26 @@
+{
+  "fixture_id": "rvf-preview-homework-faq",
+  "description": "Preview the wiki patch that would be generated when approving the homework FAQ candidate.",
+  "request_headers": {
+    "X-Knowloop-Role": "instructor",
+    "X-Knowloop-Actor-Id": "ins-calculus-team",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "review",
+    "X-Request-Id": "req-fixture-preview-homework-faq"
+  },
+  "request_body": {
+    "target_page_id": "page-faq-homework-submission",
+    "target_path": "data/wiki/faq/homework-submission.md",
+    "notes": "Add a concise deadline clarification section."
+  },
+  "expected": {
+    "candidate_id": "cand-faq-class-calculus-1-2026-spring-a-homework-deadline-20260408T112500Z",
+    "operation": "update",
+    "target_page_id": "page-faq-homework-submission",
+    "change_plan_contains": [
+      "deadline",
+      "LMS"
+    ]
+  }
+}

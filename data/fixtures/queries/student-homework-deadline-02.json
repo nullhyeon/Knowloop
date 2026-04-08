@@ -1,0 +1,30 @@
+{
+  "fixture_id": "qf-student-homework-02",
+  "description": "Repeated homework deadline question from Doyun to trigger FAQ aggregation.",
+  "request_headers": {
+    "X-Knowloop-Role": "student",
+    "X-Knowloop-Actor-Id": "stu-lee-doyun",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "academic",
+    "X-Request-Id": "req-fixture-student-homework-02"
+  },
+  "request_body": {
+    "message": "Can you tell me the Homework 01 submission deadline again?",
+    "attachment_source_ids": [],
+    "allow_raw_source_fallback": false,
+    "response_mode": "default"
+  },
+  "expected": {
+    "answer_basis": [
+      "formal_wiki",
+      "session_context"
+    ],
+    "writeback_plan_kinds": [
+      "session",
+      "candidate"
+    ],
+    "candidate_kind": "faq",
+    "candidate_status": "open"
+  }
+}

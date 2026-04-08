@@ -1,0 +1,23 @@
+{
+  "fixture_id": "rvf-drop-low-value",
+  "description": "Drop an unresolved question candidate that does not yet have enough shared value.",
+  "request_headers": {
+    "X-Knowloop-Role": "validator",
+    "X-Knowloop-Actor-Id": "val-course-admin",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "review",
+    "X-Request-Id": "req-fixture-drop-low-value",
+    "Idempotency-Key": "idem-fixture-drop-low-value"
+  },
+  "request_body": {
+    "reason": "insufficient_shared_value",
+    "drop_notes": "Keep the question open in audit history only until stronger evidence appears."
+  },
+  "expected": {
+    "candidate_id": "cand-unresolved_question-class-calculus-1-2026-spring-a-substitution-boundaries-20260408T113000Z",
+    "from_status": "open",
+    "to_status": "dropped",
+    "audit_action": "candidate_dropped"
+  }
+}

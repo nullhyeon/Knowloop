@@ -1,0 +1,32 @@
+{
+  "fixture_id": "qf-student-chain-rule-01",
+  "description": "Student asks about confusing the chain rule with the product rule.",
+  "request_headers": {
+    "X-Knowloop-Role": "student",
+    "X-Knowloop-Actor-Id": "stu-kim-minji",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "academic",
+    "X-Request-Id": "req-fixture-student-chain-rule-01"
+  },
+  "request_body": {
+    "message": "I still do not understand when the chain rule is different from the product rule.",
+    "attachment_source_ids": [],
+    "allow_raw_source_fallback": true,
+    "response_mode": "teaching"
+  },
+  "expected": {
+    "answer_basis": [
+      "formal_wiki",
+      "session_context",
+      "learning_context"
+    ],
+    "writeback_plan_kinds": [
+      "session",
+      "learning_note",
+      "candidate"
+    ],
+    "candidate_kind": "misconception",
+    "candidate_status": "open"
+  }
+}

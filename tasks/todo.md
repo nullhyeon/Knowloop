@@ -19,7 +19,7 @@
 - [ ] Gemini Pro Critic: perform one final contract review against `data-contracts`, `query-writeback-policy`, `api-contracts`, and `fixture-catalog`
 - [x] Codex Builder: implement storage bootstrap for `sessions.db` and `audit.db`
 - [x] Codex Reviewer: review the storage bootstrap slice for contract drift and missing tests
-- [ ] Codex Builder: create the first canonical fixture pack from `docs/product/fixture-catalog.md`
+- [x] Codex Builder: create the first canonical fixture pack from `docs/product/fixture-catalog.md`
 - [ ] Codex Builder: define candidate lifecycle write helpers
 
 ## After First Storage Slice

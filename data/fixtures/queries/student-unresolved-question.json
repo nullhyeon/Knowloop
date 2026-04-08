@@ -1,0 +1,29 @@
+{
+  "fixture_id": "qf-student-unresolved-01",
+  "description": "Student asks an unresolved integration question that should stay open.",
+  "request_headers": {
+    "X-Knowloop-Role": "student",
+    "X-Knowloop-Actor-Id": "stu-kim-minji",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "academic",
+    "X-Request-Id": "req-fixture-student-unresolved-01"
+  },
+  "request_body": {
+    "message": "Can the substitution method always be used for every integral in this class?",
+    "attachment_source_ids": [],
+    "allow_raw_source_fallback": true,
+    "response_mode": "default"
+  },
+  "expected": {
+    "answer_basis": [
+      "raw_source_fallback"
+    ],
+    "writeback_plan_kinds": [
+      "session",
+      "candidate"
+    ],
+    "candidate_kind": "unresolved_question",
+    "candidate_status": "open"
+  }
+}

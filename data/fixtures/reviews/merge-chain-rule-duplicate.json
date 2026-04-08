@@ -1,0 +1,24 @@
+{
+  "fixture_id": "rvf-merge-chain-rule-dup",
+  "description": "Merge the duplicate chain rule misconception into the canonical misconception candidate.",
+  "request_headers": {
+    "X-Knowloop-Role": "validator",
+    "X-Knowloop-Actor-Id": "val-course-admin",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "review",
+    "X-Request-Id": "req-fixture-merge-chain-rule-dup",
+    "Idempotency-Key": "idem-fixture-merge-chain-rule-dup"
+  },
+  "request_body": {
+    "target_candidate_id": "cand-misconception-class-calculus-1-2026-spring-a-chain-rule-product-rule-mixup-20260408T112000Z",
+    "merge_notes": "Merge duplicate misconception into the stronger canonical candidate."
+  },
+  "expected": {
+    "candidate_id": "cand-misconception-class-calculus-1-2026-spring-a-chain-rule-duplicate-20260408T113800Z",
+    "from_status": "open",
+    "to_status": "merged",
+    "merged_into": "cand-misconception-class-calculus-1-2026-spring-a-chain-rule-product-rule-mixup-20260408T112000Z",
+    "audit_action": "candidate_merged"
+  }
+}
