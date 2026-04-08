@@ -1,0 +1,32 @@
+.DS_Store
+.env
+.env.*
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+*.pyo
+*.sqlite
+*.db
+node_modules/
+dist/
+build/
+.tmp-*/
+
+# Workspace runtime data
+data/raw/**/*
+data/sessions/**/*
+data/candidate/**/*
+data/wiki/**/*
+data/learning/**/*
+data/meta/*.db
+!data/**/.gitkeep
+!data/README.md
+!data/meta/manifest.json
+!data/meta/lint-status.json
+
+# Gemini local runtime state
+.gemini/tmp/
+.gemini/cache/
+.gemini/history/
