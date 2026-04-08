@@ -17,11 +17,13 @@
 
 - [x] Planning lock docs completed and wired into the harness
 - [ ] Gemini Pro Critic: perform one final contract review against `data-contracts`, `query-writeback-policy`, `api-contracts`, and `fixture-catalog`
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the critic pass
 - [x] Codex Builder: implement storage bootstrap for `sessions.db` and `audit.db`
 - [x] Codex Reviewer: review the storage bootstrap slice for contract drift and missing tests
 - [x] Codex Builder: create the first canonical fixture pack from `docs/product/fixture-catalog.md`
 - [x] Codex Builder: define candidate lifecycle write helpers
 - [ ] Gemini Pro Critic: review the candidate lifecycle slice for idempotency, ordering, and role-boundary drift
+- [ ] Codex Critic fallback: review the candidate lifecycle slice when Gemini Pro is blocked
 - [x] Codex Reviewer: review the candidate lifecycle slice for contract drift and missing tests
 
 ## After First Storage Slice
@@ -33,6 +35,7 @@
 ## Ready-To-Assign Prompt Targets
 
 - Builder prompt: `.agents/prompts/codex-builder.md`
+- Critic fallback prompt: `.agents/prompts/codex-critic.md`
 - Reviewer prompt: `.agents/prompts/codex-reviewer.md`
 - Critic prompt: `.agents/prompts/gemini-critic.md`
 - Backend kickoff prompt: `.agents/prompts/kickoff-backend-foundation.md`

@@ -17,7 +17,7 @@ For the human-readable doc map, start with `docs/README.md`.
 - Gemini supplement: `GEMINI.md`
 - Working artifacts: `docs/README.md`, `SPEC.md`, `tasks/plan.md`, `tasks/todo.md`
 
-## The Three Roles
+## The Four Roles
 
 ### Codex Builder
 
@@ -52,6 +52,27 @@ Then use `.agents/prompts/gemini-critic.md`.
 
 This role is `pro-only`. If `pro` is busy, wait and retry. Do not downgrade the model.
 
+### Codex Critic
+
+Use when `Gemini Pro Critic` cannot complete the critic pass in a reasonable
+time or when the Gemini CLI is temporarily unavailable.
+
+Fast path:
+
+```powershell
+.\scripts\run-codex-critic.ps1
+```
+
+Prompt path:
+
+- read `docs/README.md`
+- read `AGENTS.md`
+- read `SPEC.md`
+- use `.agents/prompts/codex-critic.md`
+
+This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
+It should stay focused on architecture critique rather than patch-level review.
+
 ### Codex Reviewer
 
 Use for a final code-focused review and test-gap check.
@@ -75,9 +96,10 @@ This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 
 1. Codex Builder implements the next planned slice.
 2. Gemini Pro Critic challenges the design, boundaries, and risks.
-3. Codex Builder integrates valid critique.
-4. Codex Reviewer performs final diff review.
-5. Update `tasks/todo.md` and relevant docs.
+3. If Gemini Pro Critic is blocked, Codex Critic performs the critic pass.
+4. Codex Builder integrates valid critique.
+5. Codex Reviewer performs final diff review.
+6. Update `tasks/todo.md` and relevant docs.
 
 ## Authentication Status
 

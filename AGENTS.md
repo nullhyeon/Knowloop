@@ -39,7 +39,7 @@ When starting a new session, read these files in this order:
 
 ## Tool and Role Split
 
-We use a 3-role harness built around Codex and Gemini Pro.
+We use a 4-role harness built around Codex and Gemini Pro.
 
 ### Role 1: Codex Builder
 
@@ -76,8 +76,29 @@ Operating rule:
 - default to critique before code, not code before critique
 - review a specific task, diff, or plan instead of the whole repo at once
 - findings first, recommendations second
+- this is the preferred critic when `Gemini Pro` is responsive
 
-### Role 3: Codex Reviewer
+### Role 3: Codex Critic
+
+This is the fallback architecture challenger when `Gemini Pro Critic` is blocked,
+times out, or cannot complete a substantive review.
+
+Responsibilities:
+
+- perform the same architecture critique expected from Gemini
+- challenge assumptions before implementation lands
+- review data boundaries and API contracts
+- identify hidden coupling, privacy risk, and operational drift
+- offer smaller or safer alternative designs
+
+Operating rule:
+
+- use this role when Gemini cannot complete the critic pass in a reasonable time
+- keep the review scoped to a specific slice, diff, or contract area
+- findings first, recommendations second
+- do not collapse into code-style review; leave patch-level review to `Codex Reviewer`
+
+### Role 4: Codex Reviewer
 
 This is the code-focused reviewer and test gap finder.
 
@@ -133,9 +154,10 @@ Add these when relevant:
 
 1. `Codex Builder` reads the task and implements the next slice.
 2. `Gemini Pro Critic` challenges the plan or the change set.
-3. `Codex Builder` integrates the valid critique.
-4. `Codex Reviewer` performs final code review and test-gap review.
-5. Update `tasks/todo.md` and any affected docs.
+3. If `Gemini Pro Critic` is blocked or cannot complete a substantive review, run `Codex Critic`.
+4. `Codex Builder` integrates the valid critique.
+5. `Codex Reviewer` performs final code review and test-gap review.
+6. Update `tasks/todo.md` and any affected docs.
 
 ## Backend-First Scope
 

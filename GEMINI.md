@@ -56,3 +56,16 @@ If a skill is not auto-activated, read it manually from `.agents/skills/`.
 Use `Gemini Pro` only for this role.
 If `pro` is at capacity, wait and retry later.
 Do not downgrade this role to `flash` or `flash-lite`.
+
+## Fallback Policy
+
+If Gemini cannot complete a substantive critic review after repeated retries,
+the critic pass should be handed to `Codex Critic`.
+
+That fallback should keep the same review scope:
+
+- architecture and boundary critique first
+- code-focused final review second
+
+When this happens, leave the `Gemini Pro Critic` task open in `tasks/todo.md`
+unless Gemini actually completed the review.

@@ -17,3 +17,6 @@ if (Test-Path $userGemini) {
 else {
     Write-Host "Gemini settings not found. Run .\\scripts\\connect-gemini.ps1"
 }
+
+Write-Host "`n[Codex Critic Fallback]"
+Write-Host "Fallback critic command: .\\scripts\\run-codex-critic.ps1"
