@@ -14,9 +14,11 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
     data_root: Path = DATA_ROOT
-    database_path: Path = DATA_ROOT / "meta" / "knowloop.db"
+    meta_root: Path = DATA_ROOT / "meta"
+    sessions_db_path: Path = DATA_ROOT / "meta" / "sessions.db"
+    audit_db_path: Path = DATA_ROOT / "meta" / "audit.db"
 
-    @field_validator("data_root", "database_path", mode="before")
+    @field_validator("data_root", "meta_root", "sessions_db_path", "audit_db_path", mode="before")
     @classmethod
     def resolve_relative_paths(cls, value: Path | str) -> Path:
         path = Path(value)

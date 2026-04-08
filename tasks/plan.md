@@ -62,14 +62,14 @@ Planning lock documents:
 ## Phase 1: Storage Bootstrap
 
 - [x] Task 1.1: Define file naming and metadata rules for all knowledge layers
-- [ ] Task 1.2: Create SQLite bootstrap for `sessions.db` and `audit.db`
+- [x] Task 1.2: Create SQLite bootstrap for `sessions.db` and `audit.db`
 - [ ] Task 1.3: Define candidate lifecycle schema and write helpers
 - [ ] Task 1.4: Add repository-safe fixture data for local development
 
 ### Checkpoint: Storage Bootstrap
 
-- [ ] Schema contracts reviewed
-- [ ] Database bootstrap runs locally
+- [x] Schema contracts reviewed
+- [x] Database bootstrap runs locally
 - [ ] Fixture-based tests cover the bootstrap path
 
 ## Phase 2: Ingest and Query

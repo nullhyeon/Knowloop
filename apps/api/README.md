@@ -14,12 +14,12 @@ uv run ruff check .
 ## Current Scope
 
 - runtime scaffold
-- health endpoints
+- health and readiness endpoints
+- storage bootstrap for `sessions.db` and `audit.db`
 - config entry point
 - test and lint bootstrap
 
 Future work will add:
 
-- storage bootstrap for the knowledge layers
 - query and write-back flows
 - validator and maintenance services
