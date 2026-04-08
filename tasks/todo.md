@@ -18,13 +18,13 @@
 - [x] Planning lock docs completed and wired into the harness
 - [ ] Gemini Pro Critic: perform one final contract review against `data-contracts`, `query-writeback-policy`, `api-contracts`, and `fixture-catalog`
 - [x] Codex Builder: implement storage bootstrap for `sessions.db` and `audit.db`
-- [ ] Codex Reviewer: review the storage bootstrap slice for contract drift and missing tests
+- [x] Codex Reviewer: review the storage bootstrap slice for contract drift and missing tests
 - [ ] Codex Builder: create the first canonical fixture pack from `docs/product/fixture-catalog.md`
 - [ ] Codex Builder: define candidate lifecycle write helpers
 
 ## After First Storage Slice
 
-- [ ] Gemini Pro Critic: review storage boundaries and identify over-coupled responsibilities
+- [x] Gemini Pro Critic: review storage boundaries and identify over-coupled responsibilities
 - [ ] Codex Builder: implement raw source registration and manifest updates
 - [ ] Codex Builder: implement `POST /api/v1/query/respond` against fixture-driven tests
 

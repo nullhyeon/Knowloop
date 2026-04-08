@@ -9,12 +9,8 @@ from knowloop_api.main import create_app
 
 def build_settings(tmp_path: Path) -> Settings:
     data_root = tmp_path / "data"
-    meta_root = data_root / "meta"
     return Settings(
         data_root=data_root,
-        meta_root=meta_root,
-        sessions_db_path=meta_root / "sessions.db",
-        audit_db_path=meta_root / "audit.db",
     )
 
 
@@ -70,6 +66,16 @@ def test_storage_bootstrap_creates_expected_databases_and_tables(tmp_path: Path)
     assert settings.audit_db_path.exists()
     assert {"sessions"}.issubset(read_table_names(settings.sessions_db_path))
     assert {"audit_events"}.issubset(read_table_names(settings.audit_db_path))
+
+
+def test_settings_derive_storage_paths_from_data_root(tmp_path: Path) -> None:
+    data_root = tmp_path / "custom-data-root"
+
+    settings = Settings(data_root=data_root)
+
+    assert settings.meta_root == data_root / "meta"
+    assert settings.sessions_db_path == data_root / "meta" / "sessions.db"
+    assert settings.audit_db_path == data_root / "meta" / "audit.db"
 
 
 def test_readiness_endpoints_report_storage_checks(tmp_path: Path) -> None:
