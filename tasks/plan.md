@@ -75,7 +75,7 @@ Planning lock documents:
 ## Phase 2: Ingest and Query
 
 - [x] Task 2.1: Implement raw source registration and manifest updates
-- [ ] Task 2.2: Implement session write and session search
+- [x] Task 2.2: Implement session write and session search
 - [x] Task 2.3: Implement candidate creation from query/write-back flow
 - [x] Task 2.4: Implement formal wiki lookup and learning-layer write targets
 - [x] Task 2.5: Implement dedicated wiki listing and detail endpoints
@@ -88,6 +88,7 @@ Planning lock documents:
 - [x] Query path reads the right context layers
 - [x] Dedicated wiki routes expose only the pages visible to the current role/domain scope
 - [x] Instructor insight routes stay aggregate-first and avoid raw student transcript exposure
+- [x] Session search routes stay role-aware and redact student transcript previews for instructors
 
 ## Phase 3: Validation and Maintenance
 

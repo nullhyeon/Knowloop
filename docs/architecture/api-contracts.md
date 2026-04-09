@@ -535,11 +535,69 @@ Response body inside `data`:
 - `tags`
 - `max_confidence`
 
+## 6.7 Session Search Routes
+
+The session browser is implemented as a role-aware search surface with redaction rules.
+
+### 6.7.1 `GET /api/v1/sessions/search`
+
+Purpose:
+
+- search durable session history inside the caller's allowed scope
+
+Allowed roles and domains:
+
+- `student` with `academic`
+- `instructor` with `academic`
+- `operator` with `operations`
+
+Query parameters:
+
+- `q`: required non-blank search query
+- `limit`, `offset`: pagination
+
+Rules:
+
+- `student` searches only their own session history and receives question/answer previews
+- `operator` searches only their own operations-domain session history and receives previews
+- `instructor` searches class-scoped student sessions but receives redacted hits without raw transcript previews
+- `validator` and `system` do not use this route family in the MVP
+
+Response body inside `data`:
+
+- `session_id`
+- `role`
+- `created_at`
+- `tags`
+- `candidate_ref_count`
+- `learning_note_ref_count`
+- `source_ref_count`
+- `visibility`
+- `match_summary`
+- `question_preview`
+- `answer_preview`
+
+### 6.7.2 `GET /api/v1/sessions/recent`
+
+Purpose:
+
+- list recent session hits inside the same role-aware scope as session search
+
+Allowed roles and domains:
+
+- `student` with `academic`
+- `instructor` with `academic`
+- `operator` with `operations`
+
+Rules:
+
+- shares the same redaction rules as `GET /api/v1/sessions/search`
+- acts as the default recent-history surface when no search query is provided
+
 ## 7. Planned but Not Yet Implemented
 
 The following workflow surfaces remain planned next:
 
-- session search endpoints
 - maintenance and stale-detection outputs
 
 ## 8. Status Codes

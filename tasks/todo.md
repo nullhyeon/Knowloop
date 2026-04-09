@@ -50,10 +50,17 @@
 
 ## Up Next
 
-- [ ] Codex Builder: implement session search endpoints and contract tests
-- [ ] Gemini Pro Critic: review the session search slice for privacy boundaries and query ergonomics
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the session-search critic pass
-- [ ] Codex Reviewer: review the session search slice for correctness, contract drift, and missing tests
+- [x] Codex Builder: implement session search endpoints and contract tests
+- [x] Gemini Pro Critic: attempted to review the session search slice but did not complete in time
+- [x] Codex Critic fallback: review the session-search slice when Gemini Pro could not complete the critic pass
+- [x] Codex Reviewer: review the session search slice for correctness, contract drift, and missing tests
+
+## Coming Next
+
+- [ ] Codex Builder: implement maintenance and stale-detection outputs
+- [ ] Gemini Pro Critic: review the maintenance slice for operational drift and false positives
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the maintenance critic pass
+- [ ] Codex Reviewer: review the maintenance slice for correctness, contract drift, and missing tests
 
 ## Ready-To-Assign Prompt Targets
 

@@ -12,7 +12,8 @@ The current slice is still not the full product. The harness and runtime foundat
 - consolidate the running `query -> session -> candidate -> review` flow
 - keep the dedicated `wiki` read surface stable
 - keep the instructor insight surface aggregated and privacy-safe
-- prepare the next session search and maintenance slices
+- keep the session search surface role-aware and redaction-safe
+- prepare the next maintenance slice
 
 Primary users for the current slice:
 
@@ -24,7 +25,7 @@ Success at this stage means:
 - the planning documents have been converted into code-facing contracts
 - storage bootstrap is reproducible
 - fixture-based tests can drive the first backend slices
-- the API can evolve from stable route and schema contracts without breaking the review, wiki, and instructor workflows
+- the API can evolve from stable route and schema contracts without breaking the review, wiki, instructor, and session-search workflows
 
 ## Tech Stack
 

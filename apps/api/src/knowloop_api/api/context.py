@@ -45,6 +45,11 @@ REVIEW_MUTATION_ROLES = frozenset(
 INSTRUCTOR_INSIGHT_ROUTE_DOMAINS = {
     ActorRole.INSTRUCTOR: RequestDomain.ACADEMIC,
 }
+SESSION_SEARCH_ROUTE_DOMAINS = {
+    ActorRole.STUDENT: RequestDomain.ACADEMIC,
+    ActorRole.INSTRUCTOR: RequestDomain.ACADEMIC,
+    ActorRole.OPERATOR: RequestDomain.OPERATIONS,
+}
 
 
 def get_request_context(
@@ -127,6 +132,34 @@ def get_instructor_insight_request_context(
             status_code=403,
             code="forbidden_scope",
             message="Instructor insight workflows require the academic domain.",
+            request_id=context.request_id,
+            details={
+                "domain": context.domain.value if context.domain is not None else None,
+                "role": context.role.value,
+            },
+        )
+    return context
+
+
+def get_session_search_request_context(
+    context: Annotated[RequestContext, Depends(get_request_context)],
+) -> RequestContext:
+    expected_domain = SESSION_SEARCH_ROUTE_DOMAINS.get(context.role)
+    if expected_domain is None:
+        raise ApiError(
+            status_code=403,
+            code="forbidden_scope",
+            message="This role cannot access the session search routes.",
+            request_id=context.request_id,
+        )
+    if context.domain is not expected_domain:
+        raise ApiError(
+            status_code=403,
+            code="forbidden_scope",
+            message=(
+                "Session search routes require the "
+                f"{expected_domain.value} domain for this role."
+            ),
             request_id=context.request_id,
             details={
                 "domain": context.domain.value if context.domain is not None else None,
