@@ -15,6 +15,7 @@ The current slice is still not the full product. The harness and runtime foundat
 - keep the session search surface role-aware and redaction-safe
 - keep the maintenance report surface actionable and deterministic
 - document operational runbook and handoff expectations for the current backend state
+- strengthen query fixture coverage around answer basis, retrieval refs, and write-back outputs
 
 Primary users for the current slice:
 

@@ -1,25 +1,27 @@
 {
-  "fixture_id": "qf-student-unresolved-01",
-  "description": "Student asks an unresolved integration question that should stay open.",
+  "fixture_id": "qf-instructor-homework-faq-01",
+  "description": "Instructor asks about repeated homework deadline questions and should produce an FAQ candidate.",
   "request_headers": {
-    "X-Knowloop-Role": "student",
-    "X-Knowloop-Actor-Id": "stu-kim-minji",
+    "X-Knowloop-Role": "instructor",
+    "X-Knowloop-Actor-Id": "ins-calculus-team",
     "X-Knowloop-Course-Id": "course-calculus-1",
     "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
     "X-Knowloop-Domain": "academic",
-    "X-Request-Id": "req-fixture-student-unresolved-01"
+    "X-Request-Id": "req-fixture-instructor-homework-faq-01"
   },
   "request_body": {
-    "message": "Can the substitution method always be used for every integral in this class?",
+    "message": "Students keep asking when Homework 01 is due and where they should submit it.",
     "attachment_source_ids": [],
     "allow_raw_source_fallback": true,
-    "response_mode": "default"
+    "response_mode": "review"
   },
   "expected": {
     "answer_basis": [
-      "raw_source_fallback"
+      "formal_wiki"
     ],
-    "retrieval_entity_types": [],
+    "retrieval_entity_types": [
+      "wiki_page"
+    ],
     "writeback_plan": [
       {
         "kind": "session",
@@ -34,12 +36,12 @@
     ],
     "learning_note_written": false,
     "candidate": {
-      "kind": "unresolved_question",
+      "kind": "faq",
       "status": "open",
-      "related_page_id": null,
-      "min_confidence": 0.5,
+      "related_page_id": "page-faq-homework-submission",
+      "min_confidence": 0.9,
       "min_source_ref_count": 2,
-      "min_session_ref_count": 2
+      "min_session_ref_count": 3
     }
   }
 }

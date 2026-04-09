@@ -20,12 +20,39 @@
       "formal_wiki",
       "session_context"
     ],
-    "writeback_plan_kinds": [
-      "session",
-      "learning_note",
-      "candidate"
+    "retrieval_entity_types": [
+      "wiki_page",
+      "session"
     ],
-    "candidate_kind": "misconception",
-    "candidate_status": "open"
+    "writeback_plan": [
+      {
+        "kind": "session",
+        "action": "save",
+        "status": "registered"
+      },
+      {
+        "kind": "learning_note",
+        "action": "update",
+        "status": "updated"
+      },
+      {
+        "kind": "candidate",
+        "action": "create",
+        "status": "open"
+      }
+    ],
+    "learning_note_written": true,
+    "learning_note": {
+      "learning_note_id": "learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+      "concept_contains": "chain rule"
+    },
+    "candidate": {
+      "kind": "misconception",
+      "status": "open",
+      "related_page_id": "page-misconceptions-chain-rule-product-rule",
+      "min_confidence": 0.8,
+      "min_source_ref_count": 2,
+      "min_session_ref_count": 2
+    }
   }
 }

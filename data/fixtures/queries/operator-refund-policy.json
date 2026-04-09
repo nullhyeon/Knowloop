@@ -20,11 +20,30 @@
       "formal_wiki",
       "raw_source_fallback"
     ],
-    "writeback_plan_kinds": [
-      "session",
-      "candidate"
+    "retrieval_entity_types": [
+      "wiki_page",
+      "raw_source"
     ],
-    "candidate_kind": "operations_note",
-    "candidate_status": "open"
+    "writeback_plan": [
+      {
+        "kind": "session",
+        "action": "save",
+        "status": "registered"
+      },
+      {
+        "kind": "candidate",
+        "action": "create",
+        "status": "open"
+      }
+    ],
+    "learning_note_written": false,
+    "candidate": {
+      "kind": "operations_note",
+      "status": "open",
+      "related_page_id": "page-operations-refund-policy",
+      "min_confidence": 0.8,
+      "min_source_ref_count": 1,
+      "min_session_ref_count": 2
+    }
   }
 }

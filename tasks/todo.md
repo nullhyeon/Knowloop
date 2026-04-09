@@ -71,8 +71,15 @@
 
 ## Next Planning Target
 
-- [ ] Codex Builder: strengthen end-to-end query fixture coverage around answer basis and write-back outputs
-- [ ] Gemini Pro Critic: review the next query-hardening slice for hidden coupling and test blind spots
+- [x] Codex Builder: strengthen end-to-end query fixture coverage around answer basis and write-back outputs
+- [x] Gemini Pro Critic: review the next query-hardening slice for hidden coupling and test blind spots
+- [x] Codex Critic fallback: not needed because Gemini Pro completed the query-hardening critic pass
+- [x] Codex Reviewer: review the next query-hardening slice for correctness, contract drift, and missing tests
+
+## Next Query Hardening Target
+
+- [ ] Codex Builder: add declarative learning-context and error query fixtures, then tighten candidate-to-wiki promotion coverage
+- [ ] Gemini Pro Critic: review the next query-hardening slice for hidden coupling and approval blind spots
 - [ ] Codex Critic fallback: run when Gemini Pro cannot complete the next query-hardening critic pass
 - [ ] Codex Reviewer: review the next query-hardening slice for correctness, contract drift, and missing tests
 

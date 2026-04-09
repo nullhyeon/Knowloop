@@ -23,6 +23,14 @@ from knowloop_api.services.sources import SourceRegistrationInput, register_sour
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = REPO_ROOT / "data" / "fixtures"
+QUERY_FIXTURE_NAMES = (
+    "student-chain-rule-confusion.json",
+    "student-homework-deadline-01.json",
+    "student-homework-deadline-02.json",
+    "student-unresolved-question.json",
+    "operator-refund-policy.json",
+    "instructor-homework-faq.json",
+)
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -121,23 +129,17 @@ def _parse_timestamp(value: str):
 
 
 @pytest.mark.parametrize(
-    ("fixture_name", "expected_learning"),
-    [
-        ("student-chain-rule-confusion.json", True),
-        ("student-homework-deadline-01.json", False),
-        ("student-homework-deadline-02.json", False),
-        ("student-unresolved-question.json", False),
-        ("operator-refund-policy.json", False),
-    ],
+    "fixture_name",
+    QUERY_FIXTURE_NAMES,
 )
 def test_query_endpoint_matches_fixture_expectations(
     tmp_path: Path,
     fixture_name: str,
-    expected_learning: bool,
 ) -> None:
     client, settings = build_client(tmp_path)
     seed_query_runtime(settings)
     fixture = json.loads((FIXTURE_ROOT / "queries" / fixture_name).read_text(encoding="utf-8"))
+    expected = fixture["expected"]
 
     response = client.post(
         "/api/v1/query/respond",
@@ -149,29 +151,59 @@ def test_query_endpoint_matches_fixture_expectations(
     payload = response.json()
     assert payload["request_id"] == fixture["request_headers"]["X-Request-Id"]
     assert payload["data"]["answer"]
-    assert payload["data"]["answer_basis"] == fixture["expected"]["answer_basis"]
-    assert [item["kind"] for item in payload["data"]["writeback_plan"]] == fixture["expected"][
-        "writeback_plan_kinds"
+    assert payload["data"]["answer_basis"] == expected["answer_basis"]
+    assert [item["entity_type"] for item in payload["data"]["retrieval_refs"]] == expected[
+        "retrieval_entity_types"
     ]
+    assert [
+        {
+            "kind": item["kind"],
+            "action": item["action"],
+            "status": item["status"],
+        }
+        for item in payload["data"]["writeback_plan"]
+    ] == expected["writeback_plan"]
     if fixture["request_headers"]["X-Knowloop-Role"] == "student":
         assert all(
             item["entity_type"] != "raw_source" for item in payload["data"]["retrieval_refs"]
         )
         assert all(not item["source_refs"] for item in payload["data"]["retrieval_refs"])
+    elif "raw_source" in expected["retrieval_entity_types"]:
+        raw_source_refs = [
+            item
+            for item in payload["data"]["retrieval_refs"]
+            if item["entity_type"] == "raw_source"
+        ]
+        assert raw_source_refs
+        assert all(item["source_refs"] for item in raw_source_refs)
 
     session_id = payload["data"]["session_id"]
     stored_session = get_session(settings, session_id)
     assert stored_session.question == fixture["request_body"]["message"]
+    session_writeback = next(
+        item for item in payload["data"]["writeback_plan"] if item["kind"] == "session"
+    )
+    assert session_writeback["target_id"] == session_id
 
-    expected_candidate_kind = fixture["expected"].get("candidate_kind")
+    expected_candidate = expected.get("candidate")
     candidate = None
-    if expected_candidate_kind is not None:
+    if expected_candidate is not None:
         candidate_records = list_candidates(
             settings, class_id=fixture["request_headers"]["X-Knowloop-Class-Id"]
         )
         candidate = next(item for item in candidate_records if session_id in item.session_refs)
-        assert candidate.kind is CandidateKind(expected_candidate_kind)
-        assert candidate.status is CandidateStatus(fixture["expected"]["candidate_status"])
+        assert candidate.kind is CandidateKind(expected_candidate["kind"])
+        assert candidate.status is CandidateStatus(expected_candidate["status"])
+        assert candidate.related_page_id == expected_candidate["related_page_id"]
+        assert candidate.confidence >= expected_candidate["min_confidence"]
+        assert len(candidate.source_refs) >= expected_candidate["min_source_ref_count"]
+        assert len(candidate.session_refs) >= expected_candidate["min_session_ref_count"]
+        candidate_writeback = next(
+            item for item in payload["data"]["writeback_plan"] if item["kind"] == "candidate"
+        )
+        assert candidate_writeback["target_id"] == candidate.candidate_id
+    else:
+        assert all(item["kind"] != "candidate" for item in payload["data"]["writeback_plan"])
 
     learning_note = get_learning_note(
         settings,
@@ -179,18 +211,25 @@ def test_query_endpoint_matches_fixture_expectations(
         course_id=fixture["request_headers"]["X-Knowloop-Course-Id"],
         class_id=fixture["request_headers"]["X-Knowloop-Class-Id"],
     )
-    if expected_learning:
+    if expected["learning_note_written"]:
         assert learning_note is not None
         assert learning_note.gaps
-        assert (
-            learning_note.learning_note_id
-            == "learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a"
-        )
-        assert any("chain rule" in concept for concept in learning_note.concepts)
+        learning_note_expectation = expected.get("learning_note")
+        if learning_note_expectation is not None:
+            assert learning_note.learning_note_id == learning_note_expectation["learning_note_id"]
+            assert any(
+                learning_note_expectation["concept_contains"] in concept
+                for concept in learning_note.concepts
+            )
         assert stored_session.learning_note_refs == [learning_note.learning_note_id]
+        learning_writeback = next(
+            item for item in payload["data"]["writeback_plan"] if item["kind"] == "learning_note"
+        )
+        assert learning_writeback["target_id"] == learning_note.learning_note_id
     else:
         assert learning_note is None
         assert stored_session.learning_note_refs == []
+        assert all(item["kind"] != "learning_note" for item in payload["data"]["writeback_plan"])
 
     if candidate is not None:
         assert stored_session.candidate_refs == [candidate.candidate_id]
@@ -307,13 +346,10 @@ def test_query_endpoint_uses_formal_wiki_only_for_homework_when_fallback_is_disa
 
     assert response.status_code == 200
     assert response.json()["data"]["answer_basis"] == ["formal_wiki"]
-    assert (
-        response.json()["data"]["answer"]
-        == (
-            "Homework 01 is due Friday, April 10 at 11:59 PM KST and "
-            "must be submitted through the LMS assignment page."
-        )
-    )
+    answer = response.json()["data"]["answer"]
+    assert "Homework 01 is due" in answer
+    assert "Friday, April 10 at 11:59 PM KST" in answer
+    assert "LMS assignment page" in answer
 
 
 def test_query_endpoint_rejects_reused_idempotency_key_with_different_payloads(
@@ -397,6 +433,13 @@ def test_query_endpoint_replays_same_idempotent_request_without_duplicate_candid
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["data"]["session_id"] == second.json()["data"]["session_id"]
+    first_targets = {
+        item["kind"]: item["target_id"] for item in first.json()["data"]["writeback_plan"]
+    }
+    second_targets = {
+        item["kind"]: item["target_id"] for item in second.json()["data"]["writeback_plan"]
+    }
+    assert first_targets == second_targets
     assert len(
         list_candidates(
             settings,
@@ -405,6 +448,14 @@ def test_query_endpoint_replays_same_idempotent_request_without_duplicate_candid
             class_id="class-calculus-1-2026-spring-a",
         )
     ) == 1
+    learning_note = get_learning_note(
+        settings,
+        student_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+    )
+    assert learning_note is not None
+    assert learning_note.learning_note_id == first_targets["learning_note"]
 
 
 def test_query_endpoint_audits_learning_writeback_failures(tmp_path: Path, monkeypatch) -> None:

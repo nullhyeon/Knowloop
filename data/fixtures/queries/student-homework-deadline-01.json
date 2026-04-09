@@ -19,8 +19,17 @@
     "answer_basis": [
       "formal_wiki"
     ],
-    "writeback_plan_kinds": [
-      "session"
-    ]
+    "retrieval_entity_types": [
+      "wiki_page"
+    ],
+    "writeback_plan": [
+      {
+        "kind": "session",
+        "action": "save",
+        "status": "registered"
+      }
+    ],
+    "learning_note_written": false,
+    "candidate": null
   }
 }

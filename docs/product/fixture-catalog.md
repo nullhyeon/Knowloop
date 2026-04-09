@@ -94,23 +94,32 @@ Current fixture files:
 - `queries/student-homework-deadline-02.json`
 - `queries/student-unresolved-question.json`
 - `queries/operator-refund-policy.json`
+- `queries/instructor-homework-faq.json`
 
 Expected behavior per fixture:
 
 - `student-chain-rule-confusion.json`
   - answer uses formal wiki and recent session context
+  - retrieval refs show `wiki_page` and `session`
   - write-back creates `session`, `learning_note`, and `candidate`
   - candidate kind is `misconception`
 - `student-homework-deadline-01.json`
   - answer is satisfied by formal wiki
+  - retrieval refs stay on `wiki_page`
   - write-back remains `session` only
 - `student-homework-deadline-02.json`
   - repeated homework question still remains `session` only in the MVP because wiki coverage is already sufficient
-  - may include `session_context`, but should not create a FAQ candidate automatically for the student path
+  - includes `session_context`, but should not create a FAQ candidate automatically for the student path
 - `student-unresolved-question.json`
+  - answer uses raw fallback without exposing raw source entities to the student response
   - unresolved query may generate a reviewable `unresolved_question` candidate when fallback evidence exists
 - `operator-refund-policy.json`
   - validates operations-domain scoping
+  - includes `raw_source` retrieval refs for non-student fallback visibility
+- `instructor-homework-faq.json`
+  - validates the instructor FAQ candidate path
+  - remains grounded in formal wiki while writing a high-confidence `faq` candidate
+  - aggregates repeated class session links into candidate write-back without exposing raw student transcript bodies in the answer surface
 
 ## 7. Session Fixtures
 
@@ -193,6 +202,8 @@ The fixture pack intentionally proves these product choices:
 - student query retries can be made replay-safe with `Idempotency-Key`
 - learning context is personal and only appears when it existed before the current turn
 - student homework questions that are already covered by wiki remain session-only
+- instructor homework review questions can generate FAQ candidates without changing the student path
+- query fixtures lock retrieval entity types and write-back action/status pairs, not only answer basis
 - write-back failures should be auditable without turning every query failure into a hard API failure
 
 ## 13. Maintenance Rules

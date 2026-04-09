@@ -20,8 +20,18 @@
       "formal_wiki",
       "session_context"
     ],
-    "writeback_plan_kinds": [
+    "retrieval_entity_types": [
+      "wiki_page",
       "session"
-    ]
+    ],
+    "writeback_plan": [
+      {
+        "kind": "session",
+        "action": "save",
+        "status": "registered"
+      }
+    ],
+    "learning_note_written": false,
+    "candidate": null
   }
 }

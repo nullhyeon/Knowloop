@@ -168,6 +168,12 @@ Current MVP examples:
 - `operations_note`
 - `faq` for instructor or validator workflows
 
+Rules:
+
+- candidate `session_refs` may include supporting same-user or class-aggregated sessions used for write-back evidence
+- this does not mean those supporting sessions must appear in `retrieval_refs` for the answer itself
+- instructor FAQ candidates may stay answer-grounded in formal wiki while still linking repeated class sessions for later review
+
 Student homework questions that are already fully covered by formal wiki remain session-only in the MVP. They should not create FAQ candidates automatically.
 
 ## 6.4 Failure Handling

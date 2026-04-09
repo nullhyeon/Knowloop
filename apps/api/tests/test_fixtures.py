@@ -17,6 +17,7 @@ EXPECTED_FIXTURE_FILES = [
     "queries/student-homework-deadline-02.json",
     "queries/student-unresolved-question.json",
     "queries/operator-refund-policy.json",
+    "queries/instructor-homework-faq.json",
     "sessions/student-minji-history.json",
     "sessions/student-jiyoon-history.json",
     "sessions/student-doyun-history.json",
@@ -87,7 +88,9 @@ def test_query_fixtures_define_request_context_and_expected_outputs() -> None:
         assert REQUIRED_CONTEXT_HEADERS.issubset(payload["request_headers"])
         assert "message" in payload["request_body"]
         assert "answer_basis" in payload["expected"]
-        assert "writeback_plan_kinds" in payload["expected"]
+        assert "retrieval_entity_types" in payload["expected"]
+        assert "writeback_plan" in payload["expected"]
+        assert "learning_note_written" in payload["expected"]
 
 
 def test_review_fixtures_define_idempotent_mutations() -> None:
