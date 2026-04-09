@@ -43,10 +43,17 @@
 - [x] Gemini Pro Critic: review the wiki read slice for role exposure, contract clarity, and coupling
 - [x] Codex Critic fallback: not needed because Gemini Pro completed the wiki read critic pass
 - [x] Codex Reviewer: review the wiki read slice for correctness, contract drift, and missing tests
-- [ ] Codex Builder: implement instructor insight endpoints against fixture-driven tests
-- [ ] Gemini Pro Critic: review the instructor insight slice for privacy boundaries and aggregation drift
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the insight critic pass
-- [ ] Codex Reviewer: review the instructor insight slice for correctness, contract drift, and missing tests
+- [x] Codex Builder: implement instructor insight endpoints against fixture-driven tests
+- [x] Gemini Pro Critic: attempted to review the instructor insight slice but did not complete in time
+- [x] Codex Critic fallback: review the insight slice when Gemini Pro could not complete the critic pass
+- [x] Codex Reviewer: review the insight slice for correctness, contract drift, and missing tests
+
+## Up Next
+
+- [ ] Codex Builder: implement session search endpoints and contract tests
+- [ ] Gemini Pro Critic: review the session search slice for privacy boundaries and query ergonomics
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the session-search critic pass
+- [ ] Codex Reviewer: review the session search slice for correctness, contract drift, and missing tests
 
 ## Ready-To-Assign Prompt Targets
 

@@ -466,11 +466,81 @@ Response body inside `data`:
 - `candidate_refs`
 - `body_markdown`
 
+## 6.6 Instructor Insight Routes
+
+The instructor dashboard is implemented through aggregated, academic-only insight endpoints.
+
+### 6.6.1 `GET /api/v1/instructor/insights/overview`
+
+Purpose:
+
+- provide a class-level overview for instructors without exposing raw student transcript bodies
+
+Allowed roles and domains:
+
+- `instructor` with `academic`
+
+Rules:
+
+- response is aggregate-first and does not expose raw student question text
+- insight data is limited to academic student sessions, academic candidates, and learning-note aggregates within the current course/class scope
+- operations-domain sessions and operations candidates are excluded from the instructor surface
+
+Response body inside `data`:
+
+- `course_id`
+- `class_id`
+- `student_session_count`
+- `unique_student_count`
+- `open_candidate_total`
+- `candidate_counts`
+- `students_with_learning_notes`
+- `students_with_open_gaps`
+- `top_topics`
+- `top_gap_clusters`
+- `top_patterns`
+
+### 6.6.2 `GET /api/v1/instructor/insights/patterns`
+
+Purpose:
+
+- list aggregated candidate patterns for the instructor dashboard
+
+Allowed roles and domains:
+
+- `instructor` with `academic`
+
+Query parameters:
+
+- `kind`: optional academic candidate kind filter
+- `limit`, `offset`: pagination
+
+Rules:
+
+- patterns group related open academic candidates instead of returning the review inbox shape directly
+- response may include candidate IDs for drill-down into the dedicated review workflow, but not raw session question bodies
+
+Response body inside `data`:
+
+- `pattern_id`
+- `kind`
+- `title`
+- `summary`
+- `related_page_id`
+- `candidate_count`
+- `session_count`
+- `student_count`
+- `latest_created_at`
+- `candidate_ids`
+- `tags`
+- `max_confidence`
+
 ## 7. Planned but Not Yet Implemented
 
 The following workflow surfaces remain planned next:
 
-- instructor insight endpoints
+- session search endpoints
+- maintenance and stale-detection outputs
 
 ## 8. Status Codes
 

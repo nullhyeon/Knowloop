@@ -79,7 +79,7 @@ Planning lock documents:
 - [x] Task 2.3: Implement candidate creation from query/write-back flow
 - [x] Task 2.4: Implement formal wiki lookup and learning-layer write targets
 - [x] Task 2.5: Implement dedicated wiki listing and detail endpoints
-- [ ] Task 2.6: Implement instructor insight endpoints against the locked role/privacy contracts
+- [x] Task 2.6: Implement instructor insight endpoints against the locked role/privacy contracts
 
 ### Checkpoint: Core Pipeline
 
@@ -87,6 +87,7 @@ Planning lock documents:
 - [ ] Candidate items are created with source links
 - [x] Query path reads the right context layers
 - [x] Dedicated wiki routes expose only the pages visible to the current role/domain scope
+- [x] Instructor insight routes stay aggregate-first and avoid raw student transcript exposure
 
 ## Phase 3: Validation and Maintenance
 

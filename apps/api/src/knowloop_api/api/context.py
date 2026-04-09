@@ -42,6 +42,9 @@ REVIEW_MUTATION_ROLES = frozenset(
         ActorRole.SYSTEM,
     }
 )
+INSTRUCTOR_INSIGHT_ROUTE_DOMAINS = {
+    ActorRole.INSTRUCTOR: RequestDomain.ACADEMIC,
+}
 
 
 def get_request_context(
@@ -106,6 +109,31 @@ def get_mutating_review_request_context(
         context,
         operation="review mutations",
     )
+
+
+def get_instructor_insight_request_context(
+    context: Annotated[RequestContext, Depends(get_request_context)],
+) -> RequestContext:
+    expected_domain = INSTRUCTOR_INSIGHT_ROUTE_DOMAINS.get(context.role)
+    if expected_domain is None:
+        raise ApiError(
+            status_code=403,
+            code="forbidden_scope",
+            message="This role cannot access instructor insight workflows.",
+            request_id=context.request_id,
+        )
+    if context.domain is not expected_domain:
+        raise ApiError(
+            status_code=403,
+            code="forbidden_scope",
+            message="Instructor insight workflows require the academic domain.",
+            request_id=context.request_id,
+            details={
+                "domain": context.domain.value if context.domain is not None else None,
+                "role": context.role.value,
+            },
+        )
+    return context
 
 
 def require_idempotency_key(
