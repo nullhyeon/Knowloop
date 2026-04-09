@@ -41,8 +41,9 @@ Knowloop is a backend-first workspace for an education-focused memory OS:
 - `Codex Builder`: `gpt-5.4` + `xhigh`
 - `Codex Reviewer`: `gpt-5.4` + `xhigh`
 - `Gemini Pro Critic`: `pro` only
+- `Codex Critic`: `gpt-5.4` + `xhigh` fallback when Gemini cannot complete the critic pass
 
-If Gemini Pro is at capacity, wait and retry later. Do not downgrade the critic role.
+If Gemini Pro is at capacity or cannot complete a substantive pass, use `Codex Critic`. Do not downgrade the critic role to a lower-quality model.
 
 ## Environment
 

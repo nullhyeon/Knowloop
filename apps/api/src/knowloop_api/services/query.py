@@ -247,6 +247,7 @@ def respond_to_query(
         )
     wiki_matches = search_wiki_pages(
         settings,
+        role=context.role,
         course_id=context.course_id,
         class_id=context.class_id,
         requested_domain=context.domain,

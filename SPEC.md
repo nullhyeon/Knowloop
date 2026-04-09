@@ -9,7 +9,9 @@ The current slice is still not the full product. The harness and runtime foundat
 - bootstrap `sessions.db` and `audit.db`
 - implement repository-safe fixture seeding
 - align storage and APIs with the planning documents
-- consolidate the running `query -> session -> candidate -> review` flow and prepare the next dedicated wiki and instructor read surfaces
+- consolidate the running `query -> session -> candidate -> review` flow
+- keep the dedicated `wiki` read surface stable
+- prepare the next instructor insight and session search slices
 
 Primary users for the current slice:
 
@@ -21,7 +23,7 @@ Success at this stage means:
 - the planning documents have been converted into code-facing contracts
 - storage bootstrap is reproducible
 - fixture-based tests can drive the first backend slices
-- the API can evolve from stable route and schema contracts without breaking the review workflow
+- the API can evolve from stable route and schema contracts without breaking the review and wiki workflows
 
 ## Tech Stack
 

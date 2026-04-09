@@ -1,6 +1,8 @@
 import hashlib
 import os
+import shutil
 import sqlite3
+import tempfile
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +27,10 @@ from knowloop_api.services.sources import (
 
 
 def build_settings(tmp_path: Path) -> Settings:
-    return Settings(data_root=tmp_path / "d")
+    digest = hashlib.sha1(str(tmp_path).encode("utf-8")).hexdigest()[:10]
+    data_root = Path(tempfile.gettempdir()) / "kl" / digest
+    shutil.rmtree(data_root, ignore_errors=True)
+    return Settings(data_root=data_root)
 
 
 def build_client(tmp_path: Path) -> tuple[TestClient, Settings]:

@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from knowloop_api.core.config import Settings
-from knowloop_api.core.contracts import RequestDomain
+from knowloop_api.core.contracts import ActorRole, RequestDomain
 from knowloop_api.core.frontmatter import parse_frontmatter_document
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
@@ -99,6 +99,19 @@ class WikiPageMatch:
     score: int
 
 
+class WikiPageNotFoundError(FileNotFoundError):
+    """Raised when a wiki page cannot be found."""
+
+
+class ForbiddenWikiScopeError(PermissionError):
+    """Raised when a caller crosses the wiki visibility boundary."""
+
+
+ACADEMIC_WIKI_DOMAINS = frozenset({"concepts", "faq", "misconceptions", "courses"})
+OPERATIONS_WIKI_DOMAINS = frozenset({"operations"})
+ALL_WIKI_DOMAINS = ACADEMIC_WIKI_DOMAINS.union(OPERATIONS_WIKI_DOMAINS)
+
+
 def get_wiki_page(settings: Settings, page_id: str) -> WikiPage | None:
     for page in list_wiki_pages(settings):
         if page.page_id == page_id:
@@ -122,38 +135,131 @@ def list_wiki_pages(settings: Settings) -> list[WikiPage]:
 def search_wiki_pages(
     settings: Settings,
     *,
+    role: ActorRole,
     course_id: str,
     class_id: str,
     requested_domain: RequestDomain | None,
     message: str,
     limit: int = 5,
 ) -> list[WikiPageMatch]:
-    requested_tokens = _tokenize(message)
-    allowed_domains = _allowed_wiki_domains(requested_domain)
-    matches: list[WikiPageMatch] = []
-    for page in list_wiki_pages(settings):
-        if page.course_id != course_id or page.class_scope != class_id:
-            continue
-        if page.domain not in allowed_domains:
-            continue
-        score = _score_page(page, requested_tokens=requested_tokens, message=message.lower())
-        if score <= 0:
-            continue
-        matches.append(WikiPageMatch(page=page, score=score))
+    visible_pages = _collect_visible_wiki_pages(
+        settings,
+        role=role,
+        course_id=course_id,
+        class_id=class_id,
+        requested_domain=requested_domain,
+    )
+    return _rank_wiki_pages(visible_pages, query=message)[:limit]
 
+
+def list_visible_wiki_pages(
+    settings: Settings,
+    *,
+    role: ActorRole,
+    course_id: str,
+    class_id: str,
+    requested_domain: RequestDomain | None,
+    query: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[WikiPage], int]:
+    visible_pages = _collect_visible_wiki_pages(
+        settings,
+        role=role,
+        course_id=course_id,
+        class_id=class_id,
+        requested_domain=requested_domain,
+    )
+
+    normalized_query = (query or "").strip()
+    if normalized_query:
+        visible_pages = [match.page for match in _rank_wiki_pages(visible_pages, query=query)]
+    else:
+        visible_pages = sorted(
+            visible_pages,
+            key=lambda page: (page.updated_at, page.page_id),
+            reverse=True,
+        )
+
+    total = len(visible_pages)
+    return visible_pages[offset : offset + limit], total
+
+
+def get_visible_wiki_page(
+    settings: Settings,
+    *,
+    page_id: str,
+    role: ActorRole,
+    course_id: str,
+    class_id: str,
+    requested_domain: RequestDomain | None,
+) -> WikiPage:
+    page = get_wiki_page(settings, page_id)
+    if page is None:
+        raise WikiPageNotFoundError(f"wiki page was not found: {page_id}")
+    if page.course_id != course_id or page.class_scope != class_id:
+        raise ForbiddenWikiScopeError("Wiki page is outside the current course/class scope.")
+    if page.domain not in _visible_wiki_domains(role, requested_domain=requested_domain):
+        raise ForbiddenWikiScopeError("Wiki page is outside the current role boundary.")
+    return page
+
+
+def _collect_visible_wiki_pages(
+    settings: Settings,
+    *,
+    role: ActorRole,
+    course_id: str,
+    class_id: str,
+    requested_domain: RequestDomain | None,
+) -> list[WikiPage]:
+    allowed_domains = _visible_wiki_domains(role, requested_domain=requested_domain)
+    return [
+        page
+        for page in list_wiki_pages(settings)
+        if page.course_id == course_id
+        and page.class_scope == class_id
+        and page.domain in allowed_domains
+    ]
+
+
+def _visible_wiki_domains(
+    role: ActorRole,
+    *,
+    requested_domain: RequestDomain | None,
+) -> set[str]:
+    if role in {ActorRole.STUDENT, ActorRole.INSTRUCTOR}:
+        return set(ACADEMIC_WIKI_DOMAINS)
+    if role is ActorRole.OPERATOR:
+        return set(OPERATIONS_WIKI_DOMAINS)
+    if role in {ActorRole.VALIDATOR, ActorRole.SYSTEM}:
+        if requested_domain in {None, RequestDomain.REVIEW}:
+            return set(ALL_WIKI_DOMAINS)
+        if requested_domain is RequestDomain.ACADEMIC:
+            return set(ACADEMIC_WIKI_DOMAINS)
+        if requested_domain is RequestDomain.OPERATIONS:
+            return set(OPERATIONS_WIKI_DOMAINS)
+    raise ForbiddenWikiScopeError("This role cannot access the wiki browser.")
+
+
+def _rank_wiki_pages(pages: list[WikiPage], *, query: str) -> list[WikiPageMatch]:
+    normalized_query = query.strip().lower()
+    requested_tokens = _tokenize(normalized_query)
+    matches = [
+        WikiPageMatch(
+            page=page,
+            score=_score_page(
+                page,
+                requested_tokens=requested_tokens,
+                normalized_query=normalized_query,
+            ),
+        )
+        for page in pages
+    ]
     return sorted(
-        matches,
+        (match for match in matches if match.score > 0),
         key=lambda match: (match.score, match.page.updated_at, match.page.page_id),
         reverse=True,
-    )[:limit]
-
-
-def _allowed_wiki_domains(requested_domain: RequestDomain | None) -> set[str]:
-    if requested_domain is RequestDomain.OPERATIONS:
-        return {"operations"}
-    if requested_domain is RequestDomain.REVIEW:
-        return {"concepts", "faq", "misconceptions", "operations", "courses"}
-    return {"concepts", "faq", "misconceptions", "courses"}
+    )
 
 
 def _load_wiki_page(path: Path) -> WikiPage:
@@ -173,22 +279,43 @@ def _load_wiki_page(path: Path) -> WikiPage:
     )
 
 
-def _score_page(page: WikiPage, *, requested_tokens: set[str], message: str) -> int:
-    haystack = " ".join([page.title, page.summary, page.body_markdown]).lower()
-    haystack_tokens = _tokenize(haystack)
-    token_matches = sum(3 for token in requested_tokens if token in haystack_tokens)
+def _score_page(
+    page: WikiPage,
+    *,
+    requested_tokens: set[str],
+    normalized_query: str,
+) -> int:
+    if not requested_tokens and not normalized_query:
+        return 0
+
+    title = page.title.lower()
+    summary = page.summary.lower()
+    body = page.body_markdown.lower()
+    title_tokens = _tokenize(title)
+    summary_tokens = _tokenize(summary)
+    body_tokens = _tokenize(body)
+
+    token_score = 0
+    for token in requested_tokens:
+        if token in title_tokens:
+            token_score += 8
+        if token in summary_tokens:
+            token_score += 5
+        if token in body_tokens:
+            token_score += 2
+
     phrase_bonus = 0
-    if "chain rule" in message and "chain rule" in haystack:
-        phrase_bonus += 6
-    if "product rule" in message and "product rule" in haystack:
-        phrase_bonus += 6
-    if "homework" in message and "homework" in haystack:
-        phrase_bonus += 4
-    if "deadline" in message and "deadline" in haystack:
-        phrase_bonus += 4
-    if "refund" in message and "refund" in haystack:
-        phrase_bonus += 6
-    return token_matches + phrase_bonus
+    if normalized_query:
+        if title == normalized_query:
+            phrase_bonus += 12
+        elif normalized_query in title:
+            phrase_bonus += 8
+        if normalized_query in summary:
+            phrase_bonus += 5
+        if normalized_query in body:
+            phrase_bonus += 3
+
+    return token_score + phrase_bonus
 
 
 def _tokenize(value: str) -> set[str]:

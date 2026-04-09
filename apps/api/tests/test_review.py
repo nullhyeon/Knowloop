@@ -1,4 +1,7 @@
+import hashlib
 import json
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -25,7 +28,10 @@ REVIEW_SCHEMA_PATH = REPO_ROOT / "schemas" / "wiki_patch.json"
 
 
 def build_settings(tmp_path: Path) -> Settings:
-    return Settings(data_root=tmp_path / "d")
+    digest = hashlib.sha1(str(tmp_path).encode("utf-8")).hexdigest()[:10]
+    data_root = Path(tempfile.gettempdir()) / "kl" / digest
+    shutil.rmtree(data_root, ignore_errors=True)
+    return Settings(data_root=data_root)
 
 
 def build_client(tmp_path: Path) -> tuple[TestClient, Settings]:

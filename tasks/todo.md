@@ -39,10 +39,10 @@
 
 ## Next Slice
 
-- [ ] Codex Builder: implement dedicated wiki listing and detail endpoints
-- [ ] Gemini Pro Critic: review the wiki read slice for role exposure, contract clarity, and coupling
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the wiki read critic pass
-- [ ] Codex Reviewer: review the wiki read slice for correctness, contract drift, and missing tests
+- [x] Codex Builder: implement dedicated wiki listing and detail endpoints
+- [x] Gemini Pro Critic: review the wiki read slice for role exposure, contract clarity, and coupling
+- [x] Codex Critic fallback: not needed because Gemini Pro completed the wiki read critic pass
+- [x] Codex Reviewer: review the wiki read slice for correctness, contract drift, and missing tests
 - [ ] Codex Builder: implement instructor insight endpoints against fixture-driven tests
 - [ ] Gemini Pro Critic: review the instructor insight slice for privacy boundaries and aggregation drift
 - [ ] Codex Critic fallback: run when Gemini Pro cannot complete the insight critic pass

@@ -76,14 +76,17 @@ Planning lock documents:
 
 - [x] Task 2.1: Implement raw source registration and manifest updates
 - [ ] Task 2.2: Implement session write and session search
-- [ ] Task 2.3: Implement candidate creation from query/write-back flow
-- [ ] Task 2.4: Implement formal wiki lookup and learning-layer write targets
+- [x] Task 2.3: Implement candidate creation from query/write-back flow
+- [x] Task 2.4: Implement formal wiki lookup and learning-layer write targets
+- [x] Task 2.5: Implement dedicated wiki listing and detail endpoints
+- [ ] Task 2.6: Implement instructor insight endpoints against the locked role/privacy contracts
 
 ### Checkpoint: Core Pipeline
 
 - [ ] End-to-end local flow exists for a sample student question
 - [ ] Candidate items are created with source links
-- [ ] Query path reads the right context layers
+- [x] Query path reads the right context layers
+- [x] Dedicated wiki routes expose only the pages visible to the current role/domain scope
 
 ## Phase 3: Validation and Maintenance
 
@@ -112,4 +115,4 @@ Planning lock documents:
 
 - Should candidate promotion be stored as file frontmatter, SQLite state, or both?
 - Should the first ingest format be markdown, JSON, or mixed?
-- Which read path should be prioritized first: student query or instructor insight?
+- How much instructor insight should be computed on demand versus pre-aggregated into dedicated tables?

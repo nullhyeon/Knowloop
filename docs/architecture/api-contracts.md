@@ -258,7 +258,7 @@ Boundary rules:
 - student retrieval refs do not expose raw source metadata
 - open candidates are not returned as authoritative student answer evidence
 
-## 7. Review Workflow Routes
+## 6.4 Review Workflow Routes
 
 The review workflow is now implemented through dedicated candidate endpoints.
 
@@ -403,14 +403,76 @@ Rules:
 - drop is a status transition, not a delete
 - `operator` is not allowed to drop candidates in the MVP review flow
 
-## 8. Planned but Not Yet Implemented
+## 6.5 Wiki Read Routes
+
+The formal wiki browser is now implemented through dedicated read-only endpoints.
+
+### 6.5.1 `GET /api/v1/wiki/pages`
+
+Purpose:
+
+- list visible formal wiki pages in the current course/class scope
+- support scoped search across the formal wiki browser
+
+Allowed roles and domains:
+
+- `student` with `academic`
+- `instructor` with `academic`
+- `operator` with `operations`
+- `validator` with `review` or an explicit narrow domain (`academic` or `operations`)
+- `system` with omitted domain or `review` for full visibility, or an explicit narrow domain (`academic` or `operations`)
+
+Query parameters:
+
+- `q`: optional search query
+- `limit`, `offset`: pagination
+
+Rules:
+
+- `student` and `instructor` can only browse academic wiki domains
+- `operator` can only browse operations wiki pages
+- `validator` and `system` may browse both academic and operations pages from `review`, or narrow themselves with an explicit domain
+- results are always constrained to the current `course_id` and `class_id`
+
+Response body inside `data`:
+
+- `page_id`
+- `domain`
+- `title`
+- `summary`
+- `updated_at`
+
+### 6.5.2 `GET /api/v1/wiki/pages/{page_id}`
+
+Purpose:
+
+- load one visible wiki page by ID
+
+Rules:
+
+- page visibility still respects role/domain boundaries
+- callers cannot cross course/class scope by guessing page IDs
+
+Response body inside `data`:
+
+- `page_id`
+- `domain`
+- `title`
+- `summary`
+- `course_id`
+- `class_scope`
+- `updated_at`
+- `source_refs`
+- `candidate_refs`
+- `body_markdown`
+
+## 7. Planned but Not Yet Implemented
 
 The following workflow surfaces remain planned next:
 
-- dedicated wiki listing and detail endpoints
 - instructor insight endpoints
 
-## 9. Status Codes
+## 8. Status Codes
 
 Current route behavior uses these status classes:
 
@@ -423,7 +485,7 @@ Current route behavior uses these status classes:
 - `422 Unprocessable Entity`: request context or payload validation failed
 - `503 Service Unavailable`: storage lock or temporary persistence contention
 
-## 10. Contract Maintenance
+## 9. Contract Maintenance
 
 Any backend change that modifies:
 

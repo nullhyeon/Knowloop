@@ -1,4 +1,7 @@
+import hashlib
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -9,7 +12,9 @@ from knowloop_api.main import create_app
 
 
 def build_settings(tmp_path: Path) -> Settings:
-    data_root = tmp_path / "data"
+    digest = hashlib.sha1(str(tmp_path).encode("utf-8")).hexdigest()[:10]
+    data_root = Path(tempfile.gettempdir()) / "kl" / digest
+    shutil.rmtree(data_root, ignore_errors=True)
     return Settings(
         data_root=data_root,
     )
