@@ -6,7 +6,7 @@
     "X-Knowloop-Actor-Id": "ins-calculus-team",
     "X-Knowloop-Course-Id": "course-calculus-1",
     "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
-    "X-Knowloop-Domain": "review",
+    "X-Knowloop-Domain": "academic",
     "X-Request-Id": "req-fixture-approve-homework-faq",
     "Idempotency-Key": "idem-fixture-approve-homework-faq"
   },

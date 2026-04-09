@@ -258,7 +258,11 @@ def list_candidates(
 
     candidates = [
         CandidateItem.model_validate(json.loads(path.read_text(encoding="utf-8")))
-        for path in sorted(candidate_root.glob("**/*.json"))
+        for path in _iter_candidate_paths(
+            candidate_root,
+            kind=kind,
+            class_id=class_id,
+        )
     ]
 
     if kind is not None:
@@ -273,6 +277,48 @@ def list_candidates(
         key=lambda candidate: (candidate.created_at, candidate.candidate_id),
         reverse=True,
     )
+
+
+def _iter_candidate_paths(
+    candidate_root: Path,
+    *,
+    kind: CandidateKind | None,
+    class_id: str | None,
+) -> list[Path]:
+    paths: list[Path] = []
+    for root, pattern in _build_candidate_search_scopes(
+        candidate_root,
+        kind=kind,
+        class_id=class_id,
+    ):
+        if not root.exists():
+            continue
+        paths.extend(sorted(root.glob(pattern)))
+    return paths
+
+
+def _build_candidate_search_scopes(
+    candidate_root: Path,
+    *,
+    kind: CandidateKind | None,
+    class_id: str | None,
+) -> list[tuple[Path, str]]:
+    if kind is not None:
+        kind_root = candidate_root / CANDIDATE_KIND_DIRECTORIES[kind]
+        if class_id is not None:
+            return [(kind_root / class_id, "*.json")]
+        return [(kind_root, "*/*.json")]
+
+    if class_id is not None:
+        return [
+            (candidate_root / kind_directory / class_id, "*.json")
+            for kind_directory in CANDIDATE_KIND_DIRECTORIES.values()
+        ]
+
+    return [
+        (candidate_root / kind_directory, "*/*.json")
+        for kind_directory in CANDIDATE_KIND_DIRECTORIES.values()
+    ]
 
 
 def promote_candidate(

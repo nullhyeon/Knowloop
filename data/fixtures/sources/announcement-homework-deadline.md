@@ -1,6 +1,6 @@
 ---
 fixture_id: srcf-announcement-homework
-source_id: src-announcement-class-calculus-1-2026-spring-a-homework-01-deadline-20260408T104500Z
+source_id: src-announcement-acad-class-calculus-1-2026-spring-a-homework-01-4774b218-20260408T104500Z
 source_type: announcement
 title: Homework 01 Submission Deadline
 course_id: course-calculus-1

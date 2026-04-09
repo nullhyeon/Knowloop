@@ -248,6 +248,18 @@ Write-back:
 - not through the student query path
 - validator promotion actions belong to dedicated review endpoints
 
+### 8.5 Dedicated Review Endpoints
+
+Candidate promotion, merge, drop, and wiki patch preview live outside the query path.
+
+Workflow boundary rules:
+
+- `instructor` performs academic review actions with `X-Knowloop-Domain: academic`
+- `operator` performs read-only operations review actions (`list`, `detail`, `patch-preview`) with `X-Knowloop-Domain: operations`
+- `validator` and `system` perform dedicated review actions with `X-Knowloop-Domain: review`
+- the `/review/*` route family, not the domain header by itself, is what unlocks promotion actions
+- query routes must never inherit these review-only mutations implicitly
+
 ## 9. Non-goals
 
 The query path must not:

@@ -62,6 +62,11 @@ Header notes:
 - `X-Request-Id` is echoed back for tracing.
 - `Idempotency-Key` is the replay-safe mutation key for routes that support retry semantics.
 - role and domain combinations must satisfy the role-permission contract.
+- dedicated review endpoints still use role-specific domain ownership:
+  - `instructor` review requests use `academic`
+  - `operator` review requests use `operations`
+  - `validator` and `system` review requests use `review`
+- `/api/v1/review/*` is the workflow boundary for candidate promotion actions; `X-Knowloop-Domain` alone does not grant review authority.
 
 ## 5. Response Envelopes
 
@@ -253,17 +258,159 @@ Boundary rules:
 - student retrieval refs do not expose raw source metadata
 - open candidates are not returned as authoritative student answer evidence
 
-## 7. Planned but Not Yet Implemented
+## 7. Review Workflow Routes
 
-The following workflow surfaces are planned next, but are not part of the implemented HTTP surface yet:
+The review workflow is now implemented through dedicated candidate endpoints.
 
-- review candidate actions such as approve, merge, drop, and patch preview
+### 7.1 `GET /api/v1/review/candidates`
+
+Purpose:
+
+- list reviewable candidates in the current course/class scope
+- default to `status=open`
+
+Allowed roles and domains:
+
+- `instructor` with `academic`
+- `operator` with `operations`
+- `validator` with `review`
+- `system` with `review`
+
+Query parameters:
+
+- `status`: optional `open`, `promoted`, `merged`, `dropped`
+- `kind`: optional candidate kind
+- `limit`, `offset`: pagination
+
+Response body inside `data`:
+
+- candidate summaries derived from `CandidateItem`
+- each item includes `review_domain`
+
+### 7.2 `GET /api/v1/review/candidates/{candidate_id}`
+
+Purpose:
+
+- load one review candidate with audit history
+
+Response body inside `data`:
+
+- `candidate`
+- `audit_events`
+- `available_actions`
+
+### 7.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
+
+Purpose:
+
+- generate the wiki patch preview without mutating candidate status
+
+Request body:
+
+```json
+{
+  "target_page_id": "page-faq-homework-submission",
+  "target_path": "data/wiki/faq/homework-submission.md",
+  "notes": "Optional preview notes."
+}
+```
+
+Response body inside `data`:
+
+- `candidate`
+- `patch`
+- `before_markdown`
+- `after_markdown`
+
+Rules:
+
+- preview is read-only
+- preview does not require `Idempotency-Key`
+- preview must still satisfy role and scope boundaries
+- `operator` may use preview for operations-domain candidates but remains read-only for review mutations
+
+### 7.4 `POST /api/v1/review/candidates/{candidate_id}/approve`
+
+Purpose:
+
+- promote an open candidate into formal wiki through the dedicated review workflow
+
+Request body:
+
+```json
+{
+  "target_page_id": "page-faq-homework-submission",
+  "target_path": "data/wiki/faq/homework-submission.md",
+  "approval_notes": "Promote to shared FAQ for the course wiki."
+}
+```
+
+Rules:
+
+- requires `Idempotency-Key`
+- `instructor` may approve academic candidates
+- `operator` is read-only in the MVP review flow and cannot approve, merge, or drop candidates
+- `validator` may approve through review-scoped requests
+- `target_path` must match the canonical wiki path for `target_page_id`
+- successful approval promotes the candidate first, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch and closes with `candidate_wiki_synced`
+
+Response body inside `data`:
+
+- `candidate`
+- `patch`
+- `wiki_page`
+
+### 7.5 `POST /api/v1/review/candidates/{candidate_id}/merge`
+
+Purpose:
+
+- merge a duplicate open candidate into an active target candidate
+
+Request body:
+
+```json
+{
+  "target_candidate_id": "cand-misconception-class-calculus-1-2026-spring-a-chain-rule-product-rule-mixup-20260408T112000Z",
+  "merge_notes": "Merge duplicate misconception into the stronger canonical candidate."
+}
+```
+
+Rules:
+
+- requires `Idempotency-Key`
+- target candidate must remain active
+- merge stays inside the same course/class scope
+- `operator` is not allowed to merge candidates in the MVP review flow
+
+### 7.6 `POST /api/v1/review/candidates/{candidate_id}/drop`
+
+Purpose:
+
+- mark an open candidate as dropped without deleting its history
+
+Request body:
+
+```json
+{
+  "reason": "insufficient_shared_value",
+  "drop_notes": "Keep the question in audit history until stronger evidence appears."
+}
+```
+
+Rules:
+
+- requires `Idempotency-Key`
+- drop is a status transition, not a delete
+- `operator` is not allowed to drop candidates in the MVP review flow
+
+## 8. Planned but Not Yet Implemented
+
+The following workflow surfaces remain planned next:
+
 - dedicated wiki listing and detail endpoints
 - instructor insight endpoints
 
-These remain locked at the document level, but should not be presented as already implemented runtime behavior.
-
-## 8. Status Codes
+## 9. Status Codes
 
 Current route behavior uses these status classes:
 
@@ -276,7 +423,7 @@ Current route behavior uses these status classes:
 - `422 Unprocessable Entity`: request context or payload validation failed
 - `503 Service Unavailable`: storage lock or temporary persistence contention
 
-## 9. Contract Maintenance
+## 10. Contract Maintenance
 
 Any backend change that modifies:
 

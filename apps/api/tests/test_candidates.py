@@ -19,6 +19,7 @@ from knowloop_api.db.bootstrap import bootstrap_storage
 from knowloop_api.services.candidates import (
     ActorRole,
     CandidateItem,
+    CandidateKind,
     CandidateNotFoundError,
     CandidateStateError,
     CandidateStatus,
@@ -1695,6 +1696,110 @@ def test_list_candidates_returns_newest_first(tmp_path: Path) -> None:
     assert [candidate.candidate_id for candidate in candidates] == [
         "cand-misconception-newer",
         "cand-faq-older",
+    ]
+
+
+def test_list_candidates_filters_by_class_across_kinds(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    requested_class = "class-calculus-1-2026-spring-a"
+    other_class = "class-calculus-1-2026-spring-b"
+
+    same_class_faq = load_candidate_fixture("open-faq-homework-deadline.json")
+    same_class_misconception = load_candidate_fixture("open-misconception-chain-rule.json")
+    other_class_candidate = load_candidate_fixture("open-operations-refund.json").model_copy(
+        update={
+            "candidate_id": "cand-operations-other-class",
+            "class_id": other_class,
+            "course_id": "course-calculus-1",
+        }
+    )
+
+    create_candidate(settings, same_class_faq, actor_role=ActorRole.SYSTEM, actor_id="system")
+    create_candidate(
+        settings,
+        same_class_misconception,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system",
+    )
+    create_candidate(
+        settings,
+        other_class_candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system",
+    )
+
+    candidates = list_candidates(settings, class_id=requested_class)
+
+    assert {candidate.class_id for candidate in candidates} == {requested_class}
+    assert {candidate.candidate_id for candidate in candidates} == {
+        same_class_faq.candidate_id,
+        same_class_misconception.candidate_id,
+    }
+
+
+def test_build_candidate_search_scopes_uses_structural_paths() -> None:
+    candidate_root = Path("C:/tmp/knowloop/data/candidate")
+
+    assert candidate_service._build_candidate_search_scopes(
+        candidate_root,
+        kind=CandidateKind.FAQ,
+        class_id="class-calculus-1-2026-spring-a",
+    ) == [
+        (
+            candidate_root / "faq" / "class-calculus-1-2026-spring-a",
+            "*.json",
+        )
+    ]
+
+    assert candidate_service._build_candidate_search_scopes(
+        candidate_root,
+        kind=None,
+        class_id="class-calculus-1-2026-spring-a",
+    ) == [
+        (
+            candidate_root / "misconceptions" / "class-calculus-1-2026-spring-a",
+            "*.json",
+        ),
+        (
+            candidate_root / "faq" / "class-calculus-1-2026-spring-a",
+            "*.json",
+        ),
+        (
+            candidate_root / "interventions" / "class-calculus-1-2026-spring-a",
+            "*.json",
+        ),
+        (
+            candidate_root / "unresolved-questions" / "class-calculus-1-2026-spring-a",
+            "*.json",
+        ),
+        (
+            candidate_root / "operations-notes" / "class-calculus-1-2026-spring-a",
+            "*.json",
+        ),
+    ]
+
+    assert candidate_service._build_candidate_search_scopes(
+        candidate_root,
+        kind=CandidateKind.MISCONCEPTION,
+        class_id=None,
+    ) == [
+        (
+            candidate_root / "misconceptions",
+            "*/*.json",
+        )
+    ]
+
+    assert candidate_service._build_candidate_search_scopes(
+        candidate_root,
+        kind=None,
+        class_id=None,
+    ) == [
+        (candidate_root / "misconceptions", "*/*.json"),
+        (candidate_root / "faq", "*/*.json"),
+        (candidate_root / "interventions", "*/*.json"),
+        (candidate_root / "unresolved-questions", "*/*.json"),
+        (candidate_root / "operations-notes", "*/*.json"),
     ]
 
 

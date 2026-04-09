@@ -16,15 +16,16 @@
 ## Next Up
 
 - [x] Planning lock docs completed and wired into the harness
-- [ ] Gemini Pro Critic: perform one final contract review against `data-contracts`, `query-writeback-policy`, `api-contracts`, and `fixture-catalog`
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the critic pass
 - [x] Codex Builder: implement storage bootstrap for `sessions.db` and `audit.db`
 - [x] Codex Reviewer: review the storage bootstrap slice for contract drift and missing tests
 - [x] Codex Builder: create the first canonical fixture pack from `docs/product/fixture-catalog.md`
 - [x] Codex Builder: define candidate lifecycle write helpers
-- [ ] Gemini Pro Critic: review the candidate lifecycle slice for idempotency, ordering, and role-boundary drift
-- [ ] Codex Critic fallback: review the candidate lifecycle slice when Gemini Pro is blocked
+- [x] Codex Critic fallback: review the candidate lifecycle slice when Gemini Pro is blocked
 - [x] Codex Reviewer: review the candidate lifecycle slice for contract drift and missing tests
+- [x] Codex Builder: implement dedicated review workflow endpoints
+- [x] Gemini Pro Critic: review the review workflow slice for route boundaries, replay safety, and scaling gaps
+- [x] Codex Critic fallback: follow up on the review workflow slice and harden the flagged gaps
+- [x] Codex Reviewer: review the review workflow slice for correctness, replay coverage, and contract drift
 
 ## After First Storage Slice
 
@@ -35,6 +36,17 @@
 - [x] Codex Builder: implement `POST /api/v1/query/respond` against fixture-driven tests
 - [x] Codex Critic fallback: review the `query/respond` slice for write-back integrity, role boundaries, and hidden coupling
 - [x] Codex Reviewer: review the `query/respond` slice for correctness, contract drift, and missing tests
+
+## Next Slice
+
+- [ ] Codex Builder: implement dedicated wiki listing and detail endpoints
+- [ ] Gemini Pro Critic: review the wiki read slice for role exposure, contract clarity, and coupling
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the wiki read critic pass
+- [ ] Codex Reviewer: review the wiki read slice for correctness, contract drift, and missing tests
+- [ ] Codex Builder: implement instructor insight endpoints against fixture-driven tests
+- [ ] Gemini Pro Critic: review the instructor insight slice for privacy boundaries and aggregation drift
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the insight critic pass
+- [ ] Codex Reviewer: review the instructor insight slice for correctness, contract drift, and missing tests
 
 ## Ready-To-Assign Prompt Targets
 

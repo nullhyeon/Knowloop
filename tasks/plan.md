@@ -87,7 +87,7 @@ Planning lock documents:
 
 ## Phase 3: Validation and Maintenance
 
-- [ ] Task 3.1: Add promotion rules and validator interfaces
+- [x] Task 3.1: Add promotion rules and validator interfaces
 - [ ] Task 3.2: Add stale detection and orphan checks
 - [ ] Task 3.3: Add maintenance report output
 - [ ] Task 3.4: Document runbook and handoff expectations
