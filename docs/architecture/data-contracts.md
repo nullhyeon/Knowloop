@@ -303,7 +303,7 @@ Layer responsibilities:
 - `candidate/`: review inbox material in JSON form
 - `wiki/`: formal verified Markdown pages
 - `learning/`: student-scoped learning support files
-- `meta/`: manifest, lint state, and SQLite databases
+- `meta/`: manifest, scoped maintenance reports, and SQLite databases
 - `fixtures/`: repository-safe test and demo seeds
 
 ## 8. Authority Rules
@@ -318,6 +318,18 @@ The authoritative store for each layer is:
 - audit: SQLite `audit_events` and `mutation_requests`
 
 Exported or derived views must follow the authoritative store, not the other way around.
+
+Scoped maintenance report path:
+
+```text
+data/meta/maintenance/{course_id}/{class_id}/lint-status.json
+```
+
+Rules:
+
+- maintenance reports are course/class scoped, not global
+- the maintenance status surface reads the scoped persisted report for the current request context
+- report generation must not overwrite another class scope's maintenance output
 
 ## 9. Implementation Notes
 

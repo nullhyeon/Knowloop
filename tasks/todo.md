@@ -57,10 +57,17 @@
 
 ## Coming Next
 
-- [ ] Codex Builder: implement maintenance and stale-detection outputs
-- [ ] Gemini Pro Critic: review the maintenance slice for operational drift and false positives
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the maintenance critic pass
-- [ ] Codex Reviewer: review the maintenance slice for correctness, contract drift, and missing tests
+- [x] Codex Builder: implement maintenance and stale-detection outputs
+- [x] Gemini Pro Critic: attempted to review the maintenance slice but did not complete in time
+- [x] Codex Critic fallback: review the maintenance slice when Gemini Pro could not complete the critic pass
+- [x] Codex Reviewer: review the maintenance slice for correctness, contract drift, and missing tests
+
+## Next After Maintenance
+
+- [ ] Codex Builder: document backend runbook and handoff expectations
+- [ ] Gemini Pro Critic: review the runbook slice for operational clarity and handoff gaps
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the runbook critic pass
+- [ ] Codex Reviewer: review the runbook slice for contract drift and missing operator guidance
 
 ## Ready-To-Assign Prompt Targets
 

@@ -23,5 +23,5 @@ Do not commit:
 - `candidate/` unverified or transitional knowledge
 - `wiki/` promoted knowledge artifacts
 - `learning/` student-specific learning outputs
-- `meta/` manifests, lint status, and local database files
+- `meta/` manifests, scoped maintenance status, and local database files
 - `fixtures/` synthetic inputs and expected snapshots for tests and demos

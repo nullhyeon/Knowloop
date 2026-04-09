@@ -50,6 +50,15 @@ SESSION_SEARCH_ROUTE_DOMAINS = {
     ActorRole.INSTRUCTOR: RequestDomain.ACADEMIC,
     ActorRole.OPERATOR: RequestDomain.OPERATIONS,
 }
+MAINTENANCE_REPORT_ROUTE_DOMAINS = {
+    ActorRole.VALIDATOR: RequestDomain.REVIEW,
+    ActorRole.SYSTEM: RequestDomain.REVIEW,
+}
+MAINTENANCE_STATUS_ROUTE_DOMAINS = {
+    ActorRole.INSTRUCTOR: RequestDomain.ACADEMIC,
+    ActorRole.VALIDATOR: RequestDomain.REVIEW,
+    ActorRole.SYSTEM: RequestDomain.REVIEW,
+}
 
 
 def get_request_context(
@@ -160,6 +169,57 @@ def get_session_search_request_context(
                 "Session search routes require the "
                 f"{expected_domain.value} domain for this role."
             ),
+            request_id=context.request_id,
+            details={
+                "domain": context.domain.value if context.domain is not None else None,
+                "role": context.role.value,
+            },
+        )
+    return context
+
+
+def get_maintenance_report_request_context(
+    context: Annotated[RequestContext, Depends(get_request_context)],
+) -> RequestContext:
+    return _require_route_domain(
+        context,
+        allowed_domains=MAINTENANCE_REPORT_ROUTE_DOMAINS,
+        error_message="This role cannot run maintenance reports.",
+        domain_message="Maintenance report runs require the review domain for this role.",
+    )
+
+
+def get_maintenance_status_request_context(
+    context: Annotated[RequestContext, Depends(get_request_context)],
+) -> RequestContext:
+    return _require_route_domain(
+        context,
+        allowed_domains=MAINTENANCE_STATUS_ROUTE_DOMAINS,
+        error_message="This role cannot view maintenance status.",
+        domain_message="Maintenance status requires the expected domain for this role.",
+    )
+
+
+def _require_route_domain(
+    context: RequestContext,
+    *,
+    allowed_domains: dict[ActorRole, RequestDomain],
+    error_message: str,
+    domain_message: str,
+) -> RequestContext:
+    expected_domain = allowed_domains.get(context.role)
+    if expected_domain is None:
+        raise ApiError(
+            status_code=403,
+            code="forbidden_scope",
+            message=error_message,
+            request_id=context.request_id,
+        )
+    if context.domain is not expected_domain:
+        raise ApiError(
+            status_code=403,
+            code="forbidden_scope",
+            message=domain_message,
             request_id=context.request_id,
             details={
                 "domain": context.domain.value if context.domain is not None else None,

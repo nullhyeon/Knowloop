@@ -262,7 +262,7 @@ Boundary rules:
 
 The review workflow is now implemented through dedicated candidate endpoints.
 
-### 7.1 `GET /api/v1/review/candidates`
+### 6.4.1 `GET /api/v1/review/candidates`
 
 Purpose:
 
@@ -287,7 +287,7 @@ Response body inside `data`:
 - candidate summaries derived from `CandidateItem`
 - each item includes `review_domain`
 
-### 7.2 `GET /api/v1/review/candidates/{candidate_id}`
+### 6.4.2 `GET /api/v1/review/candidates/{candidate_id}`
 
 Purpose:
 
@@ -299,7 +299,7 @@ Response body inside `data`:
 - `audit_events`
 - `available_actions`
 
-### 7.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
+### 6.4.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
 
 Purpose:
 
@@ -329,7 +329,7 @@ Rules:
 - preview must still satisfy role and scope boundaries
 - `operator` may use preview for operations-domain candidates but remains read-only for review mutations
 
-### 7.4 `POST /api/v1/review/candidates/{candidate_id}/approve`
+### 6.4.4 `POST /api/v1/review/candidates/{candidate_id}/approve`
 
 Purpose:
 
@@ -360,7 +360,7 @@ Response body inside `data`:
 - `patch`
 - `wiki_page`
 
-### 7.5 `POST /api/v1/review/candidates/{candidate_id}/merge`
+### 6.4.5 `POST /api/v1/review/candidates/{candidate_id}/merge`
 
 Purpose:
 
@@ -382,7 +382,7 @@ Rules:
 - merge stays inside the same course/class scope
 - `operator` is not allowed to merge candidates in the MVP review flow
 
-### 7.6 `POST /api/v1/review/candidates/{candidate_id}/drop`
+### 6.4.6 `POST /api/v1/review/candidates/{candidate_id}/drop`
 
 Purpose:
 
@@ -518,7 +518,6 @@ Query parameters:
 Rules:
 
 - patterns group related open academic candidates instead of returning the review inbox shape directly
-- response may include candidate IDs for drill-down into the dedicated review workflow, but not raw session question bodies
 
 Response body inside `data`:
 
@@ -594,11 +593,78 @@ Rules:
 - shares the same redaction rules as `GET /api/v1/sessions/search`
 - acts as the default recent-history surface when no search query is provided
 
+## 6.8 Maintenance Routes
+
+The maintenance surface is implemented through a dedicated report generator and a read-only status endpoint.
+
+### 6.8.1 `GET /api/v1/maintenance/report`
+
+Purpose:
+
+- generate the current maintenance report for stale candidates and orphan wiki references
+- persist the scoped report to `data/meta/maintenance/{course_id}/{class_id}/lint-status.json`
+
+Allowed roles and domains:
+
+- `validator` with `review`
+- `system` with `review`
+
+Rules:
+
+- this route is operational and read-model producing, so it is restricted to review-scoped maintenance owners
+- stale open candidates older than the configured threshold are returned as warnings
+- orphan `candidate_refs` and orphan `source_refs` in formal wiki pages are returned as errors
+- report ordering is deterministic so persisted maintenance output stays diff-friendly
+
+Response body inside `data`:
+
+- `version`
+- `course_id`
+- `class_id`
+- `status`
+- `last_run_at`
+- `health_score`
+- `review_queue_count`
+- `summary`
+- `checks`
+
+### 6.8.2 `GET /api/v1/maintenance/status`
+
+Purpose:
+
+- load the latest persisted maintenance report without recomputing it
+
+Allowed roles and domains:
+
+- `instructor` with `academic`
+- `validator` with `review`
+- `system` with `review`
+
+Rules:
+
+- this route is read-only and does not generate a report when none exists yet
+- when no report has been generated, the route returns a default `not-run` payload
+- instructors may inspect maintenance health for course operations, but they cannot trigger report generation
+- maintenance status is a summary surface and does not expose raw session question bodies
+- the returned status is always scoped to the requested `course_id` and `class_id`
+
+Response body inside `data`:
+
+- `version`
+- `course_id`
+- `class_id`
+- `status`
+- `last_run_at`
+- `health_score`
+- `review_queue_count`
+- `summary`
+- `checks`
+
 ## 7. Planned but Not Yet Implemented
 
 The following workflow surfaces remain planned next:
 
-- maintenance and stale-detection outputs
+- runbook and handoff expectations
 
 ## 8. Status Codes
 
