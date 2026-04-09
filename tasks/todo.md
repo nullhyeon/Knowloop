@@ -29,7 +29,9 @@
 ## After First Storage Slice
 
 - [x] Gemini Pro Critic: review storage boundaries and identify over-coupled responsibilities
-- [ ] Codex Builder: implement raw source registration and manifest updates
+- [x] Codex Builder: implement raw source registration and manifest updates
+- [x] Codex Critic fallback: review the raw source slice for boundary, validation, and contract drift
+- [x] Codex Reviewer: review the raw source slice for correctness and missing tests
 - [ ] Codex Builder: implement `POST /api/v1/query/respond` against fixture-driven tests
 
 ## Ready-To-Assign Prompt Targets

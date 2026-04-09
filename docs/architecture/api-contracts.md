@@ -335,6 +335,7 @@ MVP list endpoint는 아래 query parameter를 공통 지원한다.
   "status": "ready",
   "checks": {
     "data_root": "ok",
+    "manifest": "ok",
     "sessions_db": "ok",
     "audit_db": "ok"
   }
@@ -356,6 +357,12 @@ MVP list endpoint는 아래 query parameter를 공통 지원한다.
 - `instructor`
 - `operator`
 - `system`
+
+도메인 규칙:
+
+- 대부분의 `source_type`은 academic 또는 operations 중 하나로 고정된다.
+- `announcement`는 `X-Knowloop-Domain`에 따라 academic 또는 operations로 등록될 수 있다.
+- `system`이 `announcement`를 등록할 때는 `X-Knowloop-Domain`을 명시해야 한다.
 
 request body:
 
@@ -379,6 +386,7 @@ response data:
 {
   "source_id": "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z",
   "source_type": "lecture_note",
+  "domain": "academic",
   "title": "Week 03 Chain Rule",
   "status": "registered",
   "stored_path": "data/raw/lecture-note/class-calculus-1-2026-spring-a/...",
@@ -1084,3 +1092,11 @@ API 구현 우선순위는 아래가 적절하다.
 Knowloop MVP API 계약은
 `query는 답변과 write-back 계획을 반환하고, review endpoint만 candidate lifecycle과 wiki 반영을 변경하며, role별 읽기 범위는 path와 validation 양쪽에서 강제한다`
 를 핵심 원칙으로 한다.
+
+## 18. Source Registration Note
+
+- `announcement` registrations may produce `source_id` values such as `src-announcement-acad-...` or `src-announcement-ops-...`.
+- The `stored_path` for those records is segmented by domain: `data/raw/announcement/<domain>/<class-id>/...`.
+- `source_id` values keep a short readable title prefix plus a short hash suffix so registrations remain stable for non-ASCII and long-prefix titles.
+- `POST /api/v1/sources/register` requires `Idempotency-Key` so retries can safely recover the same raw source.
+- When storage is temporarily locked by another writer, the endpoint returns `503` with `error.code = "storage_busy"`.

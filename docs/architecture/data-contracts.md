@@ -194,6 +194,7 @@ MVP에서는 외부 인증 연동 대신 repository-safe fixture 기준 ID를 �
 필수 필드:
 - `source_id`
 - `source_type`
+- `domain`
 - `title`
 - `class_id`
 - `course_id`
@@ -217,6 +218,9 @@ MVP에서는 외부 인증 연동 대신 repository-safe fixture 기준 ID를 �
 - `announcement`
 - `operations_note`
 - `counseling_note`
+
+`announcement`는 academic / operations 양쪽 domain에 존재할 수 있으므로,
+`source_type`만으로는 경계를 확정하지 않고 `domain`을 함께 본다.
 
 ## 5.2 SessionRecord
 
@@ -544,3 +548,10 @@ MVP에서는 완전한 정규화보다 이 공통 키들의 일관성을 우선�
 Knowloop MVP의 데이터 계약은
 `사람이 읽을 수 있는 ID`, `추적 가능한 source_refs`, `예측 가능한 경로`, `레이어별 분리`
 이 네 가지를 중심으로 설계한다.
+
+## 10. Flexible Domain Source Note
+
+- `announcement` source records may exist in both `academic` and `operations` domains.
+- To prevent cross-domain collisions, flexible-domain `source_id` values include a short domain token such as `acad` or `ops`.
+- Raw files for flexible-domain sources are stored under `data/raw/announcement/<domain>/<class-id>/...`.
+- Source title slugs are collision-resistant: Knowloop keeps a short human-readable prefix and appends a short hash suffix so non-ASCII titles and long-prefix titles do not collapse into the same `source_id`.

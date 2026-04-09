@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from knowloop_api.core.config import Settings
+from knowloop_api.db.manifest import ensure_manifest_exists, manifest_status
 
 SESSIONS_SCHEMA_STATEMENTS = [
     """
@@ -162,6 +163,7 @@ MUTATION_REQUEST_REQUIRED_PRIMARY_KEY = (
 def bootstrap_storage(settings: Settings) -> None:
     settings.data_root.mkdir(parents=True, exist_ok=True)
     settings.meta_root.mkdir(parents=True, exist_ok=True)
+    ensure_manifest_exists(settings)
 
     _bootstrap_sqlite_database(settings.sessions_db_path, SESSIONS_SCHEMA_STATEMENTS)
     _bootstrap_sqlite_database(settings.audit_db_path, AUDIT_SCHEMA_STATEMENTS)
@@ -170,6 +172,7 @@ def bootstrap_storage(settings: Settings) -> None:
 def build_storage_readiness_payload(settings: Settings) -> dict[str, object]:
     checks = {
         "data_root": _status_for_path(settings.data_root),
+        "manifest": manifest_status(settings),
         "sessions_db": _status_for_database(
             settings.sessions_db_path,
             table_columns={"sessions": SESSIONS_REQUIRED_COLUMNS},

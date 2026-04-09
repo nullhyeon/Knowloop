@@ -74,7 +74,7 @@ Planning lock documents:
 
 ## Phase 2: Ingest and Query
 
-- [ ] Task 2.1: Implement raw source registration and manifest updates
+- [x] Task 2.1: Implement raw source registration and manifest updates
 - [ ] Task 2.2: Implement session write and session search
 - [ ] Task 2.3: Implement candidate creation from query/write-back flow
 - [ ] Task 2.4: Implement formal wiki lookup and learning-layer write targets

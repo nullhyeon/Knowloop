@@ -70,6 +70,7 @@ def test_api_health_endpoint_is_available(tmp_path: Path) -> None:
 def test_storage_bootstrap_creates_expected_databases_and_tables(tmp_path: Path) -> None:
     _client, settings = build_client(tmp_path)
 
+    assert (settings.meta_root / "manifest.json").exists()
     assert settings.sessions_db_path.exists()
     assert settings.audit_db_path.exists()
     assert {"sessions"}.issubset(read_table_names(settings.sessions_db_path))
@@ -178,6 +179,7 @@ def test_readiness_endpoints_report_storage_checks(tmp_path: Path) -> None:
         "status": "ready",
         "checks": {
             "data_root": "ok",
+            "manifest": "ok",
             "sessions_db": "ok",
             "audit_db": "ok",
         },
@@ -189,6 +191,7 @@ def test_readiness_endpoints_report_storage_checks(tmp_path: Path) -> None:
             "status": "ready",
             "checks": {
                 "data_root": "ok",
+                "manifest": "ok",
                 "sessions_db": "ok",
                 "audit_db": "ok",
             },
@@ -241,6 +244,7 @@ def test_storage_readiness_reports_partial_schema_as_not_ready(tmp_path: Path) -
         "status": "not_ready",
         "checks": {
             "data_root": "ok",
+            "manifest": "missing",
             "sessions_db": "missing",
             "audit_db": "missing",
         },
@@ -319,6 +323,7 @@ def test_storage_readiness_reports_invalid_primary_keys_as_not_ready(
         "status": "not_ready",
         "checks": {
             "data_root": "ok",
+            "manifest": "missing",
             "sessions_db": "missing",
             "audit_db": "missing",
         },
@@ -340,6 +345,7 @@ def test_storage_readiness_reports_corrupt_database_files_as_not_ready(
         "status": "not_ready",
         "checks": {
             "data_root": "ok",
+            "manifest": "missing",
             "sessions_db": "missing",
             "audit_db": "missing",
         },

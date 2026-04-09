@@ -10,20 +10,13 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from knowloop_api.core.config import Settings
+from knowloop_api.core.contracts import ActorRole
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
     list_audit_events,
     mark_mutation_request_applied,
 )
-
-
-class ActorRole(StrEnum):
-    STUDENT = "student"
-    INSTRUCTOR = "instructor"
-    OPERATOR = "operator"
-    VALIDATOR = "validator"
-    SYSTEM = "system"
 
 
 class CandidateKind(StrEnum):
