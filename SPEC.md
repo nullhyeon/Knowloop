@@ -14,6 +14,7 @@ The current slice is still not the full product. The harness and runtime foundat
 - keep the instructor insight surface aggregated and privacy-safe
 - keep the session search surface role-aware and redaction-safe
 - keep the maintenance report surface actionable and deterministic
+- document operational runbook and handoff expectations for the current backend state
 
 Primary users for the current slice:
 

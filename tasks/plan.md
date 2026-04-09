@@ -83,8 +83,8 @@ Planning lock documents:
 
 ### Checkpoint: Core Pipeline
 
-- [ ] End-to-end local flow exists for a sample student question
-- [ ] Candidate items are created with source links
+- [x] End-to-end local flow exists for a sample student question
+- [x] Candidate items are created with source links
 - [x] Query path reads the right context layers
 - [x] Dedicated wiki routes expose only the pages visible to the current role/domain scope
 - [x] Instructor insight routes stay aggregate-first and avoid raw student transcript exposure
@@ -95,7 +95,7 @@ Planning lock documents:
 - [x] Task 3.1: Add promotion rules and validator interfaces
 - [x] Task 3.2: Add stale detection and orphan checks
 - [x] Task 3.3: Add maintenance report output
-- [ ] Task 3.4: Document runbook and handoff expectations
+- [x] Task 3.4: Document runbook and handoff expectations
 
 ### Checkpoint: Backend MVP Ready
 

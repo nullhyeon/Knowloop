@@ -35,6 +35,7 @@ Knowloop is a backend-first workspace for an education-focused memory OS:
 - `docs/product/demo-script.md`
 - `docs/product/mvp-patterns.md`
 - `docs/development/agent-harness.md`
+- `docs/development/backend-runbook.md`
 
 ## Model Policy
 
@@ -69,6 +70,11 @@ cd C:\Users\wowjd\Desktop\Knowloop
 
 ## Agent Sessions
 
+Script naming:
+
+- `start-*.ps1` opens an interactive agent session
+- `run-*.ps1` runs a focused one-shot pass for critique or review
+
 Check auth state:
 
 ```powershell
@@ -85,6 +91,12 @@ Run a final Codex review on local changes:
 
 ```powershell
 .\scripts\run-codex-review.ps1
+```
+
+Run the Codex Critic fallback on local changes:
+
+```powershell
+.\scripts\run-codex-critic.ps1
 ```
 
 Reconnect Codex if ever needed:

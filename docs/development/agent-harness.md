@@ -11,11 +11,17 @@ For the human-readable doc map, start with `docs/README.md`.
 - References: `.agents/references/`
 - Prompt starters: `.agents/prompts/`
 
+Script naming:
+
+- `start-*.ps1` opens an interactive agent session
+- `run-*.ps1` executes a focused one-shot pass against the current worktree
+
 ## Canonical Instruction Files
 
 - Primary: `AGENTS.md`
 - Gemini supplement: `GEMINI.md`
 - Working artifacts: `docs/README.md`, `SPEC.md`, `tasks/plan.md`, `tasks/todo.md`
+- Operations guide: `docs/development/backend-runbook.md`
 
 ## The Four Roles
 
@@ -100,6 +106,8 @@ This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 4. Codex Builder integrates valid critique.
 5. Codex Reviewer performs final diff review.
 6. Update `tasks/todo.md` and relevant docs.
+
+Use `docs/development/backend-runbook.md` for day-to-day operating steps, handoff expectations, and troubleshooting.
 
 ## Authentication Status
 

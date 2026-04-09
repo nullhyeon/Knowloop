@@ -19,7 +19,8 @@ This directory is organized so product, architecture, research, and development 
 13. `product/pre-implementation-planning-checklist.md`
 14. `product/mvp-patterns.md`
 15. `development/agent-harness.md`
-16. `research/reference-reading-guide.md` (optional deep-dive)
+16. `development/backend-runbook.md`
+17. `research/reference-reading-guide.md` (optional deep-dive)
 
 ## Directory Map
 
@@ -46,6 +47,7 @@ This directory is organized so product, architecture, research, and development 
 - `architecture/system-diagrams.md`: mermaid diagrams for use cases, data flow, and sequences
 - `product/mvp-patterns.md`: which external patterns were adopted or intentionally excluded
 - `development/agent-harness.md`: how Codex and Gemini work inside this repository
+- `development/backend-runbook.md`: how to operate, verify, troubleshoot, and hand off the backend
 - `development/planning-audit.md`: the current cross-document audit status before implementation
 - `research/reference-reading-guide.md`: the research trail behind the architecture decisions
 

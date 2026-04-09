@@ -64,10 +64,17 @@
 
 ## Next After Maintenance
 
-- [ ] Codex Builder: document backend runbook and handoff expectations
-- [ ] Gemini Pro Critic: review the runbook slice for operational clarity and handoff gaps
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the runbook critic pass
-- [ ] Codex Reviewer: review the runbook slice for contract drift and missing operator guidance
+- [x] Codex Builder: document backend runbook and handoff expectations
+- [x] Gemini Pro Critic: review the runbook slice for operational clarity and handoff gaps
+- [x] Codex Critic fallback: not needed because Gemini Pro completed the runbook critic pass
+- [x] Codex Reviewer: review the runbook slice for contract drift and missing operator guidance
+
+## Next Planning Target
+
+- [ ] Codex Builder: strengthen end-to-end query fixture coverage around answer basis and write-back outputs
+- [ ] Gemini Pro Critic: review the next query-hardening slice for hidden coupling and test blind spots
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the next query-hardening critic pass
+- [ ] Codex Reviewer: review the next query-hardening slice for correctness, contract drift, and missing tests
 
 ## Ready-To-Assign Prompt Targets
 
