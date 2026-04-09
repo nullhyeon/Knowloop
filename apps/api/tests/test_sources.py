@@ -1406,9 +1406,7 @@ def test_register_source_endpoint_returns_conflict_for_non_idempotent_collision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _settings = build_client(tmp_path)
-    fixed_source_id = (
-        "src-lecture-note-class-calculus-1-2026-spring-a-collision-20260408T103000Z"
-    )
+    fixed_source_id = "src-lecture-note-class-calculus-1-2026-spring-a-collision-20260408T103000Z"
     original_build_source_id = source_service.build_source_id
     calls = {"count": 0}
 

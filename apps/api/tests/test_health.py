@@ -22,9 +22,7 @@ def build_client(tmp_path: Path) -> tuple[TestClient, Settings]:
 
 def read_table_names(database_path: Path) -> set[str]:
     with sqlite3.connect(database_path) as connection:
-        rows = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
 
     return {row[0] for row in rows}
 
@@ -74,9 +72,7 @@ def test_storage_bootstrap_creates_expected_databases_and_tables(tmp_path: Path)
     assert settings.sessions_db_path.exists()
     assert settings.audit_db_path.exists()
     assert {"sessions"}.issubset(read_table_names(settings.sessions_db_path))
-    assert {"audit_events", "mutation_requests"}.issubset(
-        read_table_names(settings.audit_db_path)
-    )
+    assert {"audit_events", "mutation_requests"}.issubset(read_table_names(settings.audit_db_path))
     assert {"request_id", "idempotency_key"}.issubset(
         read_table_columns(settings.audit_db_path, "audit_events")
     )
@@ -142,9 +138,7 @@ def test_storage_bootstrap_migrates_legacy_storage_columns(tmp_path: Path) -> No
         "candidate_refs_json",
         "learning_note_refs_json",
     }.issubset(read_table_columns(settings.sessions_db_path, "sessions"))
-    assert {"audit_events", "mutation_requests"}.issubset(
-        read_table_names(settings.audit_db_path)
-    )
+    assert {"audit_events", "mutation_requests"}.issubset(read_table_names(settings.audit_db_path))
     assert {"request_id", "idempotency_key"}.issubset(
         read_table_columns(settings.audit_db_path, "audit_events")
     )

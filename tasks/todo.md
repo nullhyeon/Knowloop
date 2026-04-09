@@ -32,7 +32,9 @@
 - [x] Codex Builder: implement raw source registration and manifest updates
 - [x] Codex Critic fallback: review the raw source slice for boundary, validation, and contract drift
 - [x] Codex Reviewer: review the raw source slice for correctness and missing tests
-- [ ] Codex Builder: implement `POST /api/v1/query/respond` against fixture-driven tests
+- [x] Codex Builder: implement `POST /api/v1/query/respond` against fixture-driven tests
+- [x] Codex Critic fallback: review the `query/respond` slice for write-back integrity, role boundaries, and hidden coupling
+- [x] Codex Reviewer: review the `query/respond` slice for correctness, contract drift, and missing tests
 
 ## Ready-To-Assign Prompt Targets
 

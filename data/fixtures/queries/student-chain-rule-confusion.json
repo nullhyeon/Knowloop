@@ -18,8 +18,7 @@
   "expected": {
     "answer_basis": [
       "formal_wiki",
-      "session_context",
-      "learning_context"
+      "session_context"
     ],
     "writeback_plan_kinds": [
       "session",

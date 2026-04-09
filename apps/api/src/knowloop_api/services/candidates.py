@@ -85,6 +85,7 @@ PROMOTION_PAGE_PREFIXES = {
 CREATE_REQUEST_ENTITY_TYPE = "candidate_registration"
 CREATE_REQUEST_ENTITY_ID = "candidate_store"
 CREATE_ACTION = "candidate_created"
+UPSERT_ACTION = "candidate_signal_upserted"
 
 
 def create_candidate(
@@ -167,6 +168,75 @@ def create_candidate(
         ),
     )
     return candidate
+
+
+def upsert_candidate_signal(
+    settings: Settings,
+    candidate: CandidateItem,
+    *,
+    actor_role: ActorRole,
+    actor_id: str | None = None,
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    notes: str | None = None,
+) -> tuple[CandidateItem, str]:
+    existing_candidate = _find_matching_open_candidate(settings, candidate)
+    if existing_candidate is None:
+        created = create_candidate(
+            settings,
+            candidate,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            notes=notes,
+        )
+        return created, "create"
+
+    updated_candidate = existing_candidate.model_copy(
+        update={
+            "tags": _merge_unique_strings(existing_candidate.tags, candidate.tags),
+            "source_refs": _merge_source_refs(
+                existing_candidate.source_refs,
+                candidate.source_refs,
+            ),
+            "session_refs": _merge_unique_strings(
+                existing_candidate.session_refs,
+                candidate.session_refs,
+            ),
+            "confidence": max(existing_candidate.confidence, candidate.confidence),
+            "summary": candidate.summary or existing_candidate.summary,
+            "related_page_id": existing_candidate.related_page_id or candidate.related_page_id,
+            "actor_role": existing_candidate.actor_role or actor_role,
+        }
+    )
+    if updated_candidate == existing_candidate:
+        return existing_candidate, "create"
+
+    candidate_path = find_candidate_path(settings, existing_candidate.candidate_id)
+    _apply_candidate_transaction(
+        {
+            candidate_path: updated_candidate,
+        },
+        expected_current={
+            candidate_path: existing_candidate,
+        },
+        persist_audit=lambda: create_audit_event(
+            settings,
+            entity_type="candidate",
+            entity_id=existing_candidate.candidate_id,
+            action=UPSERT_ACTION,
+            actor_role=actor_role.value,
+            actor_id=actor_id,
+            from_status=existing_candidate.status.value,
+            to_status=updated_candidate.status.value,
+            notes=notes or "Merged new query signal into an existing open candidate.",
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            created_at=datetime.now(UTC),
+        ),
+    )
+    return updated_candidate, "update"
 
 
 def get_candidate(settings: Settings, candidate_id: str) -> CandidateItem:
@@ -890,9 +960,7 @@ def _finalize_or_replay_create_candidate(
         actor_id=mutation_request.actor_id,
     )
     if expected_fingerprint != mutation_request.request_fingerprint:
-        raise CandidateStateError(
-            "stored created candidate does not match the idempotent request"
-        )
+        raise CandidateStateError("stored created candidate does not match the idempotent request")
 
     _mark_create_candidate_applied(
         settings,
@@ -1192,6 +1260,27 @@ def _find_existing_candidate(settings: Settings, candidate_id: str) -> Candidate
     return CandidateItem.model_validate(payload)
 
 
+def _find_matching_open_candidate(
+    settings: Settings,
+    candidate: CandidateItem,
+) -> CandidateItem | None:
+    open_candidates = list_candidates(
+        settings,
+        kind=candidate.kind,
+        status=CandidateStatus.OPEN,
+        class_id=candidate.class_id,
+    )
+    for existing_candidate in open_candidates:
+        if existing_candidate.course_id != candidate.course_id:
+            continue
+        if existing_candidate.title != candidate.title:
+            continue
+        if existing_candidate.related_page_id != candidate.related_page_id:
+            continue
+        return existing_candidate
+    return None
+
+
 def _retry_changed_transition(
     exc: CandidateStateError,
     *,
@@ -1215,8 +1304,7 @@ def _apply_candidate_transaction(
     lock_paths = _acquire_candidate_locks(changes.keys())
     try:
         snapshots = {
-            path: path.read_text(encoding="utf-8") if path.exists() else None
-            for path in changes
+            path: path.read_text(encoding="utf-8") if path.exists() else None for path in changes
         }
 
         for path, expected_candidate in expected_current.items():
@@ -1290,8 +1378,7 @@ def _merge_unique_strings(base: list[str], extra: list[str]) -> list[str]:
 def _merge_source_refs(base: list[SourceRef], extra: list[SourceRef]) -> list[SourceRef]:
     merged = list(base)
     seen = {
-        (source_ref.source_id, source_ref.source_type, source_ref.chunk_id)
-        for source_ref in base
+        (source_ref.source_id, source_ref.source_type, source_ref.chunk_id) for source_ref in base
     }
 
     for source_ref in extra:

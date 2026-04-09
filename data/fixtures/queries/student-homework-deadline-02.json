@@ -1,6 +1,6 @@
 {
   "fixture_id": "qf-student-homework-02",
-  "description": "Repeated homework deadline question from Doyun to trigger FAQ aggregation.",
+  "description": "Repeated homework deadline question from Doyun that should remain session-only because formal wiki already covers it.",
   "request_headers": {
     "X-Knowloop-Role": "student",
     "X-Knowloop-Actor-Id": "stu-lee-doyun",
@@ -21,10 +21,7 @@
       "session_context"
     ],
     "writeback_plan_kinds": [
-      "session",
-      "candidate"
-    ],
-    "candidate_kind": "faq",
-    "candidate_status": "open"
+      "session"
+    ]
   }
 }

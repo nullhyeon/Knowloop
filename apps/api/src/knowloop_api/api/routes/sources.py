@@ -174,10 +174,7 @@ def create_sources_router(settings: Settings) -> APIRouter:
         )
         return success_response(
             context.request_id,
-            [
-                source_record_to_response_payload(source_record)
-                for source_record in source_records
-            ],
+            [source_record_to_response_payload(source_record) for source_record in source_records],
             meta={"limit": limit, "offset": offset, "total": total},
         )
 

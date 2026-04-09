@@ -253,9 +253,7 @@ def _status_for_database(
 
 def _fetch_table_names(path: Path) -> set[str]:
     with sqlite3.connect(path) as connection:
-        rows = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
 
     return {row[0] for row in rows}
 
@@ -289,9 +287,7 @@ def _fetch_table_columns(connection: sqlite3.Connection, table_name: str) -> set
     return {row[1] for row in rows}
 
 
-def _fetch_primary_key_columns(
-    connection: sqlite3.Connection, table_name: str
-) -> tuple[str, ...]:
+def _fetch_primary_key_columns(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
     rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     primary_key_rows = sorted(
         (row for row in rows if row[5] > 0),

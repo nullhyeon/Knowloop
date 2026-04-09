@@ -79,6 +79,8 @@ def allowed_domains_for_source_type(source_type: SourceType) -> frozenset[Reques
 
 
 def allowed_domains_for_role(actor_role: ActorRole) -> frozenset[RequestDomain]:
+    if actor_role is ActorRole.STUDENT:
+        return frozenset({RequestDomain.ACADEMIC})
     if actor_role is ActorRole.INSTRUCTOR:
         return frozenset({RequestDomain.ACADEMIC})
     if actor_role is ActorRole.OPERATOR:
