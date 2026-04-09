@@ -78,10 +78,17 @@
 
 ## Next Query Hardening Target
 
-- [ ] Codex Builder: add declarative learning-context and error query fixtures, then tighten candidate-to-wiki promotion coverage
-- [ ] Gemini Pro Critic: review the next query-hardening slice for hidden coupling and approval blind spots
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the next query-hardening critic pass
-- [ ] Codex Reviewer: review the next query-hardening slice for correctness, contract drift, and missing tests
+- [x] Codex Builder: add declarative learning-context and error query fixtures
+- [x] Gemini Pro Critic: review the next query-hardening slice and flag setup verification, side-effect snapshots, and runtime-ID leakage
+- [x] Codex Critic fallback: not needed because Gemini Pro completed the critic pass for this slice
+- [x] Codex Reviewer: attempted CLI review, then closed the slice with manual reviewer checks plus full test/lint verification after the follow-up fixes
+
+## Next Promotion Hardening Target
+
+- [ ] Codex Builder: tighten candidate-to-wiki promotion coverage and replay expectations
+- [ ] Gemini Pro Critic: review the promotion-hardening slice for hidden coupling and approval blind spots
+- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the promotion-hardening critic pass
+- [ ] Codex Reviewer: review the promotion-hardening slice for correctness, contract drift, and missing tests
 
 ## Ready-To-Assign Prompt Targets
 

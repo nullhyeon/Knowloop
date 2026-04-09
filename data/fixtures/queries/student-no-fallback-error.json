@@ -1,0 +1,31 @@
+{
+  "fixture_id": "qf-student-no-fallback-error-01",
+  "description": "Student asks a question with no verified wiki coverage and disables raw fallback.",
+  "request_headers": {
+    "X-Knowloop-Role": "student",
+    "X-Knowloop-Actor-Id": "stu-kim-minji",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "academic",
+    "X-Request-Id": "req-fixture-student-no-fallback-error-01"
+  },
+  "request_body": {
+    "message": "What is the convergence test for this sequence?",
+    "attachment_source_ids": [],
+    "allow_raw_source_fallback": false,
+    "response_mode": "default"
+  },
+  "expected": {
+    "status_code": 409,
+    "error": {
+      "code": "insufficient_verified_context",
+      "message_contains": "raw source fallback is disabled"
+    },
+    "side_effects": {
+      "session_delta": 0,
+      "candidate_delta": 0,
+      "learning_note_unchanged": true,
+      "request_audit_delta": 0
+    }
+  }
+}

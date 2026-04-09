@@ -9,6 +9,7 @@ Canonical MVP fixture pack:
 - `sources/`: lecture notes, announcements, and operations-safe source documents
 - `queries/`: request fixtures for `POST /api/v1/query/respond`
   and expected retrieval/write-back contracts
+  including setup-driven follow-up scenarios, setup validation, and error envelopes
 - `sessions/`: session history seeds used to simulate repeated questions
 - `candidates/`: review inbox seeds that match `schemas/candidate_item.json`
 - `reviews/`: approve, merge, drop, and patch-preview request fixtures

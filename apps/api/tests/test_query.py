@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -18,18 +19,28 @@ from knowloop_api.main import create_app
 from knowloop_api.services import query as query_service
 from knowloop_api.services.candidates import CandidateKind, CandidateStatus, list_candidates
 from knowloop_api.services.learning import get_learning_note
-from knowloop_api.services.sessions import SessionRecord, get_session, save_session
+from knowloop_api.services.sessions import (
+    SessionRecord,
+    get_session,
+    list_recent_sessions,
+    save_session,
+)
 from knowloop_api.services.sources import SourceRegistrationInput, register_source
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = REPO_ROOT / "data" / "fixtures"
 QUERY_FIXTURE_NAMES = (
     "student-chain-rule-confusion.json",
+    "student-chain-rule-learning-followup.json",
     "student-homework-deadline-01.json",
     "student-homework-deadline-02.json",
     "student-unresolved-question.json",
     "operator-refund-policy.json",
     "instructor-homework-faq.json",
+)
+QUERY_ERROR_FIXTURE_NAMES = (
+    "student-no-fallback-error.json",
+    "student-forbidden-attachment-error.json",
 )
 
 
@@ -45,10 +56,11 @@ def build_client(tmp_path: Path) -> tuple[TestClient, Settings]:
     return TestClient(create_app(settings), raise_server_exceptions=False), settings
 
 
-def seed_query_runtime(settings: Settings) -> None:
+def seed_query_runtime(settings: Settings) -> dict[str, str]:
     source_id_map = _seed_sources(settings)
     _seed_wiki(settings, source_id_map)
     _seed_sessions(settings, source_id_map)
+    return source_id_map
 
 
 def _seed_sources(settings: Settings) -> dict[str, str]:
@@ -128,24 +140,226 @@ def _parse_timestamp(value: str):
     return __import__("datetime").datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-@pytest.mark.parametrize(
-    "fixture_name",
-    QUERY_FIXTURE_NAMES,
-)
-def test_query_endpoint_matches_fixture_expectations(
-    tmp_path: Path,
-    fixture_name: str,
-) -> None:
-    client, settings = build_client(tmp_path)
-    seed_query_runtime(settings)
-    fixture = json.loads((FIXTURE_ROOT / "queries" / fixture_name).read_text(encoding="utf-8"))
-    expected = fixture["expected"]
+def _load_query_fixture(fixture_name: str) -> dict[str, object]:
+    return json.loads((FIXTURE_ROOT / "queries" / fixture_name).read_text(encoding="utf-8"))
 
-    response = client.post(
+
+def _resolve_query_request_body(
+    request_body: dict[str, object],
+    *,
+    source_id_map: dict[str, str],
+) -> dict[str, object]:
+    resolved_body = deepcopy(request_body)
+    attachment_source_ids = resolved_body.get("attachment_source_ids", [])
+    if isinstance(attachment_source_ids, list):
+        resolved_body["attachment_source_ids"] = [
+            source_id_map.get(source_id, source_id) for source_id in attachment_source_ids
+        ]
+    return resolved_body
+
+
+def _run_query_fixture_request(
+    client: TestClient,
+    fixture: dict[str, object],
+    *,
+    source_id_map: dict[str, str],
+):
+    return client.post(
         "/api/v1/query/respond",
         headers=fixture["request_headers"],
-        json=fixture["request_body"],
+        json=_resolve_query_request_body(
+            fixture["request_body"],
+            source_id_map=source_id_map,
+        ),
     )
+
+
+def _execute_query_fixture_setup(
+    client: TestClient,
+    settings: Settings,
+    *,
+    source_id_map: dict[str, str],
+    fixture: dict[str, object],
+    completed: set[str] | None = None,
+    active: set[str] | None = None,
+) -> None:
+    if completed is None:
+        completed = set()
+    if active is None:
+        active = set()
+    for setup_fixture_name in fixture.get("setup_fixtures", []):
+        if setup_fixture_name in completed:
+            continue
+        if setup_fixture_name in active:
+            raise AssertionError(f"Cyclic query fixture setup detected: {setup_fixture_name}")
+        active.add(setup_fixture_name)
+        setup_fixture = _load_query_fixture(setup_fixture_name)
+        _execute_query_fixture_setup(
+            client,
+            settings,
+            source_id_map=source_id_map,
+            fixture=setup_fixture,
+            completed=completed,
+            active=active,
+        )
+        _assert_query_fixture(
+            client,
+            settings,
+            setup_fixture,
+            source_id_map=source_id_map,
+            completed=completed,
+            active=active,
+        )
+        active.remove(setup_fixture_name)
+        completed.add(setup_fixture_name)
+
+
+def _capture_query_side_effects(
+    settings: Settings,
+    *,
+    actor_id: str,
+    course_id: str,
+    class_id: str,
+    role: str,
+    request_id: str,
+) -> dict[str, object]:
+    sessions = list_recent_sessions(
+        settings,
+        user_id=actor_id,
+        course_id=course_id,
+        class_id=class_id,
+        limit=100,
+    )
+    candidates = [
+        candidate
+        for candidate in list_candidates(settings, class_id=class_id)
+        if candidate.course_id == course_id
+    ]
+    learning_note = (
+        get_learning_note(
+            settings,
+            student_id=actor_id,
+            course_id=course_id,
+            class_id=class_id,
+        )
+        if role == "student"
+        else None
+    )
+    request_audit_events = [
+        event
+        for event in list_audit_events(settings)
+        if event.request_id == request_id
+    ]
+    return {
+        "session_count": len(sessions),
+        "session_ids": {session.session_id for session in sessions},
+        "candidate_count": len(candidates),
+        "candidate_ids": {candidate.candidate_id for candidate in candidates},
+        "learning_note_snapshot": (
+            learning_note.model_dump(mode="json") if learning_note is not None else None
+        ),
+        "request_audit_count": len(request_audit_events),
+    }
+
+
+def _assert_query_fixture(
+    client: TestClient,
+    settings: Settings,
+    fixture: dict[str, object],
+    *,
+    source_id_map: dict[str, str],
+    completed: set[str] | None = None,
+    active: set[str] | None = None,
+) -> None:
+    _execute_query_fixture_setup(
+        client,
+        settings,
+        source_id_map=source_id_map,
+        fixture=fixture,
+        completed=completed,
+        active=active,
+    )
+    before = _capture_query_side_effects(
+        settings,
+        actor_id=fixture["request_headers"]["X-Knowloop-Actor-Id"],
+        course_id=fixture["request_headers"]["X-Knowloop-Course-Id"],
+        class_id=fixture["request_headers"]["X-Knowloop-Class-Id"],
+        role=fixture["request_headers"]["X-Knowloop-Role"],
+        request_id=fixture["request_headers"]["X-Request-Id"],
+    )
+    response = _run_query_fixture_request(
+        client,
+        fixture,
+        source_id_map=source_id_map,
+    )
+    after = _capture_query_side_effects(
+        settings,
+        actor_id=fixture["request_headers"]["X-Knowloop-Actor-Id"],
+        course_id=fixture["request_headers"]["X-Knowloop-Course-Id"],
+        class_id=fixture["request_headers"]["X-Knowloop-Class-Id"],
+        role=fixture["request_headers"]["X-Knowloop-Role"],
+        request_id=fixture["request_headers"]["X-Request-Id"],
+    )
+
+    expected = fixture["expected"]
+    if "error" in expected:
+        _assert_query_error_fixture(
+            fixture,
+            response=response,
+            before=before,
+            after=after,
+        )
+        return
+
+    _assert_query_success_fixture(
+        settings,
+        fixture,
+        response=response,
+        before=before,
+        after=after,
+    )
+
+
+def _assert_query_error_fixture(
+    fixture: dict[str, object],
+    *,
+    response,
+    before: dict[str, object],
+    after: dict[str, object],
+) -> None:
+    expected = fixture["expected"]
+
+    assert response.status_code == expected["status_code"]
+    payload = response.json()
+    assert payload["request_id"] == fixture["request_headers"]["X-Request-Id"]
+    assert payload["error"]["code"] == expected["error"]["code"]
+    assert expected["error"]["message_contains"] in payload["error"]["message"]
+
+    side_effects = expected.get("side_effects")
+    if side_effects is None:
+        return
+
+    assert after["session_count"] - before["session_count"] == side_effects["session_delta"]
+    assert after["candidate_count"] - before["candidate_count"] == side_effects[
+        "candidate_delta"
+    ]
+    if side_effects.get("learning_note_unchanged"):
+        assert after["learning_note_snapshot"] == before["learning_note_snapshot"]
+    if "request_audit_delta" in side_effects:
+        assert after["request_audit_count"] - before["request_audit_count"] == side_effects[
+            "request_audit_delta"
+        ]
+
+
+def _assert_query_success_fixture(
+    settings: Settings,
+    fixture: dict[str, object],
+    *,
+    response,
+    before: dict[str, object],
+    after: dict[str, object],
+) -> None:
+    expected = fixture["expected"]
 
     assert response.status_code == 200
     payload = response.json()
@@ -184,9 +398,13 @@ def test_query_endpoint_matches_fixture_expectations(
         item for item in payload["data"]["writeback_plan"] if item["kind"] == "session"
     )
     assert session_writeback["target_id"] == session_id
+    assert after["session_count"] - before["session_count"] == 1
+    assert session_id not in before["session_ids"]
+    assert session_id in after["session_ids"]
 
     expected_candidate = expected.get("candidate")
     candidate = None
+    candidate_delta = after["candidate_count"] - before["candidate_count"]
     if expected_candidate is not None:
         candidate_records = list_candidates(
             settings, class_id=fixture["request_headers"]["X-Knowloop-Class-Id"]
@@ -202,7 +420,15 @@ def test_query_endpoint_matches_fixture_expectations(
             item for item in payload["data"]["writeback_plan"] if item["kind"] == "candidate"
         )
         assert candidate_writeback["target_id"] == candidate.candidate_id
+        if candidate_writeback["action"] == "create":
+            assert candidate_delta == 1
+            assert candidate.candidate_id not in before["candidate_ids"]
+        else:
+            assert candidate_delta == 0
+            assert candidate.candidate_id in before["candidate_ids"]
+        assert candidate.candidate_id in after["candidate_ids"]
     else:
+        assert candidate_delta == 0
         assert all(item["kind"] != "candidate" for item in payload["data"]["writeback_plan"])
 
     learning_note = get_learning_note(
@@ -216,11 +442,16 @@ def test_query_endpoint_matches_fixture_expectations(
         assert learning_note.gaps
         learning_note_expectation = expected.get("learning_note")
         if learning_note_expectation is not None:
-            assert learning_note.learning_note_id == learning_note_expectation["learning_note_id"]
+            if "learning_note_id" in learning_note_expectation:
+                assert (
+                    learning_note.learning_note_id
+                    == learning_note_expectation["learning_note_id"]
+                )
             assert any(
                 learning_note_expectation["concept_contains"] in concept
                 for concept in learning_note.concepts
             )
+        assert before["learning_note_snapshot"] != after["learning_note_snapshot"]
         assert stored_session.learning_note_refs == [learning_note.learning_note_id]
         learning_writeback = next(
             item for item in payload["data"]["writeback_plan"] if item["kind"] == "learning_note"
@@ -228,6 +459,7 @@ def test_query_endpoint_matches_fixture_expectations(
         assert learning_writeback["target_id"] == learning_note.learning_note_id
     else:
         assert learning_note is None
+        assert before["learning_note_snapshot"] == after["learning_note_snapshot"]
         assert stored_session.learning_note_refs == []
         assert all(item["kind"] != "learning_note" for item in payload["data"]["writeback_plan"])
 
@@ -236,8 +468,44 @@ def test_query_endpoint_matches_fixture_expectations(
     else:
         assert stored_session.candidate_refs == []
 
+    assert after["request_audit_count"] > before["request_audit_count"]
     audit_actions = {event.action for event in list_audit_events(settings, entity_id=session_id)}
     assert "session_saved" in audit_actions
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    QUERY_FIXTURE_NAMES,
+)
+def test_query_endpoint_matches_fixture_expectations(
+    tmp_path: Path,
+    fixture_name: str,
+) -> None:
+    client, settings = build_client(tmp_path)
+    source_id_map = seed_query_runtime(settings)
+    fixture = _load_query_fixture(fixture_name)
+    _assert_query_fixture(
+        client,
+        settings,
+        fixture,
+        source_id_map=source_id_map,
+    )
+
+
+@pytest.mark.parametrize("fixture_name", QUERY_ERROR_FIXTURE_NAMES)
+def test_query_endpoint_matches_declarative_error_fixtures(
+    tmp_path: Path,
+    fixture_name: str,
+) -> None:
+    client, settings = build_client(tmp_path)
+    source_id_map = seed_query_runtime(settings)
+    fixture = _load_query_fixture(fixture_name)
+    _assert_query_fixture(
+        client,
+        settings,
+        fixture,
+        source_id_map=source_id_map,
+    )
 
 
 def test_query_endpoint_returns_insufficient_verified_context_when_fallback_is_disabled(

@@ -1,28 +1,34 @@
 {
-  "fixture_id": "qf-student-chain-rule-01",
-  "description": "Student asks about confusing the chain rule with the product rule.",
+  "fixture_id": "qf-student-chain-rule-followup-01",
+  "description": "Student asks a follow-up chain-rule question after a learning note already exists.",
+  "setup_fixtures": [
+    "student-chain-rule-confusion.json"
+  ],
   "request_headers": {
     "X-Knowloop-Role": "student",
     "X-Knowloop-Actor-Id": "stu-kim-minji",
     "X-Knowloop-Course-Id": "course-calculus-1",
     "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
     "X-Knowloop-Domain": "academic",
-    "X-Request-Id": "req-fixture-student-chain-rule-01"
+    "X-Request-Id": "req-fixture-student-chain-rule-followup-01"
   },
   "request_body": {
-    "message": "I still do not understand when the chain rule is different from the product rule.",
+    "message": "I am still mixing up the chain rule and product rule.",
     "attachment_source_ids": [],
     "allow_raw_source_fallback": true,
-    "response_mode": "teaching"
+    "response_mode": "default"
   },
   "expected": {
     "answer_basis": [
       "formal_wiki",
-      "session_context"
+      "session_context",
+      "learning_context"
     ],
     "retrieval_entity_types": [
       "wiki_page",
-      "session"
+      "session",
+      "session",
+      "learning_note"
     ],
     "writeback_plan": [
       {
@@ -37,8 +43,8 @@
       },
       {
         "kind": "candidate",
-        "action": "create",
-        "status": "open"
+        "action": "update",
+        "status": "updated"
       }
     ],
     "learning_note_written": true,
@@ -51,7 +57,7 @@
       "related_page_id": "page-misconceptions-chain-rule-product-rule",
       "min_confidence": 0.8,
       "min_source_ref_count": 2,
-      "min_session_ref_count": 2
+      "min_session_ref_count": 3
     }
   }
 }

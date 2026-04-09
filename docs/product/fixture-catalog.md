@@ -64,6 +64,7 @@ Meaning:
 
 - `sources/`: raw source registration seeds
 - `queries/`: request and expected response-shape fixtures for `POST /api/v1/query/respond`
+  including optional `setup_fixtures` for sequential scenarios and declarative error cases
 - `sessions/`: prior interaction history used to test retrieval and aggregation
 - `candidates/`: review inbox seeds aligned with `schemas/candidate_item.json`
 - `reviews/`: future approve, merge, drop, and patch-preview request fixtures
@@ -90,11 +91,14 @@ Coverage intent:
 Current fixture files:
 
 - `queries/student-chain-rule-confusion.json`
+- `queries/student-chain-rule-learning-followup.json`
 - `queries/student-homework-deadline-01.json`
 - `queries/student-homework-deadline-02.json`
 - `queries/student-unresolved-question.json`
 - `queries/operator-refund-policy.json`
 - `queries/instructor-homework-faq.json`
+- `queries/student-no-fallback-error.json`
+- `queries/student-forbidden-attachment-error.json`
 
 Expected behavior per fixture:
 
@@ -110,6 +114,10 @@ Expected behavior per fixture:
 - `student-homework-deadline-02.json`
   - repeated homework question still remains `session` only in the MVP because wiki coverage is already sufficient
   - includes `session_context`, but should not create a FAQ candidate automatically for the student path
+- `student-chain-rule-learning-followup.json`
+  - uses `setup_fixtures` to create a prior learning note and recent same-user context
+  - verifies that `learning_context` appears only on the follow-up turn, not the setup turn
+  - verifies candidate write-back transitions from `create/open` to `update/updated`
 - `student-unresolved-question.json`
   - answer uses raw fallback without exposing raw source entities to the student response
   - unresolved query may generate a reviewable `unresolved_question` candidate when fallback evidence exists
@@ -120,6 +128,12 @@ Expected behavior per fixture:
   - validates the instructor FAQ candidate path
   - remains grounded in formal wiki while writing a high-confidence `faq` candidate
   - aggregates repeated class session links into candidate write-back without exposing raw student transcript bodies in the answer surface
+- `student-no-fallback-error.json`
+  - verifies `insufficient_verified_context` when verified wiki coverage is missing and fallback is disabled
+  - verifies that the failed request leaves session, candidate, learning-note, and request-audit state unchanged
+- `student-forbidden-attachment-error.json`
+  - verifies `forbidden_scope` when a student attempts to attach a raw source directly
+  - uses canonical fixture source IDs that are resolved to runtime source IDs during test execution
 
 ## 7. Session Fixtures
 
@@ -201,9 +215,12 @@ The fixture pack intentionally proves these product choices:
 - formal wiki is the primary answer layer
 - student query retries can be made replay-safe with `Idempotency-Key`
 - learning context is personal and only appears when it existed before the current turn
+- sequential query fixtures can express follow-up state through `setup_fixtures` without leaking runtime-specific IDs into the repository
+- setup-driven follow-up fixtures must validate the setup turn with the same contract checks as the top-level turn
 - student homework questions that are already covered by wiki remain session-only
 - instructor homework review questions can generate FAQ candidates without changing the student path
 - query fixtures lock retrieval entity types and write-back action/status pairs, not only answer basis
+- declarative error fixtures prove that failed query requests do not silently mutate durable state or request-scoped audit history
 - write-back failures should be auditable without turning every query failure into a hard API failure
 
 ## 13. Maintenance Rules

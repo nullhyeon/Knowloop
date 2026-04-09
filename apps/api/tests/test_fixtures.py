@@ -13,11 +13,14 @@ EXPECTED_FIXTURE_FILES = [
     "sources/instructor-note-chain-rule-support.md",
     "sources/operations-refund-policy.md",
     "queries/student-chain-rule-confusion.json",
+    "queries/student-chain-rule-learning-followup.json",
     "queries/student-homework-deadline-01.json",
     "queries/student-homework-deadline-02.json",
     "queries/student-unresolved-question.json",
     "queries/operator-refund-policy.json",
     "queries/instructor-homework-faq.json",
+    "queries/student-no-fallback-error.json",
+    "queries/student-forbidden-attachment-error.json",
     "sessions/student-minji-history.json",
     "sessions/student-jiyoon-history.json",
     "sessions/student-doyun-history.json",
@@ -87,10 +90,21 @@ def test_query_fixtures_define_request_context_and_expected_outputs() -> None:
         assert required_keys.issubset(payload)
         assert REQUIRED_CONTEXT_HEADERS.issubset(payload["request_headers"])
         assert "message" in payload["request_body"]
-        assert "answer_basis" in payload["expected"]
-        assert "retrieval_entity_types" in payload["expected"]
-        assert "writeback_plan" in payload["expected"]
-        assert "learning_note_written" in payload["expected"]
+        if "error" in payload["expected"]:
+            assert "status_code" in payload["expected"]
+            assert "code" in payload["expected"]["error"]
+            assert "message_contains" in payload["expected"]["error"]
+            side_effects = payload["expected"].get("side_effects")
+            if side_effects is not None:
+                assert "session_delta" in side_effects
+                assert "candidate_delta" in side_effects
+                assert "learning_note_unchanged" in side_effects
+                assert "request_audit_delta" in side_effects
+        else:
+            assert "answer_basis" in payload["expected"]
+            assert "retrieval_entity_types" in payload["expected"]
+            assert "writeback_plan" in payload["expected"]
+            assert "learning_note_written" in payload["expected"]
 
 
 def test_review_fixtures_define_idempotent_mutations() -> None:

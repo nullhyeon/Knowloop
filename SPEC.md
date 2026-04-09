@@ -16,6 +16,7 @@ The current slice is still not the full product. The harness and runtime foundat
 - keep the maintenance report surface actionable and deterministic
 - document operational runbook and handoff expectations for the current backend state
 - strengthen query fixture coverage around answer basis, retrieval refs, and write-back outputs
+- support declarative follow-up and error query fixtures with setup validation and without hardcoding runtime-only IDs
 
 Primary users for the current slice:
 

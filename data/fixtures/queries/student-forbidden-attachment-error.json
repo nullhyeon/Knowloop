@@ -1,0 +1,33 @@
+{
+  "fixture_id": "qf-student-forbidden-attachment-error-01",
+  "description": "Student attempts to attach a raw source directly and should be rejected by scope policy.",
+  "request_headers": {
+    "X-Knowloop-Role": "student",
+    "X-Knowloop-Actor-Id": "stu-kim-minji",
+    "X-Knowloop-Course-Id": "course-calculus-1",
+    "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+    "X-Knowloop-Domain": "academic",
+    "X-Request-Id": "req-fixture-student-forbidden-attachment-error-01"
+  },
+  "request_body": {
+    "message": "Can you check this source for me?",
+    "attachment_source_ids": [
+      "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z"
+    ],
+    "allow_raw_source_fallback": true,
+    "response_mode": "default"
+  },
+  "expected": {
+    "status_code": 403,
+    "error": {
+      "code": "forbidden_scope",
+      "message_contains": "students cannot attach raw source ids directly"
+    },
+    "side_effects": {
+      "session_delta": 0,
+      "candidate_delta": 0,
+      "learning_note_unchanged": true,
+      "request_audit_delta": 0
+    }
+  }
+}
