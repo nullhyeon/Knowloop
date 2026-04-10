@@ -97,6 +97,7 @@ Operating rule:
 - keep the review scoped to a specific slice, diff, or contract area
 - findings first, recommendations second
 - do not collapse into code-style review; leave patch-level review to `Codex Reviewer`
+- do not replace this role with a manual builder self-check when it times out; retry until an actual critic response completes
 
 ### Role 4: Codex Reviewer
 
@@ -114,6 +115,7 @@ Operating rule:
 - default to review mode before edit mode
 - prefer `.\scripts\run-codex-review.ps1` for the repository's pinned reviewer path
 - if patching issues directly, update docs and verification results too
+- do not replace this role with a manual builder self-check when it times out; retry until an actual reviewer response completes
 
 ## Skill System
 
@@ -154,10 +156,20 @@ Add these when relevant:
 
 1. `Codex Builder` reads the task and implements the next slice.
 2. `Gemini Pro Critic` challenges the plan or the change set.
-3. If `Gemini Pro Critic` is blocked or cannot complete a substantive review, run `Codex Critic`.
+3. If `Gemini Pro Critic` is blocked or times out, run the pinned critic chain: `Gemini Pro -> Codex Critic -> Codex Critic ...` until a critic pass completes.
 4. `Codex Builder` integrates the valid critique.
-5. `Codex Reviewer` performs final code review and test-gap review.
+5. `Codex Reviewer` performs final code review and test-gap review, retrying until a reviewer pass completes.
 6. Update `tasks/todo.md` and any affected docs.
+
+## Timeout Policy
+
+Timeout does not count as role completion.
+
+- Never replace a timed-out critic or reviewer pass with a manual builder self-check.
+- For critic passes, use `.\scripts\run-critic-pass.ps1`.
+- For reviewer passes, use `.\scripts\run-codex-review.ps1`.
+- If a role times out, retry that role chain until a real response completes or the human explicitly interrupts the run.
+- Report timeout history honestly in the final task report, but only after a critic or reviewer response has actually completed.
 
 ## Backend-First Scope
 

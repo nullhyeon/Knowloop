@@ -1,17 +1,16 @@
 param(
-    [int]$MaxAttempts = 999999,
+    [int]$MaxAttempts = 1,
     [int]$TimeoutSeconds = 240,
     [int]$RetryDelaySeconds = 15
 )
 
 $ErrorActionPreference = "Stop"
-
 $env:Path += ";" + [Environment]::GetFolderPath('UserProfile') + "\AppData\Roaming\npm"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$promptFile = Join-Path $repoRoot ".agents\prompts\codex-reviewer.md"
-$reviewPrompt = (Get-Content -LiteralPath $promptFile -Raw).Trim() + "`n`nReview the current uncommitted diff for this repository. Return findings first. If there are no material findings, say so explicitly."
+$promptFile = Join-Path $repoRoot ".agents\prompts\gemini-critic.md"
+$criticPrompt = (Get-Content -LiteralPath $promptFile -Raw).Trim() + "`n`nReview the current planned slice or uncommitted worktree as the critic pass. Focus on the active slice only. Return findings first. If there are no material findings, say so explicitly."
 
-function Invoke-CodexReviewerAttempt {
+function Invoke-GeminiCriticAttempt {
     param(
         [string]$RepoRoot,
         [string]$Prompt,
@@ -23,9 +22,9 @@ function Invoke-CodexReviewerAttempt {
         $ErrorActionPreference = "Stop"
         $env:Path += ";" + [Environment]::GetFolderPath('UserProfile') + "\AppData\Roaming\npm"
         Set-Location $RepoRoot
-        codex exec -m gpt-5.4 -c 'model_reasoning_effort="xhigh"' -s read-only $Prompt
+        gemini -m pro -p $Prompt
         if ($LASTEXITCODE -ne 0) {
-            throw "codex exited with code $LASTEXITCODE"
+            throw "gemini exited with code $LASTEXITCODE"
         }
     } -ArgumentList $RepoRoot, $Prompt
 
@@ -49,15 +48,17 @@ function Invoke-CodexReviewerAttempt {
 Push-Location $repoRoot
 try {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        Write-Host "Running Codex Reviewer attempt $attempt"
-        Write-Host "Reference prompt: .agents\\prompts\\codex-reviewer.md"
-        if (Invoke-CodexReviewerAttempt -RepoRoot $repoRoot -Prompt $reviewPrompt -TimeoutSeconds $TimeoutSeconds) {
+        Write-Host "Running Gemini Pro Critic attempt $attempt/$MaxAttempts"
+        Write-Host "Reference prompt: .agents\\prompts\\gemini-critic.md"
+        if (Invoke-GeminiCriticAttempt -RepoRoot $repoRoot -Prompt $criticPrompt -TimeoutSeconds $TimeoutSeconds) {
             return
         }
-        Write-Host "Codex Reviewer did not complete. Retrying in $RetryDelaySeconds seconds..."
-        Start-Sleep -Seconds $RetryDelaySeconds
+        if ($attempt -lt $MaxAttempts) {
+            Write-Host "Gemini Pro Critic did not complete. Retrying in $RetryDelaySeconds seconds..."
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
     }
-    throw "Codex Reviewer did not complete after $MaxAttempts attempt(s)."
+    throw "Gemini Pro Critic did not complete after $MaxAttempts attempt(s)."
 }
 finally {
     Pop-Location

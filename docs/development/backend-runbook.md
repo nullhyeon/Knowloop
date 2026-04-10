@@ -129,8 +129,8 @@ Every non-trivial backend task should follow this order:
 
 1. `Codex Builder` implements the slice.
 2. `Gemini Pro Critic` reviews boundaries, risk, and overengineering.
-3. If Gemini cannot complete, `Codex Critic` performs the critic pass.
-4. `Codex Reviewer` performs a final correctness and test-gap review.
+3. If Gemini cannot complete, continue the pinned critic chain until a critic pass actually completes.
+4. `Codex Reviewer` performs a final correctness and test-gap review and is retried until completion.
 5. Builder applies fixes.
 6. Run verification.
 7. Commit.
@@ -189,14 +189,14 @@ If no action is needed, keep moving to the next planned slice automatically.
 ### Gemini Pro critic does not complete
 
 - wait and retry first
-- if it still does not complete in a reasonable window, use `Codex Critic`
+- if it still does not complete in a reasonable window, continue through `.\scripts\run-critic-pass.ps1`
 - do not downgrade the critic role to a lower-quality model
 
 ### Codex critic or reviewer CLI times out
 
-- attempt the focused command once
-- if it still times out, perform an honest in-session critic or reviewer pass
-- record that the CLI did not complete
+- retry the same role until it completes
+- do not substitute a manual builder self-check for the missing role
+- record timeout history honestly after the role eventually completes
 
 ### Readiness fails
 

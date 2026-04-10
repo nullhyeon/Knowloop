@@ -5,7 +5,7 @@ Knowloop is a backend-first workspace for an education-focused memory OS:
 - `raw -> candidate -> formal wiki -> learning -> maintenance`
 - backend foundation first, frontend after the data and agent workflow are stable
 - Codex and Gemini share the same workspace rules and skill library
-- the working loop is `Codex Builder -> Gemini Pro Critic -> Codex Reviewer`
+- the working loop is `Codex Builder -> Gemini Pro Critic -> Codex Critic retry chain if needed -> Codex Reviewer`
 
 ## Current Stack
 
@@ -44,7 +44,7 @@ Knowloop is a backend-first workspace for an education-focused memory OS:
 - `Gemini Pro Critic`: `pro` only
 - `Codex Critic`: `gpt-5.4` + `xhigh` fallback when Gemini cannot complete the critic pass
 
-If Gemini Pro is at capacity or cannot complete a substantive pass, use `Codex Critic`. Do not downgrade the critic role to a lower-quality model.
+If Gemini Pro is at capacity or cannot complete a substantive pass, continue through the pinned critic retry chain. Do not downgrade the critic role to a lower-quality model and do not substitute manual builder self-review for missing critic or reviewer passes.
 
 ## Environment
 
@@ -97,6 +97,18 @@ Run the Codex Critic fallback on local changes:
 
 ```powershell
 .\scripts\run-codex-critic.ps1
+```
+
+Run the full critic retry chain on local changes:
+
+```powershell
+.\scripts\run-critic-pass.ps1
+```
+
+Run Gemini Pro Critic as a one-shot pass:
+
+```powershell
+.\scripts\run-gemini-critic.ps1
 ```
 
 Reconnect Codex if ever needed:

@@ -59,13 +59,18 @@ Do not downgrade this role to `flash` or `flash-lite`.
 
 ## Fallback Policy
 
-If Gemini cannot complete a substantive critic review after repeated retries,
-the critic pass should be handed to `Codex Critic`.
+If Gemini cannot complete a substantive critic review after the configured retry,
+the critic pass should continue through the pinned chain:
 
-That fallback should keep the same review scope:
+- `Gemini Pro Critic`
+- `Codex Critic`
+- `Codex Critic` repeated until completion
+
+That fallback chain should keep the same review scope:
 
 - architecture and boundary critique first
 - code-focused final review second
 
-When this happens, leave the `Gemini Pro Critic` task open in `tasks/todo.md`
-unless Gemini actually completed the review.
+Do not replace a timed-out critic pass with a manual builder self-check.
+Leave the `Gemini Pro Critic` task marked as timed out, and only mark the critic pass complete
+once a real Gemini or Codex critic response has finished.

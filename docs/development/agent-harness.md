@@ -58,6 +58,12 @@ Then use `.agents/prompts/gemini-critic.md`.
 
 This role is `pro-only`. If `pro` is busy, wait and retry. Do not downgrade the model.
 
+Fast path:
+
+```powershell
+.\scripts\run-gemini-critic.ps1
+```
+
 ### Codex Critic
 
 Use when `Gemini Pro Critic` cannot complete the critic pass in a reasonable
@@ -78,6 +84,7 @@ Prompt path:
 
 This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 It should stay focused on architecture critique rather than patch-level review.
+Use `.\scripts\run-critic-pass.ps1` when you want the full pinned critic chain instead of a single critic tool invocation.
 
 ### Codex Reviewer
 
@@ -102,10 +109,17 @@ This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 
 1. Codex Builder implements the next planned slice.
 2. Gemini Pro Critic challenges the design, boundaries, and risks.
-3. If Gemini Pro Critic is blocked, Codex Critic performs the critic pass.
+3. If Gemini Pro Critic times out, use `.\scripts\run-critic-pass.ps1` so the critic chain continues as `Gemini Pro -> Codex Critic -> Codex Critic ...` until completion.
 4. Codex Builder integrates valid critique.
-5. Codex Reviewer performs final diff review.
+5. Codex Reviewer performs final diff review and retries until completion.
 6. Update `tasks/todo.md` and relevant docs.
+
+## Timeout Rule
+
+- Timeout does not authorize a manual builder self-review.
+- Critic work must complete through a real critic response.
+- Reviewer work must complete through a real reviewer response.
+- The repository scripts are configured so these roles can be retried without changing prompts or model settings.
 
 Use `docs/development/backend-runbook.md` for day-to-day operating steps, handoff expectations, and troubleshooting.
 
