@@ -170,6 +170,7 @@ Timeout does not count as role completion.
 - For reviewer passes, use `.\scripts\run-codex-review.ps1`.
 - If a role times out, retry that role chain until a real response completes or the human explicitly interrupts the run.
 - Report timeout history honestly in the final task report, but only after a critic or reviewer response has actually completed.
+- If we reopen an older slice because a real critic or reviewer pass was missing, treat the rerun, fixes, validation, and follow-up review as one work unit before closing it again.
 
 ## Backend-First Scope
 

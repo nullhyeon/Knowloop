@@ -34,6 +34,17 @@ class CandidateStatus(StrEnum):
     DROPPED = "dropped"
 
 
+class WikiSyncStatus(StrEnum):
+    PENDING = "pending"
+    SYNCED = "synced"
+
+
+class DropReason(StrEnum):
+    INSUFFICIENT_SHARED_VALUE = "insufficient_shared_value"
+    OBSOLETE_OPERATIONS_SIGNAL = "obsolete_operations_signal"
+    SUPERSEDED_BY_EXISTING_CANDIDATE = "superseded_by_existing_candidate"
+
+
 class SourceRef(BaseModel):
     source_id: str
     source_type: str
@@ -58,6 +69,11 @@ class CandidateItem(BaseModel):
     approved_at: datetime | None = None
     merged_into: str | None = None
     related_page_id: str | None = None
+    promotion_attempt_id: str | None = None
+    wiki_sync_target_path: str | None = None
+    approval_plan_fingerprint: str | None = None
+    wiki_sync_status: WikiSyncStatus | None = None
+    wiki_synced_at: datetime | None = None
 
 
 class CandidateNotFoundError(FileNotFoundError):
@@ -325,16 +341,20 @@ def promote_candidate(
     settings: Settings,
     candidate_id: str,
     *,
+    current_candidate_snapshot: CandidateItem | None = None,
     approved_by: str,
     actor_role: ActorRole,
     actor_id: str | None = None,
     related_page_id: str | None = None,
+    target_path: str | None = None,
     request_id: str | None = None,
     idempotency_key: str | None = None,
     notes: str | None = None,
+    promotion_attempt_id: str | None = None,
+    approval_plan_fingerprint: str | None = None,
     approved_at: datetime | None = None,
 ) -> CandidateItem:
-    current_candidate = get_candidate(settings, candidate_id)
+    current_candidate = current_candidate_snapshot or get_candidate(settings, candidate_id)
     _assert_review_authorized(
         current_candidate,
         actor_role=actor_role,
@@ -354,8 +374,30 @@ def promote_candidate(
             "approved_by": approved_by,
             "approved_at": transition_at,
             "related_page_id": target_page_id,
+            "promotion_attempt_id": promotion_attempt_id or current_candidate.promotion_attempt_id,
+            "wiki_sync_target_path": target_path or current_candidate.wiki_sync_target_path,
+            "approval_plan_fingerprint": (
+                approval_plan_fingerprint or current_candidate.approval_plan_fingerprint
+            ),
+            "wiki_sync_status": WikiSyncStatus.PENDING,
+            "wiki_synced_at": None,
         }
     )
+    request_fingerprint_payload = {
+        "candidate_id": candidate_id,
+        "action": "candidate_promoted",
+        "actor_role": actor_role,
+        "actor_id": actor_id,
+        "approved_by": approved_by,
+        "related_page_id": target_page_id,
+        "requested_approved_at": _serialize_optional_timestamp(approved_at),
+        "notes": notes,
+    }
+    if target_path is not None:
+        request_fingerprint_payload["target_path"] = target_path
+    if approval_plan_fingerprint is not None:
+        request_fingerprint_payload["approval_plan_fingerprint"] = approval_plan_fingerprint
+
     mutation_request = _begin_transition_request(
         settings,
         entity_id=candidate_id,
@@ -363,16 +405,7 @@ def promote_candidate(
         actor_role=actor_role,
         actor_id=actor_id,
         idempotency_key=idempotency_key,
-        request_fingerprint=_build_request_fingerprint(
-            candidate_id=candidate_id,
-            action="candidate_promoted",
-            actor_role=actor_role,
-            actor_id=actor_id,
-            approved_by=approved_by,
-            related_page_id=target_page_id,
-            requested_approved_at=_serialize_optional_timestamp(approved_at),
-            notes=notes,
-        ),
+        request_fingerprint=_build_request_fingerprint(**request_fingerprint_payload),
         created_at=transition_at,
     )
     replayed_candidate = _finalize_or_replay_promote(
@@ -509,12 +542,8 @@ def merge_candidate(
             actor_role=actor_role,
             actor_id=actor_id,
             target_candidate_id=target_candidate_id,
+            target_identity=_build_merge_target_identity(current_target),
             requested_merged_at=_serialize_optional_timestamp(merged_at),
-            expected_candidate=_candidate_state_fingerprint(
-                updated_candidate,
-                exclude={"approved_at"},
-            ),
-            expected_target=_candidate_state_fingerprint(updated_target),
             notes=notes,
         ),
         created_at=transition_at,
@@ -605,6 +634,7 @@ def drop_candidate(
     actor_id: str | None = None,
     request_id: str | None = None,
     idempotency_key: str | None = None,
+    reason: DropReason | str | None = None,
     notes: str | None = None,
     dropped_at: datetime | None = None,
 ) -> CandidateItem:
@@ -617,6 +647,7 @@ def drop_candidate(
     )
 
     transition_at = dropped_at or datetime.now(UTC)
+    normalized_reason = _normalize_drop_reason(reason)
     updated_candidate = current_candidate.model_copy(
         update={
             "status": CandidateStatus.DROPPED,
@@ -624,6 +655,17 @@ def drop_candidate(
             "approved_at": transition_at,
         }
     )
+    request_fingerprint_payload = {
+        "candidate_id": candidate_id,
+        "action": "candidate_dropped",
+        "actor_role": actor_role,
+        "actor_id": actor_id,
+        "requested_dropped_at": _serialize_optional_timestamp(dropped_at),
+        "notes": notes,
+    }
+    if normalized_reason is not None:
+        request_fingerprint_payload["reason"] = normalized_reason.value
+
     mutation_request = _begin_transition_request(
         settings,
         entity_id=candidate_id,
@@ -631,14 +673,7 @@ def drop_candidate(
         actor_role=actor_role,
         actor_id=actor_id,
         idempotency_key=idempotency_key,
-        request_fingerprint=_build_request_fingerprint(
-            candidate_id=candidate_id,
-            action="candidate_dropped",
-            actor_role=actor_role,
-            actor_id=actor_id,
-            requested_dropped_at=_serialize_optional_timestamp(dropped_at),
-            notes=notes,
-        ),
+        request_fingerprint=_build_request_fingerprint(**request_fingerprint_payload),
         created_at=transition_at,
     )
     replayed_candidate = _finalize_or_replay_drop(
@@ -649,6 +684,7 @@ def drop_candidate(
         actor_id=actor_id,
         request_id=request_id,
         idempotency_key=idempotency_key,
+        reason=normalized_reason,
         notes=notes,
     )
     if replayed_candidate is not None:
@@ -674,6 +710,7 @@ def drop_candidate(
                 from_status=current_candidate.status.value,
                 to_status=updated_candidate.status.value,
                 notes=notes,
+                details=_build_drop_audit_details(reason=normalized_reason),
                 request_id=request_id,
                 idempotency_key=idempotency_key,
                 created_at=transition_at,
@@ -698,12 +735,44 @@ def drop_candidate(
                 actor_id=actor_id,
                 request_id=request_id,
                 idempotency_key=idempotency_key,
+                reason=normalized_reason,
                 notes=notes,
             ),
         )
         if replayed_candidate is not None:
             return replayed_candidate
         raise
+    return updated_candidate
+
+
+def mark_candidate_wiki_synced(
+    settings: Settings,
+    candidate_id: str,
+    *,
+    synced_at: datetime | None = None,
+) -> CandidateItem:
+    current_candidate = get_candidate(settings, candidate_id)
+    if current_candidate.status is not CandidateStatus.PROMOTED:
+        raise CandidateStateError("only promoted candidates can be marked as wiki-synced")
+    if (
+        current_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+        and current_candidate.wiki_synced_at is not None
+    ):
+        return current_candidate
+
+    effective_synced_at = synced_at or datetime.now(UTC)
+    updated_candidate = current_candidate.model_copy(
+        update={
+            "wiki_sync_status": WikiSyncStatus.SYNCED,
+            "wiki_synced_at": effective_synced_at,
+        }
+    )
+    candidate_path = find_candidate_path(settings, candidate_id)
+    _apply_candidate_transaction(
+        {candidate_path: updated_candidate},
+        expected_current={candidate_path: current_candidate},
+        persist_audit=lambda: None,
+    )
     return updated_candidate
 
 
@@ -1159,6 +1228,7 @@ def _finalize_or_replay_drop(
     actor_id: str | None,
     request_id: str | None,
     idempotency_key: str | None,
+    reason: DropReason | None,
     notes: str | None,
 ) -> CandidateItem | None:
     if mutation_request is None:
@@ -1184,6 +1254,7 @@ def _finalize_or_replay_drop(
                 from_status=CandidateStatus.OPEN.value,
                 to_status=CandidateStatus.DROPPED.value,
                 notes=notes,
+                details=_build_drop_audit_details(reason=reason),
                 request_id=request_id,
                 idempotency_key=idempotency_key,
                 created_at=mutation_request.created_at,
@@ -1250,10 +1321,9 @@ def _merge_transition_applied(
         and current_candidate.approved_by == actor_id
         and current_candidate.approved_at is not None
         and current_candidate.approved_at == replay_started_at
-        and _candidate_replay_metadata_matches(
+        and _merge_target_matches_replay_scope(
             current_target,
             expected_target,
-            exclude={"tags", "session_refs", "source_refs"},
         )
         and set(expected_target.tags).issubset(current_target.tags)
         and set(expected_target.session_refs).issubset(current_target.session_refs)
@@ -1276,19 +1346,54 @@ def _source_refs_subset(expected: list[SourceRef], current: list[SourceRef]) -> 
     return expected_keys.issubset(current_keys)
 
 
-def _candidate_replay_metadata_matches(
-    current_candidate: CandidateItem,
-    expected_candidate: CandidateItem,
-    *,
-    exclude: set[str],
+def _build_drop_audit_details(*, reason: DropReason | None) -> dict[str, object] | None:
+    if reason is None:
+        return None
+    return {"reason": reason.value}
+
+
+def _normalize_drop_reason(reason: DropReason | str | None) -> DropReason | None:
+    if reason is None:
+        return None
+    if isinstance(reason, DropReason):
+        return reason
+    try:
+        return DropReason(reason)
+    except ValueError as exc:
+        raise CandidateStateError("invalid drop reason") from exc
+
+
+def _merge_target_matches_replay_scope(
+    current_target: CandidateItem,
+    expected_target: CandidateItem,
 ) -> bool:
-    return current_candidate.model_dump(
-        mode="json",
-        exclude=exclude,
-    ) == expected_candidate.model_dump(
-        mode="json",
-        exclude=exclude,
+    status_matches = current_target.status is expected_target.status
+    promoted_after_merge = (
+        expected_target.status is CandidateStatus.OPEN
+        and current_target.status is CandidateStatus.PROMOTED
     )
+    return (
+        current_target.candidate_id == expected_target.candidate_id
+        and current_target.kind is expected_target.kind
+        and current_target.class_id == expected_target.class_id
+        and current_target.course_id == expected_target.course_id
+        and current_target.title == expected_target.title
+        and current_target.summary == expected_target.summary
+        and current_target.related_page_id == expected_target.related_page_id
+        and (status_matches or promoted_after_merge)
+    )
+
+
+def _build_merge_target_identity(candidate: CandidateItem) -> dict[str, object]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "kind": candidate.kind.value,
+        "course_id": candidate.course_id,
+        "class_id": candidate.class_id,
+        "title": candidate.title,
+        "summary": candidate.summary,
+        "related_page_id": candidate.related_page_id,
+    }
 
 
 def _find_existing_candidate(settings: Settings, candidate_id: str) -> CandidateItem | None:

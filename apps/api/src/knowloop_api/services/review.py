@@ -1,23 +1,35 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 
 from knowloop_api.api.context import RequestContext
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain
 from knowloop_api.core.frontmatter import build_frontmatter_document
-from knowloop_api.db.audit import create_audit_event, list_audit_events
+from knowloop_api.db.audit import (
+    begin_mutation_request,
+    create_audit_event,
+    get_mutation_request,
+    list_audit_events,
+    mark_mutation_request_applied,
+)
 from knowloop_api.services.candidates import (
     CandidateItem,
     CandidateKind,
+    CandidateStateError,
     CandidateStatus,
+    DropReason,
+    WikiSyncStatus,
     drop_candidate,
     get_candidate,
     list_candidates,
+    mark_candidate_wiki_synced,
     merge_candidate,
     promote_candidate,
 )
@@ -34,6 +46,7 @@ ACADEMIC_REVIEW_KINDS = frozenset(
 )
 WIKI_SYNC_PENDING_ACTION = "candidate_wiki_sync_pending"
 WIKI_SYNC_COMPLETED_ACTION = "candidate_wiki_synced"
+RESUME_SYNC_REQUEST_ACTION = "candidate_wiki_sync_resumed"
 WIKI_DOMAIN_BY_KIND = {
     CandidateKind.FAQ: "faq",
     CandidateKind.MISCONCEPTION: "misconceptions",
@@ -89,8 +102,12 @@ class ReviewMergeRequest(BaseModel):
 
 
 class ReviewDropRequest(BaseModel):
-    reason: str = Field(min_length=1)
+    reason: DropReason
     drop_notes: str | None = None
+
+
+class ReviewResumeSyncRequest(BaseModel):
+    resume_notes: str | None = None
 
 
 class ReviewCandidateDetail(BaseModel):
@@ -164,6 +181,7 @@ def get_review_candidate_detail(
             "from_status": event.from_status,
             "to_status": event.to_status,
             "notes": event.notes,
+            "details": event.details,
             "request_id": event.request_id,
             "idempotency_key": event.idempotency_key,
             "created_at": event.created_at.isoformat().replace("+00:00", "Z"),
@@ -223,75 +241,184 @@ def approve_candidate(
     target_page_id = payload.target_page_id or candidate.related_page_id
     if target_page_id is None:
         raise ReviewStateError("candidate approval requires a target_page_id")
+    mutation_request = _get_candidate_transition_request(
+        settings,
+        candidate_id=candidate_id,
+        action="candidate_promoted",
+        idempotency_key=context.idempotency_key,
+    )
+    if mutation_request is None:
+        canonical_target_path = _resolve_canonical_review_target_path(
+            settings,
+            candidate=candidate,
+            target_page_id=target_page_id,
+            target_path=payload.target_path,
+        )
+        fingerprint_target_path = canonical_target_path
+        approval_timestamp = datetime.now(UTC)
+    else:
+        canonical_target_path = _resolve_canonical_review_target_path(
+            settings,
+            candidate=candidate,
+            target_page_id=target_page_id,
+            target_path=None,
+        )
+        if payload.target_path is None:
+            fingerprint_target_path = canonical_target_path
+        else:
+            fingerprint_target_path = _normalize_review_target_path_input(
+                settings,
+                target_path=payload.target_path,
+            )
+        approval_timestamp = mutation_request.created_at
+    patch_draft = _build_patch_draft(
+        settings,
+        candidate=candidate,
+        context=context,
+        target_page_id=target_page_id,
+        target_path=canonical_target_path,
+        notes=payload.approval_notes,
+        approval_status="approved",
+        approved_by=context.actor_id,
+        approved_at=approval_timestamp,
+    )
+    approval_plan_fingerprint = _build_review_patch_fingerprint(
+        settings,
+        patch_draft=patch_draft,
+    )
+    promotion_attempt_id = candidate.promotion_attempt_id or _build_promotion_attempt_id(
+        candidate_id=candidate.candidate_id,
+        approved_at=approval_timestamp,
+    )
     promoted_candidate = promote_candidate(
         settings,
         candidate_id,
+        current_candidate_snapshot=candidate,
         approved_by=context.actor_id,
         actor_role=context.role,
         actor_id=context.actor_id,
         related_page_id=target_page_id,
+        target_path=fingerprint_target_path,
         request_id=context.request_id,
         idempotency_key=context.idempotency_key,
         notes=payload.approval_notes,
+        promotion_attempt_id=promotion_attempt_id,
+        approval_plan_fingerprint=approval_plan_fingerprint,
+        approved_at=approval_timestamp,
     )
-    patch_draft = _build_patch_draft(
+    return _complete_candidate_wiki_sync(
         settings,
         candidate=promoted_candidate,
+        patch_draft=patch_draft,
         context=context,
-        target_page_id=promoted_candidate.related_page_id,
-        target_path=payload.target_path,
         notes=payload.approval_notes,
+    )
+
+
+def resume_candidate_sync(
+    settings: Settings,
+    *,
+    candidate_id: str,
+    payload: ReviewResumeSyncRequest,
+    context: RequestContext,
+) -> ReviewActionResponse:
+    if context.idempotency_key is None or not context.idempotency_key.strip():
+        raise ReviewStateError("Idempotency-Key is required for candidate sync resume")
+
+    candidate = _load_visible_candidate(settings, candidate_id=candidate_id, context=context)
+    if candidate.related_page_id is None:
+        raise ReviewStateError("pending candidate is missing related_page_id")
+    if candidate.wiki_sync_target_path is None:
+        raise ReviewStateError("pending candidate is missing wiki_sync_target_path")
+    if candidate.approval_plan_fingerprint is None:
+        raise ReviewStateError("pending candidate is missing approval_plan_fingerprint")
+    if candidate.promotion_attempt_id is None:
+        raise ReviewStateError("pending candidate is missing promotion_attempt_id")
+
+    resume_request_fingerprint = _build_resume_sync_request_fingerprint(
+        candidate=candidate,
+        context=context,
+        notes=payload.resume_notes,
+    )
+    mutation_request = _get_candidate_transition_request(
+        settings,
+        candidate_id=candidate_id,
+        action=RESUME_SYNC_REQUEST_ACTION,
+        idempotency_key=context.idempotency_key,
+    )
+    if mutation_request is not None:
+        if mutation_request.request_fingerprint != resume_request_fingerprint:
+            raise CandidateStateError("idempotency_key already exists for a different request")
+        replayed_response = _finalize_or_replay_resume_sync(
+            settings,
+            mutation_request=mutation_request,
+            candidate=candidate,
+            context=context,
+            notes=payload.resume_notes,
+        )
+        if replayed_response is not None:
+            return replayed_response
+
+    _assert_action_allowed(candidate, context=context, action="resume_sync")
+    if candidate.status is not CandidateStatus.PROMOTED:
+        raise ReviewStateError("candidate sync resume requires a promoted candidate")
+    if candidate.wiki_sync_status is not WikiSyncStatus.PENDING:
+        raise ReviewStateError("candidate does not have a pending wiki sync")
+
+    if mutation_request is None:
+        mutation_request = begin_mutation_request(
+            settings,
+            entity_type="candidate",
+            entity_id=candidate_id,
+            action=RESUME_SYNC_REQUEST_ACTION,
+            idempotency_key=context.idempotency_key,
+            actor_role=context.role.value,
+            actor_id=context.actor_id,
+            request_fingerprint=resume_request_fingerprint,
+            created_at=datetime.now(UTC),
+        )
+        if mutation_request.request_fingerprint != resume_request_fingerprint:
+            raise CandidateStateError("idempotency_key already exists for a different request")
+
+    patch_draft = _build_patch_draft(
+        settings,
+        candidate=candidate,
+        context=context,
+        target_page_id=candidate.related_page_id,
+        target_path=candidate.wiki_sync_target_path,
+        notes=payload.resume_notes,
         approval_status="approved",
-        approved_by=context.actor_id,
-        approved_at=promoted_candidate.approved_at,
+        approved_by=candidate.approved_by,
+        approved_at=candidate.approved_at,
     )
-    create_audit_event(
+    current_plan_fingerprint = _build_review_patch_fingerprint(
+        settings,
+        patch_draft=patch_draft,
+    )
+    if current_plan_fingerprint != candidate.approval_plan_fingerprint:
+        raise CandidateStateError(
+            "pending candidate sync no longer matches the stored approval plan"
+        )
+
+    response = _complete_candidate_wiki_sync(
+        settings,
+        candidate=candidate,
+        patch_draft=patch_draft,
+        context=context,
+        notes=payload.resume_notes,
+        emit_pending_audit=False,
+        sync_anchor=datetime.now(UTC),
+    )
+    mark_mutation_request_applied(
         settings,
         entity_type="candidate",
-        entity_id=promoted_candidate.candidate_id,
-        action=WIKI_SYNC_PENDING_ACTION,
-        actor_role=context.role.value,
-        actor_id=context.actor_id,
-        request_id=context.request_id,
+        entity_id=candidate_id,
+        action=RESUME_SYNC_REQUEST_ACTION,
         idempotency_key=context.idempotency_key,
-        created_at=promoted_candidate.approved_at,
-        notes="Candidate promotion is waiting for wiki patch application.",
+        updated_at=datetime.now(UTC),
+        response_payload=response.model_dump(mode="json", exclude_none=True),
     )
-    _write_wiki_page(patch_draft.target_path, patch_draft.after_markdown)
-    create_audit_event(
-        settings,
-        entity_type="wiki_page",
-        entity_id=patch_draft.target_page_id,
-        action="wiki_patch_applied",
-        actor_role=context.role.value,
-        actor_id=context.actor_id,
-        request_id=context.request_id,
-        idempotency_key=context.idempotency_key,
-        created_at=promoted_candidate.approved_at,
-        notes=payload.approval_notes,
-    )
-    create_audit_event(
-        settings,
-        entity_type="candidate",
-        entity_id=promoted_candidate.candidate_id,
-        action=WIKI_SYNC_COMPLETED_ACTION,
-        actor_role=context.role.value,
-        actor_id=context.actor_id,
-        request_id=context.request_id,
-        idempotency_key=context.idempotency_key,
-        created_at=promoted_candidate.approved_at,
-        notes="Candidate promotion has been synchronized into the formal wiki.",
-    )
-    return ReviewActionResponse(
-        candidate=candidate_to_payload(promoted_candidate),
-        patch=patch_draft.patch_payload,
-        wiki_page={
-            "page_id": patch_draft.target_page_id,
-            "path": _as_data_relative_path(settings, patch_draft.target_path),
-            "operation": patch_draft.operation,
-            "updated_at": promoted_candidate.approved_at.isoformat().replace("+00:00", "Z"),
-        },
-    )
+    return response
 
 
 def merge_review_candidate(
@@ -340,7 +467,7 @@ def drop_review_candidate(
 
     candidate = _load_visible_candidate(settings, candidate_id=candidate_id, context=context)
     _assert_action_allowed(candidate, context=context, action="drop")
-    notes = payload.drop_notes or f"Drop reason: {payload.reason}"
+    notes = _format_drop_notes(reason=payload.reason, drop_notes=payload.drop_notes)
     dropped_candidate = drop_candidate(
         settings,
         candidate_id,
@@ -348,6 +475,7 @@ def drop_review_candidate(
         actor_id=context.actor_id,
         request_id=context.request_id,
         idempotency_key=context.idempotency_key,
+        reason=payload.reason,
         notes=notes,
     )
     return ReviewActionResponse(
@@ -409,6 +537,12 @@ def _available_actions(candidate: CandidateItem, *, context: RequestContext) -> 
         return []
     if not _is_candidate_visible(candidate, context=context):
         return []
+    if (
+        candidate.status is CandidateStatus.PROMOTED
+        and candidate.wiki_sync_status is WikiSyncStatus.PENDING
+        and _can_finalize_candidate(candidate, context=context)
+    ):
+        return ["resume_sync"]
     if candidate.status is not CandidateStatus.OPEN:
         return []
     if not _can_finalize_candidate(candidate, context=context):
@@ -433,6 +567,19 @@ def _assert_action_allowed(
     context: RequestContext,
     action: str,
 ) -> None:
+    if action == "resume_sync":
+        if (
+            candidate.status is not CandidateStatus.PROMOTED
+            or candidate.wiki_sync_status is not WikiSyncStatus.PENDING
+        ):
+            raise ForbiddenReviewScopeError(
+                "This candidate does not have a resumable wiki sync in the current scope."
+            )
+        if not _can_finalize_candidate(candidate, context=context):
+            raise ForbiddenReviewScopeError(
+                f"This role cannot {action} candidates in the current scope."
+            )
+        return
     if not _can_finalize_candidate(candidate, context=context):
         raise ForbiddenReviewScopeError(
             f"This role cannot {action} candidates in the current scope."
@@ -537,6 +684,328 @@ def _build_patch_draft(
         target_path=resolved_path,
         operation=patch_payload["operation"],
     )
+
+
+def _resolve_canonical_review_target_path(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    target_page_id: str,
+    target_path: str | None,
+) -> str:
+    domain_name = WIKI_DOMAIN_BY_KIND[candidate.kind]
+    existing_page = get_wiki_page(settings, target_page_id)
+    resolved_path = _resolve_target_path(
+        settings,
+        domain_name=domain_name,
+        target_page_id=target_page_id,
+        target_path=target_path,
+        existing_page_path=Path(existing_page.path) if existing_page is not None else None,
+    )
+    return _as_data_relative_path(settings, resolved_path)
+
+
+def _normalize_review_target_path_input(
+    settings: Settings,
+    *,
+    target_path: str | None,
+) -> str | None:
+    if target_path is None:
+        return None
+
+    candidate_path = Path(target_path)
+    if candidate_path.parts[:1] == ("data",):
+        return candidate_path.as_posix()
+
+    if candidate_path.is_absolute():
+        try:
+            return _as_data_relative_path(settings, candidate_path)
+        except ValueError:
+            return candidate_path.as_posix()
+
+    return (Path("data") / candidate_path).as_posix()
+
+
+def _build_review_patch_fingerprint(
+    settings: Settings,
+    *,
+    patch_draft: WikiPatchDraft,
+) -> str:
+    payload = {
+        "page_id": patch_draft.target_page_id,
+        "target_path": _as_data_relative_path(settings, patch_draft.target_path),
+        "operation": patch_draft.operation,
+        "patch": patch_draft.patch_payload,
+        "after_markdown": patch_draft.after_markdown,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_promotion_attempt_id(*, candidate_id: str, approved_at: datetime) -> str:
+    timestamp = approved_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"pat-{candidate_id}-{timestamp}"
+
+
+def _build_resume_sync_request_fingerprint(
+    *,
+    candidate: CandidateItem,
+    context: RequestContext,
+    notes: str | None,
+) -> str:
+    if candidate.promotion_attempt_id is None:
+        raise ReviewStateError("pending candidate is missing promotion_attempt_id")
+    if candidate.approval_plan_fingerprint is None:
+        raise ReviewStateError("pending candidate is missing approval_plan_fingerprint")
+    return _build_review_request_fingerprint(
+        candidate_id=candidate.candidate_id,
+        action=RESUME_SYNC_REQUEST_ACTION,
+        actor_role=context.role.value,
+        actor_id=context.actor_id,
+        promotion_attempt_id=candidate.promotion_attempt_id,
+        approval_plan_fingerprint=candidate.approval_plan_fingerprint,
+        notes=notes,
+    )
+
+
+def _build_review_request_fingerprint(**payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _finalize_or_replay_resume_sync(
+    settings: Settings,
+    *,
+    mutation_request,
+    candidate: CandidateItem,
+    context: RequestContext,
+    notes: str | None,
+) -> ReviewActionResponse | None:
+    if mutation_request.response_payload is not None:
+        return ReviewActionResponse.model_validate(mutation_request.response_payload)
+    if (
+        candidate.status is CandidateStatus.PROMOTED
+        and candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+    ):
+        patch_draft = _build_patch_draft(
+            settings,
+            candidate=candidate,
+            context=context,
+            target_page_id=candidate.related_page_id,
+            target_path=candidate.wiki_sync_target_path,
+            notes=notes,
+            approval_status="approved",
+            approved_by=candidate.approved_by,
+            approved_at=candidate.approved_at,
+        )
+        response = ReviewActionResponse(
+            candidate=candidate_to_payload(candidate),
+            patch=patch_draft.patch_payload,
+            wiki_page={
+                "page_id": patch_draft.target_page_id,
+                "path": _as_data_relative_path(settings, patch_draft.target_path),
+                "operation": patch_draft.operation,
+                "updated_at": candidate.wiki_synced_at.isoformat().replace("+00:00", "Z"),
+            },
+        )
+        mark_mutation_request_applied(
+            settings,
+            entity_type="candidate",
+            entity_id=candidate.candidate_id,
+            action=RESUME_SYNC_REQUEST_ACTION,
+            idempotency_key=context.idempotency_key,
+            updated_at=candidate.wiki_synced_at or datetime.now(UTC),
+            response_payload=response.model_dump(mode="json", exclude_none=True),
+        )
+        return response
+    if mutation_request.status != "applied":
+        return None
+    if mutation_request.status == "applied":
+        raise CandidateStateError("stored resumed candidate does not match the idempotent request")
+    return None
+
+
+def _complete_candidate_wiki_sync(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    patch_draft: WikiPatchDraft,
+    context: RequestContext,
+    notes: str | None,
+    emit_pending_audit: bool = True,
+    sync_anchor: datetime | None = None,
+) -> ReviewActionResponse:
+    pending_created_at, wiki_patch_created_at, synced_created_at = (
+        _build_wiki_sync_audit_timestamps(
+            sync_anchor or candidate.approved_at
+        )
+    )
+    if emit_pending_audit:
+        _record_candidate_wiki_sync_pending(
+            settings,
+            candidate_id=candidate.candidate_id,
+            context=context,
+            created_at=pending_created_at,
+        )
+    _apply_wiki_patch_atomically(patch_draft)
+    _record_wiki_patch_applied(
+        settings,
+        page_id=patch_draft.target_page_id,
+        context=context,
+        created_at=wiki_patch_created_at,
+        notes=notes,
+    )
+    synced_candidate = mark_candidate_wiki_synced(
+        settings,
+        candidate.candidate_id,
+        synced_at=synced_created_at,
+    )
+    _record_candidate_wiki_synced(
+        settings,
+        candidate_id=synced_candidate.candidate_id,
+        context=context,
+        created_at=synced_created_at,
+    )
+    return ReviewActionResponse(
+        candidate=candidate_to_payload(synced_candidate),
+        patch=patch_draft.patch_payload,
+        wiki_page={
+            "page_id": patch_draft.target_page_id,
+            "path": _as_data_relative_path(settings, patch_draft.target_path),
+            "operation": patch_draft.operation,
+            "updated_at": synced_candidate.wiki_synced_at.isoformat().replace("+00:00", "Z"),
+        },
+    )
+
+
+def _build_wiki_sync_audit_timestamps(
+    approved_at: datetime | None,
+) -> tuple[datetime, datetime, datetime]:
+    anchor = approved_at or datetime.now(UTC)
+    return (
+        anchor + timedelta(microseconds=1),
+        anchor + timedelta(microseconds=2),
+        anchor + timedelta(microseconds=3),
+    )
+
+
+def _get_candidate_transition_request(
+    settings: Settings,
+    *,
+    candidate_id: str,
+    action: str,
+    idempotency_key: str | None,
+):
+    if idempotency_key is None:
+        return None
+    return get_mutation_request(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+
+
+def _record_candidate_wiki_sync_pending(
+    settings: Settings,
+    *,
+    candidate_id: str,
+    context: RequestContext,
+    created_at: datetime | None,
+) -> None:
+    create_audit_event(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate_id,
+        action=WIKI_SYNC_PENDING_ACTION,
+        actor_role=context.role.value,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        idempotency_key=context.idempotency_key,
+        created_at=created_at,
+        notes="Candidate promotion is waiting for wiki patch application.",
+    )
+
+
+def _record_wiki_patch_applied(
+    settings: Settings,
+    *,
+    page_id: str,
+    context: RequestContext,
+    created_at: datetime | None,
+    notes: str | None,
+) -> None:
+    create_audit_event(
+        settings,
+        entity_type="wiki_page",
+        entity_id=page_id,
+        action="wiki_patch_applied",
+        actor_role=context.role.value,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        idempotency_key=context.idempotency_key,
+        created_at=created_at,
+        notes=notes,
+    )
+
+
+def _record_candidate_wiki_synced(
+    settings: Settings,
+    *,
+    candidate_id: str,
+    context: RequestContext,
+    created_at: datetime | None,
+) -> None:
+    create_audit_event(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate_id,
+        action=WIKI_SYNC_COMPLETED_ACTION,
+        actor_role=context.role.value,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        idempotency_key=context.idempotency_key,
+        created_at=created_at,
+        notes="Candidate promotion has been synchronized into the formal wiki.",
+    )
+
+
+def _apply_wiki_patch_atomically(patch_draft: WikiPatchDraft) -> None:
+    lock_path = _acquire_wiki_lock(patch_draft.target_path)
+    try:
+        current_contents = (
+            patch_draft.target_path.read_text(encoding="utf-8")
+            if patch_draft.target_path.exists()
+            else None
+        )
+        if current_contents != patch_draft.before_markdown:
+            raise ReviewStateError("wiki page changed before the approval patch could be applied")
+        _write_wiki_page(patch_draft.target_path, patch_draft.after_markdown)
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def _acquire_wiki_lock(target_path: Path) -> Path:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha1(str(target_path).encode("utf-8")).hexdigest()[:12]
+    lock_path = target_path.parent / f".lock-{digest}"
+    try:
+        with lock_path.open("x", encoding="utf-8") as handle:
+            handle.write(target_path.name)
+    except FileExistsError as exc:
+        raise ReviewStateError("wiki page is busy with another approval patch") from exc
+    return lock_path
+
+
+def _format_drop_notes(*, reason: str, drop_notes: str | None) -> str:
+    normalized_reason = reason.strip()
+    if drop_notes is None or not drop_notes.strip():
+        return f"Drop reason: {normalized_reason}"
+    normalized_notes = drop_notes.strip()
+    return f"Drop reason: {normalized_reason}\nDrop notes: {normalized_notes}"
 
 
 def _resolve_target_path(

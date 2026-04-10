@@ -118,6 +118,26 @@
     },
     "related_page_id": {
       "type": "string"
+    },
+    "promotion_attempt_id": {
+      "type": "string"
+    },
+    "wiki_sync_target_path": {
+      "type": "string"
+    },
+    "approval_plan_fingerprint": {
+      "type": "string"
+    },
+    "wiki_sync_status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "synced"
+      ]
+    },
+    "wiki_synced_at": {
+      "type": "string",
+      "format": "date-time"
     }
   }
 }

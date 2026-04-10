@@ -86,9 +86,11 @@
 ## Next Promotion Hardening Target
 
 - [x] Codex Builder: tighten candidate-to-wiki promotion coverage and replay expectations
-- [x] Gemini Pro Critic: attempted headless review for the promotion-hardening slice but did not complete in time
-- [x] Codex Critic fallback: attempted CLI critic review after Gemini timeout, then closed the remaining concerns with an in-session manual critic pass
-- [x] Codex Reviewer: attempted CLI review, then closed the slice with manual reviewer checks plus full test/lint verification
+- [x] Gemini Pro Critic: rerun requested for the promotion-hardening slice but Gemini Pro remained capacity-blocked
+- [x] Codex Critic fallback: reran the promotion-hardening critic pass and flagged replay, drop-reason, and audit-chain drift
+- [x] Codex Builder: fixed promotion replay contract drift, structured drop audit notes, wiki-sync recovery assertions, and resumable pending-sync recovery
+- [x] Codex Critic fallback: reran the promotion-hardening critic pass after the follow-up fixes and closed with no material findings
+- [x] Codex Reviewer: reran the promotion-hardening reviewer pass after the follow-up fixes and closed with no material findings
 
 ## Ready-To-Assign Prompt Targets
 

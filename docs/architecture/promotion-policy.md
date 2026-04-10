@@ -64,6 +64,9 @@ candidate는 다음 상태 중 하나를 가진다.
 
 ### promoted
 - 검토와 승인을 거쳐 formal wiki에 반영된 상태
+- 단, approval plan이 고정된 뒤 wiki 반영이 중단되면 `candidate.status = promoted` 이면서 `wiki_sync_status = pending` 인 중간 상태가 잠시 존재할 수 있다
+- 이 경우에는 새로운 approve를 만드는 대신 전용 `resume-sync` 경로로 같은 promotion attempt를 이어서 마무리한다
+- `resume-sync`는 기존 pending 상태를 완료하는 동작이므로 새로운 `candidate_wiki_sync_pending` audit를 추가로 만들지 않는다
 
 ### merged
 - 더 적절한 기존 candidate에 병합된 상태
@@ -311,9 +314,18 @@ candidate lifecycle의 모든 주요 변경은 audit에 남긴다.
 
 - `candidate_created`
 - `candidate_promoted`
+- `candidate_wiki_sync_pending`
+- `wiki_patch_applied`
+- `candidate_wiki_synced`
 - `candidate_merged`
 - `candidate_dropped`
 - `candidate_reopened` (추후 필요 시)
+
+Promotion durability note:
+
+- `candidate.status = promoted` is not enough on its own for a completed wiki promotion.
+- a promoted candidate should expose `wiki_sync_status = pending | synced`
+- `wiki_synced_at` records when the formal wiki patch completed successfully
 
 권장 추가 필드:
 
@@ -323,6 +335,13 @@ candidate lifecycle의 모든 주요 변경은 audit에 남긴다.
 - `from_status`
 - `to_status`
 - `notes`
+- `details_json` for structured review metadata such as drop `reason`
+
+MVP drop `reason` values should stay inside a small controlled set:
+
+- `insufficient_shared_value`
+- `obsolete_operations_signal`
+- `superseded_by_existing_candidate`
 
 ---
 

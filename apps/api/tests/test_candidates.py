@@ -1020,12 +1020,8 @@ def test_merge_candidate_recovers_pending_idempotent_transition(tmp_path: Path) 
             actor_role=ActorRole.VALIDATOR,
             actor_id="val-course-admin",
             target_candidate_id=canonical_candidate.candidate_id,
+            target_identity=candidate_service._build_merge_target_identity(canonical_candidate),
             requested_merged_at=None,
-            expected_candidate=candidate_service._candidate_state_fingerprint(
-                merged_candidate,
-                exclude={"approved_at"},
-            ),
-            expected_target=candidate_service._candidate_state_fingerprint(updated_target),
             notes=None,
         ),
         created_at=transition_at,
@@ -1070,22 +1066,6 @@ def test_merge_candidate_rejects_pending_replay_when_target_metadata_drifts(
             "approved_at": transition_at,
         }
     )
-    expected_target = canonical_candidate.model_copy(
-        update={
-            "tags": candidate_service._merge_unique_strings(
-                canonical_candidate.tags,
-                duplicate_candidate.tags,
-            ),
-            "session_refs": candidate_service._merge_unique_strings(
-                canonical_candidate.session_refs,
-                duplicate_candidate.session_refs,
-            ),
-            "source_refs": candidate_service._merge_source_refs(
-                canonical_candidate.source_refs,
-                duplicate_candidate.source_refs,
-            ),
-        }
-    )
     drifted_target = canonical_candidate.model_copy(
         update={
             "summary": "Drifted target summary after interrupted merge.",
@@ -1125,12 +1105,8 @@ def test_merge_candidate_rejects_pending_replay_when_target_metadata_drifts(
             actor_role=ActorRole.VALIDATOR,
             actor_id="val-course-admin",
             target_candidate_id=canonical_candidate.candidate_id,
+            target_identity=candidate_service._build_merge_target_identity(canonical_candidate),
             requested_merged_at=None,
-            expected_candidate=candidate_service._candidate_state_fingerprint(
-                merged_candidate,
-                exclude={"approved_at"},
-            ),
-            expected_target=candidate_service._candidate_state_fingerprint(expected_target),
             notes=None,
         ),
         created_at=transition_at,
@@ -1145,6 +1121,21 @@ def test_merge_candidate_rejects_pending_replay_when_target_metadata_drifts(
             actor_id="val-course-admin",
             idempotency_key="idem-merge-drifted-target",
         )
+
+    refreshed_source = get_candidate(settings, duplicate_candidate.candidate_id)
+    refreshed_target = get_candidate(settings, canonical_candidate.candidate_id)
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=duplicate_candidate.candidate_id,
+        action="candidate_merged",
+        idempotency_key="idem-merge-drifted-target",
+    )
+
+    assert refreshed_source.status is CandidateStatus.MERGED
+    assert refreshed_source.merged_into == canonical_candidate.candidate_id
+    assert refreshed_target.summary == drifted_target.summary
+    assert audit_events == []
 
 
 def test_merge_candidate_rejects_timestamp_drift_for_same_idempotency_key(
@@ -1275,30 +1266,6 @@ def test_merge_candidate_rejects_mismatched_applied_replay(tmp_path: Path) -> No
     duplicate_candidate = load_candidate_fixture("open-misconception-chain-rule-duplicate.json")
     create_candidate(settings, canonical_candidate, actor_role=ActorRole.SYSTEM, actor_id="system")
     create_candidate(settings, duplicate_candidate, actor_role=ActorRole.SYSTEM, actor_id="system")
-    expected_target = canonical_candidate.model_copy(
-        update={
-            "tags": candidate_service._merge_unique_strings(
-                canonical_candidate.tags,
-                duplicate_candidate.tags,
-            ),
-            "session_refs": candidate_service._merge_unique_strings(
-                canonical_candidate.session_refs,
-                duplicate_candidate.session_refs,
-            ),
-            "source_refs": candidate_service._merge_source_refs(
-                canonical_candidate.source_refs,
-                duplicate_candidate.source_refs,
-            ),
-        }
-    )
-    expected_candidate = duplicate_candidate.model_copy(
-        update={
-            "status": CandidateStatus.MERGED,
-            "merged_into": canonical_candidate.candidate_id,
-            "approved_by": "val-course-admin",
-            "approved_at": datetime(2026, 4, 8, 12, 45, tzinfo=UTC),
-        }
-    )
 
     mutation_request = begin_mutation_request(
         settings,
@@ -1314,12 +1281,8 @@ def test_merge_candidate_rejects_mismatched_applied_replay(tmp_path: Path) -> No
             actor_role=ActorRole.VALIDATOR,
             actor_id="val-course-admin",
             target_candidate_id=canonical_candidate.candidate_id,
+            target_identity=candidate_service._build_merge_target_identity(canonical_candidate),
             requested_merged_at=None,
-            expected_candidate=candidate_service._candidate_state_fingerprint(
-                expected_candidate,
-                exclude={"approved_at"},
-            ),
-            expected_target=candidate_service._candidate_state_fingerprint(expected_target),
             notes=None,
         ),
         created_at=datetime(2026, 4, 8, 12, 45, tzinfo=UTC),
@@ -1356,6 +1319,7 @@ def test_drop_candidate_marks_candidate_dropped_and_writes_audit(tmp_path: Path)
         actor_role=ActorRole.VALIDATOR,
         actor_id="val-course-admin",
         request_id="req-drop-candidate",
+        reason="insufficient_shared_value",
         notes="Not enough shared value for promotion yet.",
     )
 
@@ -1370,6 +1334,7 @@ def test_drop_candidate_marks_candidate_dropped_and_writes_audit(tmp_path: Path)
     assert dropped_candidate.status is CandidateStatus.DROPPED
     assert reloaded_candidate.status is CandidateStatus.DROPPED
     assert audit_events[0].notes == "Not enough shared value for promotion yet."
+    assert audit_events[0].details == {"reason": "insufficient_shared_value"}
 
 
 def test_drop_candidate_is_idempotent_with_same_key(tmp_path: Path) -> None:
@@ -1497,6 +1462,22 @@ def test_drop_candidate_rejects_timestamp_drift_for_same_idempotency_key(
             actor_id="val-course-admin",
             idempotency_key="idem-drop-time",
             dropped_at=datetime(2026, 4, 8, 12, 25, tzinfo=UTC),
+        )
+
+
+def test_drop_candidate_rejects_invalid_reason_at_service_boundary(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-unresolved-integral.json")
+    create_candidate(settings, candidate, actor_role=ActorRole.SYSTEM, actor_id="system")
+
+    with pytest.raises(CandidateStateError, match="invalid drop reason"):
+        drop_candidate(
+            settings,
+            candidate.candidate_id,
+            actor_role=ActorRole.VALIDATOR,
+            actor_id="val-course-admin",
+            reason="freeform_reason_not_allowed",
         )
 
 

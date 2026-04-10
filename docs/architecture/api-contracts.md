@@ -296,8 +296,11 @@ Purpose:
 Response body inside `data`:
 
 - `candidate`
-- `audit_events`
+- `audit_events` including structured `details` when an audit action carries machine-readable metadata
 - `available_actions`
+  - open academic candidates: `patch_preview`, `approve`, `merge`, `drop`
+  - operations candidates visible to `operator`: `patch_preview`
+  - promoted candidates with `wiki_sync_status = pending`: `resume_sync`
 
 ### 6.4.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
 
@@ -352,10 +355,14 @@ Rules:
 - `operator` is read-only in the MVP review flow and cannot approve, merge, or drop candidates
 - `validator` may approve through review-scoped requests
 - `target_path` must match the canonical wiki path for `target_page_id`
-- successful approval promotes the candidate first, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch and closes with `candidate_wiki_synced`
+- successful approval promotes the candidate first with `candidate.wiki_sync_status = pending`, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch, marks the candidate `wiki_sync_status = synced`, and closes with `candidate_wiki_synced`
 - same `Idempotency-Key` plus the same approval payload replays safely
-- same `Idempotency-Key` plus a different approval payload returns `409 duplicate_action`
+- the approval replay contract includes a frozen patch plan fingerprint; if the candidate or wiki page drifts enough to change that plan, the retry must return `409 duplicate_action`
+- replay comparison normalizes the canonical wiki target, so omitting `target_path` or providing the canonical path replays safely
+- same `Idempotency-Key` plus a different effective approval payload returns `409 duplicate_action`
 - retry after a partial wiki-sync failure must converge to one promoted candidate state and one final wiki patch audit chain
+- a failed approve attempt may still leave `candidate.status = promoted` with `wiki_sync_status = pending`; callers may retry with the same `Idempotency-Key`, or they may use the dedicated `resume-sync` endpoint to continue the stored promotion attempt with a fresh request key
+- these partial failures currently surface as `500 internal_error` until the original idempotent approval either converges or is explicitly superseded
 
 Response body inside `data`:
 
@@ -363,7 +370,44 @@ Response body inside `data`:
 - `patch`
 - `wiki_page`
 
-### 6.4.5 `POST /api/v1/review/candidates/{candidate_id}/merge`
+### 6.4.5 `POST /api/v1/review/candidates/{candidate_id}/resume-sync`
+
+Purpose:
+
+- continue a previously promoted candidate whose wiki sync stopped after the approval plan was frozen
+
+Request body:
+
+```json
+{
+  "resume_notes": "Resume the stored approval plan after a transient failure."
+}
+```
+
+Contract:
+
+- requires `Idempotency-Key`
+- `instructor` may resume academic candidates in scope
+- `validator` may resume review-scoped candidates
+- `operator` remains read-only in the MVP review flow and cannot resume wiki sync
+- candidate must already be `status = promoted` and `wiki_sync_status = pending`
+- the server reuses the stored `promotion_attempt_id`, `wiki_sync_target_path`, and `approval_plan_fingerprint`
+- resume continues the existing pending promotion attempt and must not emit a second `candidate_wiki_sync_pending` audit event
+- the current candidate and wiki page must still match the frozen approval plan; if that plan drifts, the request returns `409 duplicate_action`
+- unlike `approve`, `resume-sync` may use a fresh `Idempotency-Key` because it resumes a server-owned promotion attempt rather than creating a new approval plan
+- once a `resume-sync` request succeeds, reusing the same `Idempotency-Key` with the same payload must replay the stored success response
+- reusing the same `Idempotency-Key` with different `resume_notes` must return `409 duplicate_action`
+
+Response body inside `data`:
+
+- `candidate`
+- `patch`
+- `wiki_page`
+  - `updated_at` means the actual wiki sync completion time, not the original approval time
+
+The `candidate` payload should include `wiki_sync_status` and, once sync is complete, `wiki_synced_at`.
+
+### 6.4.6 `POST /api/v1/review/candidates/{candidate_id}/merge`
 
 Purpose:
 
@@ -384,10 +428,11 @@ Rules:
 - target candidate must remain active
 - merge stays inside the same course/class scope
 - `operator` is not allowed to merge candidates in the MVP review flow
+- merge replay identity is anchored to the original target candidate meaning, not only its ID; `title`, `summary`, and `related_page_id` drift make the replay a different request
 - same `Idempotency-Key` plus the same merge payload replays safely
 - same `Idempotency-Key` plus a different merge payload returns `409 duplicate_action`
 
-### 6.4.6 `POST /api/v1/review/candidates/{candidate_id}/drop`
+### 6.4.7 `POST /api/v1/review/candidates/{candidate_id}/drop`
 
 Purpose:
 
@@ -402,11 +447,18 @@ Request body:
 }
 ```
 
+Allowed `reason` values:
+
+- `insufficient_shared_value`
+- `obsolete_operations_signal`
+- `superseded_by_existing_candidate`
+
 Rules:
 
 - requires `Idempotency-Key`
 - drop is a status transition, not a delete
 - `operator` is not allowed to drop candidates in the MVP review flow
+- the drop audit record must preserve `reason` as structured metadata as well as human-readable notes
 - same `Idempotency-Key` plus the same drop payload replays safely
 - same `Idempotency-Key` plus a different drop payload returns `409 duplicate_action`
 

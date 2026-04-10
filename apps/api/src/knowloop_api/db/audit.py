@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 
@@ -18,6 +19,7 @@ class AuditEventRecord(BaseModel):
     from_status: str | None = None
     to_status: str | None = None
     notes: str | None = None
+    details: dict[str, object] | None = None
     request_id: str | None = None
     idempotency_key: str | None = None
     created_at: datetime
@@ -32,6 +34,7 @@ class MutationRequestRecord(BaseModel):
     actor_id: str | None = None
     request_fingerprint: str
     status: str
+    response_payload: dict[str, object] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -47,6 +50,7 @@ def create_audit_event(
     from_status: str | None = None,
     to_status: str | None = None,
     notes: str | None = None,
+    details: dict[str, object] | None = None,
     request_id: str | None = None,
     idempotency_key: str | None = None,
     created_at: datetime | None = None,
@@ -66,6 +70,7 @@ def create_audit_event(
         from_status=from_status,
         to_status=to_status,
         notes=notes,
+        details=details,
         request_id=request_id,
         idempotency_key=idempotency_key,
         created_at=event_timestamp,
@@ -85,10 +90,11 @@ def create_audit_event(
                     from_status,
                     to_status,
                     notes,
+                    details_json,
                     request_id,
                     idempotency_key,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.event_id,
@@ -100,6 +106,7 @@ def create_audit_event(
                     event.from_status,
                     event.to_status,
                     event.notes,
+                    _serialize_audit_details(event.details),
                     event.request_id,
                     event.idempotency_key,
                     event.created_at.isoformat().replace("+00:00", "Z"),
@@ -134,6 +141,7 @@ def list_audit_events(
             from_status,
             to_status,
             notes,
+            details_json,
             request_id,
             idempotency_key,
             created_at
@@ -174,9 +182,10 @@ def list_audit_events(
             from_status=row[6],
             to_status=row[7],
             notes=row[8],
-            request_id=row[9],
-            idempotency_key=row[10],
-            created_at=_parse_timestamp(row[11]),
+            details=_parse_audit_details(row[9]),
+            request_id=row[10],
+            idempotency_key=row[11],
+            created_at=_parse_timestamp(row[12]),
         )
         for row in rows
     ]
@@ -196,6 +205,7 @@ def get_audit_event(settings: Settings, event_id: str) -> AuditEventRecord | Non
                 from_status,
                 to_status,
                 notes,
+                details_json,
                 request_id,
                 idempotency_key,
                 created_at
@@ -218,9 +228,10 @@ def get_audit_event(settings: Settings, event_id: str) -> AuditEventRecord | Non
         from_status=row[6],
         to_status=row[7],
         notes=row[8],
-        request_id=row[9],
-        idempotency_key=row[10],
-        created_at=_parse_timestamp(row[11]),
+        details=_parse_audit_details(row[9]),
+        request_id=row[10],
+        idempotency_key=row[11],
+        created_at=_parse_timestamp(row[12]),
     )
 
 
@@ -244,6 +255,7 @@ def get_mutation_request(
                 actor_id,
                 request_fingerprint,
                 status,
+                response_json,
                 created_at,
                 updated_at
             FROM mutation_requests
@@ -267,8 +279,9 @@ def get_mutation_request(
         actor_id=row[5],
         request_fingerprint=row[6],
         status=row[7],
-        created_at=_parse_timestamp(row[8]),
-        updated_at=_parse_timestamp(row[9]),
+        response_payload=_parse_audit_details(row[8]),
+        created_at=_parse_timestamp(row[9]),
+        updated_at=_parse_timestamp(row[10]),
     )
 
 
@@ -297,9 +310,10 @@ def begin_mutation_request(
                 actor_id,
                 request_fingerprint,
                 status,
+                response_json,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entity_type,
@@ -310,6 +324,7 @@ def begin_mutation_request(
                 actor_id,
                 request_fingerprint,
                 "pending",
+                None,
                 timestamp,
                 timestamp,
             ),
@@ -336,6 +351,7 @@ def mark_mutation_request_applied(
     action: str,
     idempotency_key: str,
     updated_at: datetime,
+    response_payload: dict[str, object] | None = None,
 ) -> MutationRequestRecord:
     existing_record = get_mutation_request(
         settings,
@@ -353,7 +369,7 @@ def mark_mutation_request_applied(
         connection.execute(
             """
             UPDATE mutation_requests
-            SET status = ?, updated_at = ?
+            SET status = ?, response_json = ?, updated_at = ?
             WHERE entity_type = ?
               AND entity_id = ?
               AND action = ?
@@ -361,6 +377,7 @@ def mark_mutation_request_applied(
             """,
             (
                 "applied",
+                _serialize_audit_details(response_payload),
                 timestamp,
                 entity_type,
                 entity_id,
@@ -389,3 +406,15 @@ def build_audit_event_id(*, action: str, entity_id: str, created_at: datetime) -
 
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _serialize_audit_details(details: dict[str, object] | None) -> str | None:
+    if details is None:
+        return None
+    return json.dumps(details, sort_keys=True, separators=(",", ":"))
+
+
+def _parse_audit_details(value: str | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return json.loads(value)

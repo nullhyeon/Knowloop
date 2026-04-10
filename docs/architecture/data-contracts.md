@@ -188,6 +188,17 @@ Optional but useful fields:
 - `related_page_id`
 - `approved_at`
 - `approved_by`
+- `promotion_attempt_id`
+- `wiki_sync_target_path`
+- `approval_plan_fingerprint`
+- `wiki_sync_status`
+- `wiki_synced_at`
+
+Interpretation notes:
+
+- `promotion_attempt_id` is the server-owned identity for one approval attempt
+- `wiki_sync_target_path` and `approval_plan_fingerprint` freeze the exact wiki patch plan that may later be resumed
+- `wiki_sync_status = pending` means the candidate is promoted but the wiki sync still needs the dedicated resume path to finish
 
 Canonical store:
 
@@ -261,6 +272,7 @@ Optional fields:
 - `from_status`
 - `to_status`
 - `notes`
+- `details_json` for action-specific structured metadata only; the current MVP contract uses it for drop `reason`
 - `request_id`
 - `idempotency_key`
 

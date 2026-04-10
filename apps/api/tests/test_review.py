@@ -17,6 +17,7 @@ from knowloop_api.main import create_app
 from knowloop_api.services.candidates import (
     CandidateItem,
     CandidateStatus,
+    WikiSyncStatus,
     create_candidate,
     get_candidate,
 )
@@ -135,6 +136,10 @@ def parse_markdown_document(contents: str) -> tuple[dict[str, object], str]:
     return metadata, body.strip()
 
 
+def as_zulu(timestamp: datetime) -> str:
+    return timestamp.isoformat().replace("+00:00", "Z")
+
+
 def test_review_candidate_list_returns_visible_candidates_for_instructor(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     seed_candidate(settings, "open-faq-homework-deadline.json")
@@ -175,6 +180,58 @@ def test_review_candidate_detail_returns_audit_history_and_actions(tmp_path: Pat
     assert payload["candidate"]["candidate_id"] == candidate.candidate_id
     assert payload["audit_events"][0]["action"] == "candidate_created"
     assert payload["available_actions"] == ["patch_preview", "approve", "merge", "drop"]
+
+
+def test_review_candidate_detail_exposes_resume_sync_for_pending_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+
+    detail_response = client.get(
+        f"/api/v1/review/candidates/{candidate.candidate_id}",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-detail-pending-sync",
+        ),
+    )
+
+    assert detail_response.status_code == 200
+    payload = detail_response.json()["data"]
+    assert payload["candidate"]["status"] == "promoted"
+    assert payload["candidate"]["wiki_sync_status"] == "pending"
+    assert payload["candidate"]["promotion_attempt_id"].startswith("pat-cand-")
+    assert payload["available_actions"] == ["resume_sync"]
 
 
 def test_review_patch_preview_matches_homework_fixture_contract(tmp_path: Path) -> None:
@@ -271,9 +328,12 @@ def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) 
     response_payload = first_response.json()["data"]
     stored_candidate = get_candidate(settings, candidate.candidate_id)
     assert response_payload["candidate"]["status"] == "promoted"
+    assert response_payload["candidate"]["wiki_sync_status"] == "synced"
     assert stored_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
     assert stored_candidate.approved_by == "ins-calculus-team"
     assert response_payload["wiki_page"]["page_id"] == review_fixture["expected"]["wiki_page_id"]
+    assert response_payload["wiki_page"]["updated_at"] == as_zulu(stored_candidate.wiki_synced_at)
 
     actual_metadata, actual_body = parse_markdown_document(written_path.read_text(encoding="utf-8"))
     expected_metadata, expected_body = parse_markdown_document(expected_after_contents)
@@ -312,6 +372,10 @@ def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) 
     assert len(wiki_audit) == 1
     assert len(pending_events) == 1
     assert len(synced_events) == 1
+    assert stored_candidate.wiki_synced_at == synced_events[0].created_at
+    assert candidate_audit[0].created_at < pending_events[0].created_at
+    assert pending_events[0].created_at < wiki_audit[0].created_at
+    assert wiki_audit[0].created_at < synced_events[0].created_at
 
 
 def test_review_approve_rejects_reused_idempotency_key_with_different_payload(
@@ -382,6 +446,54 @@ def test_review_approve_rejects_reused_idempotency_key_with_different_payload(
     assert len(synced_events) == 1
 
 
+def test_review_approve_replays_when_canonical_target_path_is_omitted_then_explicit(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json={
+            "target_page_id": "page-faq-homework-submission",
+            "approval_notes": review_fixture["request_body"]["approval_notes"],
+        },
+    )
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    candidate_audit = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_promoted",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert len(candidate_audit) == 1
+    assert len(wiki_audit) == 1
+
+
 def test_review_approve_requires_idempotency_key_at_route_boundary(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
@@ -432,8 +544,48 @@ def test_review_approve_rejects_noncanonical_target_path_on_replay(tmp_path: Pat
     )
 
     assert first_response.status_code == 200
-    assert second_response.status_code == 422
-    assert second_response.json()["error"]["code"] == "validation_failed"
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
+
+
+def test_review_approve_rejects_noncanonical_target_path_before_promotion(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-approve-invalid-target",
+            idempotency_key="idem-review-approve-invalid-target",
+        ),
+        json={
+            "target_page_id": "page-faq-homework-submission",
+            "target_path": "data/wiki/faq/other-page.md",
+            "approval_notes": "Reject the invalid canonical path before any candidate mutation.",
+        },
+    )
+
+    stored_candidate = get_candidate(settings, candidate.candidate_id)
+    promoted_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_promoted",
+        idempotency_key="idem-review-approve-invalid-target",
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_failed"
+    assert stored_candidate.status is CandidateStatus.OPEN
+    assert promoted_events == []
 
 
 def test_review_approve_recovers_after_wiki_write_failure(
@@ -468,15 +620,23 @@ def test_review_approve_recovers_after_wiki_write_failure(
         headers=review_fixture["request_headers"],
         json=review_fixture["request_body"],
     )
+
+    assert first_response.status_code == 500
+    first_failed_candidate = get_candidate(settings, candidate.candidate_id)
+    assert first_failed_candidate.status is CandidateStatus.PROMOTED
+    assert first_failed_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert first_failed_candidate.wiki_synced_at is None
+
     second_response = client.post(
         f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
         headers=review_fixture["request_headers"],
         json=review_fixture["request_body"],
     )
 
-    assert first_response.status_code == 500
     assert second_response.status_code == 200
-    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.PROMOTED
+    recovered_candidate = get_candidate(settings, candidate.candidate_id)
+    assert recovered_candidate.status is CandidateStatus.PROMOTED
+    assert recovered_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
     assert written_path.exists()
 
     pending_events = list_audit_events(
@@ -506,7 +666,233 @@ def test_review_approve_recovers_after_wiki_write_failure(
     assert len(wiki_audit) == 1
 
 
-def test_review_approve_recovers_after_wiki_patch_audit_failure(
+def test_review_resume_sync_completes_pending_candidate_with_new_idempotency_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+    expected_after_contents = (
+        FIXTURE_ROOT / "wiki" / "faq-homework-submission.after.md"
+    ).read_text(encoding="utf-8")
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+    failed_candidate = get_candidate(settings, candidate.candidate_id)
+    assert failed_candidate.status is CandidateStatus.PROMOTED
+    assert failed_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert failed_candidate.promotion_attempt_id is not None
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq",
+            idempotency_key="idem-fixture-resume-homework-faq",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the frozen approval plan after the write failure."},
+    )
+
+    assert resume_response.status_code == 200
+    payload = resume_response.json()["data"]
+    assert payload["candidate"]["status"] == "promoted"
+    assert payload["candidate"]["wiki_sync_status"] == "synced"
+    assert payload["candidate"]["promotion_attempt_id"] == failed_candidate.promotion_attempt_id
+    assert payload["patch"]["target_page_id"] == "page-faq-homework-submission"
+    assert payload["wiki_page"]["page_id"] == "page-faq-homework-submission"
+
+    recovered_candidate = get_candidate(settings, candidate.candidate_id)
+    assert recovered_candidate.status is CandidateStatus.PROMOTED
+    assert recovered_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+    assert recovered_candidate.promotion_attempt_id == failed_candidate.promotion_attempt_id
+
+    final_metadata, final_body = parse_markdown_document(written_path.read_text(encoding="utf-8"))
+    expected_metadata, expected_body = parse_markdown_document(expected_after_contents)
+    assert final_body == expected_body
+    assert final_metadata["candidate_refs"] == expected_metadata["candidate_refs"]
+    assert final_metadata["source_refs"] == expected_metadata["source_refs"]
+
+    original_pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    original_synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    original_wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    resumed_synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-resume-homework-faq",
+    )
+    resumed_wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-resume-homework-faq",
+    )
+    resumed_pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-resume-homework-faq",
+    )
+
+    assert len(original_pending_events) == 1
+    assert original_synced_events == []
+    assert original_wiki_audit == []
+    assert resumed_pending_events == []
+    assert len(resumed_synced_events) == 1
+    assert len(resumed_wiki_audit) == 1
+    assert payload["wiki_page"]["updated_at"] == as_zulu(recovered_candidate.wiki_synced_at)
+
+    replay_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-replay",
+            idempotency_key="idem-fixture-resume-homework-faq",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the frozen approval plan after the write failure."},
+    )
+
+    assert replay_response.status_code == 200
+    replay_payload = replay_response.json()["data"]
+    assert replay_payload["candidate"]["candidate_id"] == candidate.candidate_id
+    assert replay_payload["candidate"]["wiki_sync_status"] == "synced"
+    assert replay_payload["patch"]["target_page_id"] == "page-faq-homework-submission"
+    assert replay_payload["wiki_page"]["updated_at"] == as_zulu(recovered_candidate.wiki_synced_at)
+
+    resumed_synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-resume-homework-faq",
+    )
+    resumed_wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-resume-homework-faq",
+    )
+    assert len(resumed_synced_events) == 1
+    assert len(resumed_wiki_audit) == 1
+
+
+def test_review_resume_sync_rejects_reused_idempotency_key_with_different_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-conflict-base",
+            idempotency_key="idem-fixture-resume-homework-faq-conflict",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the stored approval plan."},
+    )
+
+    assert resume_response.status_code == 200
+
+    conflict_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-conflict-second",
+            idempotency_key="idem-fixture-resume-homework-faq-conflict",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the stored approval plan with a different note."},
+    )
+
+    assert conflict_response.status_code == 409
+    assert conflict_response.json()["error"]["code"] == "duplicate_action"
+
+
+def test_review_resume_sync_returns_duplicate_action_when_stored_plan_drifts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -522,36 +908,114 @@ def test_review_approve_recovers_after_wiki_patch_audit_failure(
         target_relative_path="wiki/faq/homework-submission.md",
     )
 
-    original_create_audit_event = review_service.create_audit_event
+    original_write_wiki_page = review_service._write_wiki_page
     failed_once = {"value": False}
 
-    def flaky_create_audit_event(*args, **kwargs):
-        if (
-            kwargs.get("entity_type") == "wiki_page"
-            and kwargs.get("action") == "wiki_patch_applied"
-            and not failed_once["value"]
-        ):
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
             failed_once["value"] = True
-            raise RuntimeError("forced wiki audit failure")
-        return original_create_audit_event(*args, **kwargs)
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
 
-    monkeypatch.setattr(review_service, "create_audit_event", flaky_create_audit_event)
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
 
     first_response = client.post(
         f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
         headers=review_fixture["request_headers"],
         json=review_fixture["request_body"],
     )
-    second_response = client.post(
+
+    assert first_response.status_code == 500
+    written_path.write_text(
+        written_path.read_text(encoding="utf-8").replace(
+            "Submit Homework 01 through the LMS assignment page.",
+            "Submit Homework 01 through the course forum instead.",
+        ),
+        encoding="utf-8",
+    )
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-drift",
+            idempotency_key="idem-fixture-resume-homework-faq-drift",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the frozen approval plan after the write failure."},
+    )
+
+    stored_candidate = get_candidate(settings, candidate.candidate_id)
+    synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-resume-homework-faq-drift",
+    )
+    wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-resume-homework-faq-drift",
+    )
+
+    assert resume_response.status_code == 409
+    assert resume_response.json()["error"]["code"] == "duplicate_action"
+    assert stored_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert synced_events == []
+    assert wiki_audit == []
+
+
+def test_review_approve_recovers_after_wiki_patch_audit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+    expected_after_contents = (
+        FIXTURE_ROOT / "wiki" / "faq-homework-submission.after.md"
+    ).read_text(encoding="utf-8")
+
+    original_record_wiki_patch_applied = review_service._record_wiki_patch_applied
+    failed_once = {"value": False}
+
+    def flaky_record_wiki_patch_applied(*args, **kwargs):
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise RuntimeError("forced wiki audit failure")
+        return original_record_wiki_patch_applied(*args, **kwargs)
+
+    monkeypatch.setattr(
+        review_service,
+        "_record_wiki_patch_applied",
+        flaky_record_wiki_patch_applied,
+    )
+
+    first_response = client.post(
         f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
         headers=review_fixture["request_headers"],
         json=review_fixture["request_body"],
     )
 
     assert first_response.status_code == 500
-    assert second_response.status_code == 200
     assert written_path.exists()
-    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.PROMOTED
+    first_failed_candidate = get_candidate(settings, candidate.candidate_id)
+    assert first_failed_candidate.status is CandidateStatus.PROMOTED
+    assert first_failed_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert first_failed_candidate.wiki_synced_at is None
 
     promoted_events = list_audit_events(
         settings,
@@ -582,10 +1046,148 @@ def test_review_approve_recovers_after_wiki_patch_audit_failure(
         idempotency_key="idem-fixture-approve-homework-faq",
     )
 
+    first_metadata, first_body = parse_markdown_document(written_path.read_text(encoding="utf-8"))
+    expected_metadata, expected_body = parse_markdown_document(expected_after_contents)
+    assert first_body == expected_body
+    assert first_metadata["candidate_refs"] == expected_metadata["candidate_refs"]
+    assert first_metadata["source_refs"] == expected_metadata["source_refs"]
+    assert len(promoted_events) == 1
+    assert len(pending_events) == 1
+    assert len(wiki_audit) == 0
+    assert len(synced_events) == 0
+
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert second_response.status_code == 200
+    recovered_candidate = get_candidate(settings, candidate.candidate_id)
+    assert recovered_candidate.status is CandidateStatus.PROMOTED
+    assert recovered_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+
+    promoted_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_promoted",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+
+    final_metadata, final_body = parse_markdown_document(written_path.read_text(encoding="utf-8"))
+    assert final_body == expected_body
+    assert final_metadata["candidate_refs"] == expected_metadata["candidate_refs"]
+    assert final_metadata["source_refs"] == expected_metadata["source_refs"]
     assert len(promoted_events) == 1
     assert len(pending_events) == 1
     assert len(wiki_audit) == 1
     assert len(synced_events) == 1
+
+
+def test_review_approve_rejects_replay_when_patch_plan_drifts_after_partial_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+    written_path.write_text(
+        written_path.read_text(encoding="utf-8").replace(
+            "Submit Homework 01 through the LMS assignment page.",
+            "Submit Homework 01 through the course forum instead.",
+        ),
+        encoding="utf-8",
+    )
+
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-fixture-approve-homework-faq-drifted-retry",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    stored_candidate = get_candidate(settings, candidate.candidate_id)
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
+    assert stored_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert stored_candidate.wiki_synced_at is None
+    assert len(pending_events) == 1
+    assert wiki_audit == []
+    assert synced_events == []
 
 
 def test_review_merge_endpoint_merges_duplicate_candidate(tmp_path: Path) -> None:
@@ -745,6 +1347,8 @@ def test_review_drop_endpoint_is_idempotent_with_same_key(tmp_path: Path) -> Non
         idempotency_key="idem-fixture-drop-low-value",
     )
     assert len(drop_audit) == 1
+    assert "Drop reason: insufficient_shared_value" in drop_audit[0].notes
+    assert drop_audit[0].details == {"reason": "insufficient_shared_value"}
 
 
 def test_review_drop_rejects_reused_idempotency_key_with_different_payload(
@@ -767,7 +1371,7 @@ def test_review_drop_rejects_reused_idempotency_key_with_different_payload(
         },
         json={
             **review_fixture["request_body"],
-            "drop_notes": "Conflicting drop notes for the same idempotency key.",
+            "reason": "superseded_by_existing_candidate",
         },
     )
 
@@ -783,6 +1387,48 @@ def test_review_drop_rejects_reused_idempotency_key_with_different_payload(
         idempotency_key="idem-fixture-drop-low-value",
     )
     assert len(drop_audit) == 1
+    assert "Drop reason: insufficient_shared_value" in drop_audit[0].notes
+    assert drop_audit[0].details == {"reason": "insufficient_shared_value"}
+
+
+def test_review_drop_rejects_reused_idempotency_key_with_different_notes(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("drop-low-value-candidate.json")
+    candidate = seed_candidate(settings, "open-unresolved-integral.json")
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/drop",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/drop",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-fixture-drop-low-value-notes-conflict",
+        },
+        json={
+            **review_fixture["request_body"],
+            "drop_notes": "Same reason, different review notes.",
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
+
+    drop_audit = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_dropped",
+        idempotency_key="idem-fixture-drop-low-value",
+    )
+    assert len(drop_audit) == 1
+    assert "Drop reason: insufficient_shared_value" in drop_audit[0].notes
+    assert drop_audit[0].details == {"reason": "insufficient_shared_value"}
 
 
 def test_operator_can_list_operations_candidates_but_cannot_approve_them(tmp_path: Path) -> None:

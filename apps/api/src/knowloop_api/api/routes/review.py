@@ -23,6 +23,7 @@ from knowloop_api.services.review import (
     ReviewDropRequest,
     ReviewMergeRequest,
     ReviewPatchRequest,
+    ReviewResumeSyncRequest,
     ReviewStateError,
     approve_candidate,
     drop_review_candidate,
@@ -30,6 +31,7 @@ from knowloop_api.services.review import (
     list_review_candidates,
     merge_review_candidate,
     preview_candidate_patch,
+    resume_candidate_sync,
 )
 
 
@@ -238,6 +240,55 @@ def create_review_router(settings: Settings) -> APIRouter:
             response.model_dump(mode="json", exclude_none=True),
         )
 
+    @router.post("/candidates/{candidate_id}/resume-sync")
+    def resume_review_candidate_sync_endpoint(
+        candidate_id: str,
+        payload: ReviewResumeSyncRequest,
+        context: Annotated[RequestContext, Depends(get_mutating_review_request_context)],
+    ) -> dict[str, Any]:
+        try:
+            response = resume_candidate_sync(
+                settings,
+                candidate_id=candidate_id,
+                payload=payload,
+                context=context,
+            )
+        except CandidateNotFoundError as exc:
+            raise ApiError(
+                status_code=404,
+                code="not_found",
+                message="Candidate was not found.",
+                request_id=context.request_id,
+                details={"candidate_id": candidate_id},
+            ) from exc
+        except ForbiddenReviewScopeError as exc:
+            raise ApiError(
+                status_code=403,
+                code="forbidden_scope",
+                message=str(exc),
+                request_id=context.request_id,
+                details={"candidate_id": candidate_id},
+            ) from exc
+        except ReviewStateError as exc:
+            raise ApiError(
+                status_code=422,
+                code="validation_failed",
+                message=str(exc),
+                request_id=context.request_id,
+                details={"candidate_id": candidate_id},
+            ) from exc
+        except CandidateStateError as exc:
+            raise _candidate_state_error_to_api_error(
+                exc,
+                request_id=context.request_id,
+                candidate_id=candidate_id,
+            ) from exc
+
+        return success_response(
+            context.request_id,
+            response.model_dump(mode="json", exclude_none=True),
+        )
+
     @router.post("/candidates/{candidate_id}/drop")
     def drop_review_candidate_endpoint(
         candidate_id: str,
@@ -296,7 +347,7 @@ def _candidate_state_error_to_api_error(
     request_id: str,
     candidate_id: str,
 ) -> ApiError:
-    if "different request" in str(exc):
+    if "different request" in str(exc) or "stored approval plan" in str(exc):
         return ApiError(
             status_code=409,
             code="duplicate_action",

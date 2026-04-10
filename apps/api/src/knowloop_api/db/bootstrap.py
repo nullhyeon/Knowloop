@@ -50,6 +50,7 @@ AUDIT_SCHEMA_STATEMENTS = [
         from_status TEXT,
         to_status TEXT,
         notes TEXT,
+        details_json TEXT,
         request_id TEXT,
         idempotency_key TEXT,
         created_at TEXT NOT NULL
@@ -73,6 +74,7 @@ AUDIT_SCHEMA_STATEMENTS = [
         actor_id TEXT,
         request_fingerprint TEXT NOT NULL,
         status TEXT NOT NULL,
+        response_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         PRIMARY KEY (entity_type, entity_id, action, idempotency_key)
@@ -93,6 +95,7 @@ AUDIT_EVENT_MIGRATION_COLUMN_DEFINITIONS = {
     "from_status": "TEXT",
     "to_status": "TEXT",
     "notes": "TEXT",
+    "details_json": "TEXT",
     "request_id": "TEXT",
     "idempotency_key": "TEXT",
 }
@@ -102,6 +105,7 @@ MUTATION_REQUEST_MIGRATION_COLUMN_DEFINITIONS = {
     "actor_id": "TEXT",
     "request_fingerprint": "TEXT NOT NULL DEFAULT ''",
     "status": "TEXT NOT NULL DEFAULT 'pending'",
+    "response_json": "TEXT",
     "created_at": "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
     "updated_at": "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
 }
@@ -132,6 +136,7 @@ AUDIT_REQUIRED_COLUMNS = {
     "from_status",
     "to_status",
     "notes",
+    "details_json",
     "request_id",
     "idempotency_key",
     "created_at",
@@ -146,6 +151,7 @@ MUTATION_REQUEST_REQUIRED_COLUMNS = {
     "actor_id",
     "request_fingerprint",
     "status",
+    "response_json",
     "created_at",
     "updated_at",
 }
