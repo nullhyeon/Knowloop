@@ -353,6 +353,9 @@ Rules:
 - `validator` may approve through review-scoped requests
 - `target_path` must match the canonical wiki path for `target_page_id`
 - successful approval promotes the candidate first, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch and closes with `candidate_wiki_synced`
+- same `Idempotency-Key` plus the same approval payload replays safely
+- same `Idempotency-Key` plus a different approval payload returns `409 duplicate_action`
+- retry after a partial wiki-sync failure must converge to one promoted candidate state and one final wiki patch audit chain
 
 Response body inside `data`:
 
@@ -381,6 +384,8 @@ Rules:
 - target candidate must remain active
 - merge stays inside the same course/class scope
 - `operator` is not allowed to merge candidates in the MVP review flow
+- same `Idempotency-Key` plus the same merge payload replays safely
+- same `Idempotency-Key` plus a different merge payload returns `409 duplicate_action`
 
 ### 6.4.6 `POST /api/v1/review/candidates/{candidate_id}/drop`
 
@@ -402,6 +407,8 @@ Rules:
 - requires `Idempotency-Key`
 - drop is a status transition, not a delete
 - `operator` is not allowed to drop candidates in the MVP review flow
+- same `Idempotency-Key` plus the same drop payload replays safely
+- same `Idempotency-Key` plus a different drop payload returns `409 duplicate_action`
 
 ## 6.5 Wiki Read Routes
 

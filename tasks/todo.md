@@ -85,10 +85,10 @@
 
 ## Next Promotion Hardening Target
 
-- [ ] Codex Builder: tighten candidate-to-wiki promotion coverage and replay expectations
-- [ ] Gemini Pro Critic: review the promotion-hardening slice for hidden coupling and approval blind spots
-- [ ] Codex Critic fallback: run when Gemini Pro cannot complete the promotion-hardening critic pass
-- [ ] Codex Reviewer: review the promotion-hardening slice for correctness, contract drift, and missing tests
+- [x] Codex Builder: tighten candidate-to-wiki promotion coverage and replay expectations
+- [x] Gemini Pro Critic: attempted headless review for the promotion-hardening slice but did not complete in time
+- [x] Codex Critic fallback: attempted CLI critic review after Gemini timeout, then closed the remaining concerns with an in-session manual critic pass
+- [x] Codex Reviewer: attempted CLI review, then closed the slice with manual reviewer checks plus full test/lint verification
 
 ## Ready-To-Assign Prompt Targets
 

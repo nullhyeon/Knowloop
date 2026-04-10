@@ -294,8 +294,92 @@ def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) 
         action="wiki_patch_applied",
         idempotency_key="idem-fixture-approve-homework-faq",
     )
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
     assert len(candidate_audit) == 1
     assert len(wiki_audit) == 1
+    assert len(pending_events) == 1
+    assert len(synced_events) == 1
+
+
+def test_review_approve_rejects_reused_idempotency_key_with_different_payload(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-fixture-approve-homework-faq-conflict",
+        },
+        json={
+            **review_fixture["request_body"],
+            "approval_notes": "Conflicting approval payload for the same idempotency key.",
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
+
+    candidate_audit = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_promoted",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    assert len(candidate_audit) == 1
+    assert len(wiki_audit) == 1
+    assert len(pending_events) == 1
+    assert len(synced_events) == 1
 
 
 def test_review_approve_requires_idempotency_key_at_route_boundary(tmp_path: Path) -> None:
@@ -422,6 +506,88 @@ def test_review_approve_recovers_after_wiki_write_failure(
     assert len(wiki_audit) == 1
 
 
+def test_review_approve_recovers_after_wiki_patch_audit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/homework-submission.md",
+    )
+
+    original_create_audit_event = review_service.create_audit_event
+    failed_once = {"value": False}
+
+    def flaky_create_audit_event(*args, **kwargs):
+        if (
+            kwargs.get("entity_type") == "wiki_page"
+            and kwargs.get("action") == "wiki_patch_applied"
+            and not failed_once["value"]
+        ):
+            failed_once["value"] = True
+            raise RuntimeError("forced wiki audit failure")
+        return original_create_audit_event(*args, **kwargs)
+
+    monkeypatch.setattr(review_service, "create_audit_event", flaky_create_audit_event)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+    assert second_response.status_code == 200
+    assert written_path.exists()
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.PROMOTED
+
+    promoted_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_promoted",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+
+    assert len(promoted_events) == 1
+    assert len(pending_events) == 1
+    assert len(wiki_audit) == 1
+    assert len(synced_events) == 1
+
+
 def test_review_merge_endpoint_merges_duplicate_candidate(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     review_fixture = load_review_fixture("merge-chain-rule-duplicate.json")
@@ -494,6 +660,45 @@ def test_review_merge_endpoint_is_idempotent_with_same_key(tmp_path: Path) -> No
     assert len(merge_audit) == 1
 
 
+def test_review_merge_rejects_reused_idempotency_key_with_different_payload(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("merge-chain-rule-duplicate.json")
+    seed_candidate(settings, "open-misconception-chain-rule.json")
+    duplicate_candidate = seed_candidate(settings, "open-misconception-chain-rule-duplicate.json")
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{duplicate_candidate.candidate_id}/merge",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    second_response = client.post(
+        f"/api/v1/review/candidates/{duplicate_candidate.candidate_id}/merge",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-fixture-merge-chain-rule-dup-conflict",
+        },
+        json={
+            **review_fixture["request_body"],
+            "merge_notes": "Conflicting merge notes for the same idempotency key.",
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
+
+    merge_audit = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=duplicate_candidate.candidate_id,
+        action="candidate_merged",
+        idempotency_key="idem-fixture-merge-chain-rule-dup",
+    )
+    assert len(merge_audit) == 1
+
+
 def test_review_drop_endpoint_drops_candidate(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     review_fixture = load_review_fixture("drop-low-value-candidate.json")
@@ -531,6 +736,44 @@ def test_review_drop_endpoint_is_idempotent_with_same_key(tmp_path: Path) -> Non
     assert first_response.status_code == 200
     assert second_response.status_code == 200
     assert second_response.json()["data"]["candidate"]["status"] == "dropped"
+
+    drop_audit = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_dropped",
+        idempotency_key="idem-fixture-drop-low-value",
+    )
+    assert len(drop_audit) == 1
+
+
+def test_review_drop_rejects_reused_idempotency_key_with_different_payload(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("drop-low-value-candidate.json")
+    candidate = seed_candidate(settings, "open-unresolved-integral.json")
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/drop",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/drop",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-fixture-drop-low-value-conflict",
+        },
+        json={
+            **review_fixture["request_body"],
+            "drop_notes": "Conflicting drop notes for the same idempotency key.",
+        },
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
 
     drop_audit = list_audit_events(
         settings,

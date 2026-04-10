@@ -17,6 +17,7 @@ The current slice is still not the full product. The harness and runtime foundat
 - document operational runbook and handoff expectations for the current backend state
 - strengthen query fixture coverage around answer basis, retrieval refs, and write-back outputs
 - support declarative follow-up and error query fixtures with setup validation and without hardcoding runtime-only IDs
+- tighten candidate-to-wiki promotion replay coverage across approve, merge, and drop mutations
 
 Primary users for the current slice:
 
