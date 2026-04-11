@@ -108,18 +108,35 @@ This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 ## Recommended Working Loop
 
 1. Codex Builder implements the next planned slice.
-2. Gemini Pro Critic challenges the design, boundaries, and risks.
-3. If Gemini Pro Critic times out, use `.\scripts\run-critic-pass.ps1` so the critic chain continues as `Gemini Pro -> Codex Critic -> Codex Critic ...` until completion.
-4. Codex Builder integrates valid critique.
-5. Codex Reviewer performs final diff review and retries until completion.
-6. Update `tasks/todo.md` and relevant docs.
+2. Codex Builder runs tests, lint, and `git diff --check`.
+3. Codex Builder creates a small `review package` for the active slice.
+4. Gemini Pro Critic challenges the design, boundaries, and risks using that package.
+5. If Gemini Pro Critic times out, use `.\scripts\run-critic-pass.ps1` so the critic chain continues as `Gemini Pro -> Codex Critic -> Codex Critic ...` against the same package scope.
+6. If a package times out, narrow the package instead of resending the same large scope.
+7. Codex Builder integrates valid critique.
+8. Codex Reviewer performs final diff review against a reviewer package and retries until completion.
+9. Update `tasks/todo.md` and relevant docs.
+
+## Review Packages
+
+Use `.\scripts\build-review-package.ps1` to create the scoped markdown files that
+critic and reviewer runs should consume.
+
+Default packaging rules:
+
+- at most `3` files per package
+- about `300` diff lines per package
+- one fast attempt for a multi-file package
+- if that fails, split to single-file packages
+- keep the same contract docs when falling back from Gemini to Codex Critic
 
 ## Timeout Rule
 
 - Timeout does not authorize a manual builder self-review.
 - Critic work must complete through a real critic response.
 - Reviewer work must complete through a real reviewer response.
-- The repository scripts are configured so these roles can be retried without changing prompts or model settings.
+- The repository scripts are configured to retry with a narrower review package before repeating the same large prompt.
+- Single-file packages may retry repeatedly; multi-file packages should be narrowed first.
 
 Use `docs/development/backend-runbook.md` for day-to-day operating steps, handoff expectations, and troubleshooting.
 

@@ -75,6 +75,7 @@ Operating rule:
 
 - default to critique before code, not code before critique
 - review a specific task, diff, or plan instead of the whole repo at once
+- use a generated `review package` as the default input, not the raw worktree
 - findings first, recommendations second
 - this is the preferred critic when `Gemini Pro` is responsive
 
@@ -95,6 +96,7 @@ Operating rule:
 
 - use this role when Gemini cannot complete the critic pass in a reasonable time
 - keep the review scoped to a specific slice, diff, or contract area
+- inherit the same `review package` scope that Gemini received
 - findings first, recommendations second
 - do not collapse into code-style review; leave patch-level review to `Codex Reviewer`
 - do not replace this role with a manual builder self-check when it times out; retry until an actual critic response completes
@@ -114,6 +116,7 @@ Operating rule:
 
 - default to review mode before edit mode
 - prefer `.\scripts\run-codex-review.ps1` for the repository's pinned reviewer path
+- use a `review package` built from the active slice, not the whole worktree
 - if patching issues directly, update docs and verification results too
 - do not replace this role with a manual builder self-check when it times out; retry until an actual reviewer response completes
 
@@ -155,11 +158,34 @@ Add these when relevant:
 ## Recommended Working Loop
 
 1. `Codex Builder` reads the task and implements the next slice.
-2. `Gemini Pro Critic` challenges the plan or the change set.
-3. If `Gemini Pro Critic` is blocked or times out, run the pinned critic chain: `Gemini Pro -> Codex Critic -> Codex Critic ...` until a critic pass completes.
-4. `Codex Builder` integrates the valid critique.
-5. `Codex Reviewer` performs final code review and test-gap review, retrying until a reviewer pass completes.
-6. Update `tasks/todo.md` and any affected docs.
+2. `Codex Builder` runs tests, lint, and `git diff --check` before any review pass.
+3. `Codex Builder` builds a narrow `review package` for the active slice.
+4. `Gemini Pro Critic` challenges the plan or the change set using that package.
+5. If `Gemini Pro Critic` is blocked or times out, run the pinned critic chain: `Gemini Pro -> Codex Critic -> Codex Critic ...` using the same package until a critic pass completes.
+6. If a package times out, narrow the package before retrying. Do not keep resending the same large scope.
+7. `Codex Builder` integrates the valid critique.
+8. `Codex Reviewer` performs final code review and test-gap review against a reviewer package, retrying until a reviewer pass completes.
+9. Update `tasks/todo.md` and any affected docs.
+
+## Review Package Policy
+
+All critic and reviewer runs must use a generated `review package`.
+
+Package contents:
+
+- slice name
+- goal and review focus
+- files under review
+- relevant contract docs
+- narrow diff only
+
+Package rules:
+
+- default package size is `<= 3 files` and about `<= 300 diff lines`
+- if a package times out, retry with a narrower package before retrying the same large scope
+- for multi-file packages, prefer one quick attempt and then split
+- for single-file packages, retry the same role until it completes
+- do not send the entire repo or full worktree unless the human explicitly asks for a broad review
 
 ## Timeout Policy
 
@@ -168,7 +194,8 @@ Timeout does not count as role completion.
 - Never replace a timed-out critic or reviewer pass with a manual builder self-check.
 - For critic passes, use `.\scripts\run-critic-pass.ps1`.
 - For reviewer passes, use `.\scripts\run-codex-review.ps1`.
-- If a role times out, retry that role chain until a real response completes or the human explicitly interrupts the run.
+- If a role times out on a multi-file package, narrow the package before retrying.
+- If a role times out on a single-file package, keep retrying that role until a real response completes or the human explicitly interrupts the run.
 - Report timeout history honestly in the final task report, but only after a critic or reviewer response has actually completed.
 - If we reopen an older slice because a real critic or reviewer pass was missing, treat the rerun, fixes, validation, and follow-up review as one work unit before closing it again.
 

@@ -76,6 +76,12 @@ Check agent authentication:
 .\scripts\check-agent-auth.ps1
 ```
 
+Build a scoped review package:
+
+```powershell
+.\scripts\build-review-package.ps1 -Role critic -ScopeName query-replay -Files apps/api/src/knowloop_api/services/query.py,apps/api/tests/test_query.py
+```
+
 ## 5. Preflight Checklist
 
 Before starting a new backend slice:
@@ -128,13 +134,16 @@ Rules:
 Every non-trivial backend task should follow this order:
 
 1. `Codex Builder` implements the slice.
-2. `Gemini Pro Critic` reviews boundaries, risk, and overengineering.
-3. If Gemini cannot complete, continue the pinned critic chain until a critic pass actually completes.
-4. `Codex Reviewer` performs a final correctness and test-gap review and is retried until completion.
-5. Builder applies fixes.
-6. Run verification.
-7. Commit.
-8. Report what changed, how it was verified, and whether the human owner needs to do anything.
+2. `Codex Builder` runs tests, lint, and `git diff --check`.
+3. `Codex Builder` creates a narrow review package for the slice.
+4. `Gemini Pro Critic` reviews boundaries, risk, and overengineering against that package.
+5. If Gemini cannot complete, continue the pinned critic chain until a critic pass actually completes.
+6. If the package times out, narrow the package before retrying.
+7. `Codex Reviewer` performs a final correctness and test-gap review against a reviewer package and is retried until completion.
+8. Builder applies fixes.
+9. Run verification.
+10. Commit.
+11. Report what changed, how it was verified, and whether the human owner needs to do anything.
 
 The report format should always include:
 
@@ -190,11 +199,14 @@ If no action is needed, keep moving to the next planned slice automatically.
 
 - wait and retry first
 - if it still does not complete in a reasonable window, continue through `.\scripts\run-critic-pass.ps1`
+- do not resend the same wide scope; narrow the review package first
 - do not downgrade the critic role to a lower-quality model
 
 ### Codex critic or reviewer CLI times out
 
 - retry the same role until it completes
+- if the package contains multiple files, narrow it before retrying
+- only keep repeating the same role on single-file packages
 - do not substitute a manual builder self-check for the missing role
 - record timeout history honestly after the role eventually completes
 

@@ -30,6 +30,7 @@ Gemini is used for:
 
 Gemini should challenge assumptions and propose safer alternatives when needed.
 Gemini should treat the planning docs as locked unless the human explicitly changes product direction.
+Gemini should prefer narrow review packages over a full worktree scan.
 
 ## Preferred Skill Order
 
@@ -50,6 +51,21 @@ If a skill is not auto-activated, read it manually from `.agents/skills/`.
 - be direct about hidden coupling and overengineering
 - prefer smaller, safer alternatives
 - flag anything that would make future maintenance or validation harder
+- stay inside the provided review package scope unless that scope is clearly insufficient
+
+## Review Package Policy
+
+Gemini critic runs should default to a generated `review package`.
+
+That package should contain:
+
+- the slice goal
+- the small set of files under review
+- the relevant contract docs
+- the narrow diff only
+
+If a multi-file package times out, narrow the package before retrying.
+Do not keep resending the same large worktree prompt.
 
 ## Model Policy
 

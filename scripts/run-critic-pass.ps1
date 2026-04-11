@@ -1,9 +1,15 @@
 param(
     [int]$GeminiAttempts = 1,
-    [int]$GeminiTimeoutSeconds = 240,
-    [int]$CodexTimeoutSeconds = 240,
+    [int]$GeminiTimeoutSeconds = 180,
+    [int]$CodexTimeoutSeconds = 180,
     [int]$CodexAttemptsPerRound = 1,
-    [int]$RetryDelaySeconds = 15
+    [int]$RetryDelaySeconds = 15,
+    [string]$ScopeName = "current-slice",
+    [string]$Focus = "",
+    [string[]]$Files = @(),
+    [string[]]$ContractDocs = @(),
+    [int]$MaxFilesPerPackage = 3,
+    [int]$MaxDiffLines = 300
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +26,13 @@ try {
         & $geminiScript `
             -MaxAttempts $GeminiAttempts `
             -TimeoutSeconds $GeminiTimeoutSeconds `
-            -RetryDelaySeconds $RetryDelaySeconds
+            -RetryDelaySeconds $RetryDelaySeconds `
+            -ScopeName $ScopeName `
+            -Focus $Focus `
+            -Files $Files `
+            -ContractDocs $ContractDocs `
+            -MaxFilesPerPackage $MaxFilesPerPackage `
+            -MaxDiffLines $MaxDiffLines
         $geminiCompleted = $true
     }
     catch {
@@ -36,7 +48,13 @@ try {
             & $codexScript `
                 -MaxAttempts $CodexAttemptsPerRound `
                 -TimeoutSeconds $CodexTimeoutSeconds `
-                -RetryDelaySeconds $RetryDelaySeconds
+                -RetryDelaySeconds $RetryDelaySeconds `
+                -ScopeName $ScopeName `
+                -Focus $Focus `
+                -Files $Files `
+                -ContractDocs $ContractDocs `
+                -MaxFilesPerPackage $MaxFilesPerPackage `
+                -MaxDiffLines $MaxDiffLines
             return
         }
         catch {

@@ -34,3 +34,7 @@ Focus on:
 - simpler alternative designs
 
 Return findings first, then recommendations.
+
+If a review package is attached below the prompt, treat that package as the
+authoritative scope. Do not rediscover the whole repository unless the package
+itself points to a missing dependency that changes the validity of the slice.

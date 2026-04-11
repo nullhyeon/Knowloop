@@ -31,3 +31,7 @@ Focus on:
 - brittle or overcomplicated code
 
 Return findings first. Only propose edits after the findings are clear.
+
+If a review package is attached below the prompt, treat that package as the
+authoritative scope. Do not rediscover the whole repository unless the package
+itself points to a missing dependency that changes the correctness of the slice.

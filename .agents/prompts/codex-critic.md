@@ -34,3 +34,7 @@ Focus on:
 
 Return findings first, then recommendations.
 Stay in critique mode rather than patch-level review mode.
+
+If a review package is attached below the prompt, treat that package as the
+authoritative scope. Do not rediscover the whole repository unless the package
+itself points to a missing dependency that changes the validity of the slice.
