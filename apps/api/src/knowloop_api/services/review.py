@@ -18,6 +18,7 @@ from knowloop_api.db.audit import (
     get_mutation_request,
     list_audit_events,
     mark_mutation_request_applied,
+    store_mutation_request_response_payload,
 )
 from knowloop_api.services.candidates import (
     CandidateItem,
@@ -34,7 +35,7 @@ from knowloop_api.services.candidates import (
     promote_candidate,
 )
 from knowloop_api.services.sources import SourceNotFoundError, get_source, resolve_source_path
-from knowloop_api.services.wiki import get_wiki_page
+from knowloop_api.services.wiki import build_wiki_page_path, get_wiki_page, load_wiki_page_from_path
 
 ACADEMIC_REVIEW_KINDS = frozenset(
     {
@@ -253,6 +254,7 @@ def approve_candidate(
             candidate=candidate,
             target_page_id=target_page_id,
             target_path=payload.target_path,
+            treat_scope_drift_as_plan_drift=False,
         )
         fingerprint_target_path = canonical_target_path
         approval_timestamp = datetime.now(UTC)
@@ -262,6 +264,7 @@ def approve_candidate(
             candidate=candidate,
             target_page_id=target_page_id,
             target_path=None,
+            treat_scope_drift_as_plan_drift=True,
         )
         if payload.target_path is None:
             fingerprint_target_path = canonical_target_path
@@ -281,6 +284,7 @@ def approve_candidate(
         approval_status="approved",
         approved_by=context.actor_id,
         approved_at=approval_timestamp,
+        treat_scope_drift_as_plan_drift=mutation_request is not None,
     )
     approval_plan_fingerprint = _build_review_patch_fingerprint(
         settings,
@@ -380,6 +384,12 @@ def resume_candidate_sync(
         if mutation_request.request_fingerprint != resume_request_fingerprint:
             raise CandidateStateError("idempotency_key already exists for a different request")
 
+    _ensure_candidate_wiki_sync_pending_audit(
+        settings,
+        candidate=candidate,
+        context=context,
+    )
+    resume_sync_anchor = mutation_request.created_at
     patch_draft = _build_patch_draft(
         settings,
         candidate=candidate,
@@ -390,6 +400,7 @@ def resume_candidate_sync(
         approval_status="approved",
         approved_by=candidate.approved_by,
         approved_at=candidate.approved_at,
+        treat_scope_drift_as_plan_drift=True,
     )
     current_plan_fingerprint = _build_review_patch_fingerprint(
         settings,
@@ -400,6 +411,28 @@ def resume_candidate_sync(
             "pending candidate sync no longer matches the stored approval plan"
         )
 
+    def persist_resume_response(response: ReviewActionResponse, synced_at: datetime) -> None:
+        store_mutation_request_response_payload(
+            settings,
+            entity_type="candidate",
+            entity_id=candidate_id,
+            action=RESUME_SYNC_REQUEST_ACTION,
+            idempotency_key=context.idempotency_key,
+            updated_at=synced_at,
+            response_payload=response.model_dump(mode="json", exclude_none=True),
+        )
+
+    def mark_resume_request_applied(response: ReviewActionResponse, synced_at: datetime) -> None:
+        mark_mutation_request_applied(
+            settings,
+            entity_type="candidate",
+            entity_id=candidate_id,
+            action=RESUME_SYNC_REQUEST_ACTION,
+            idempotency_key=context.idempotency_key,
+            updated_at=synced_at,
+            response_payload=response.model_dump(mode="json", exclude_none=True),
+        )
+
     response = _complete_candidate_wiki_sync(
         settings,
         candidate=candidate,
@@ -407,16 +440,9 @@ def resume_candidate_sync(
         context=context,
         notes=payload.resume_notes,
         emit_pending_audit=False,
-        sync_anchor=datetime.now(UTC),
-    )
-    mark_mutation_request_applied(
-        settings,
-        entity_type="candidate",
-        entity_id=candidate_id,
-        action=RESUME_SYNC_REQUEST_ACTION,
-        idempotency_key=context.idempotency_key,
-        updated_at=datetime.now(UTC),
-        response_payload=response.model_dump(mode="json", exclude_none=True),
+        sync_anchor=resume_sync_anchor,
+        persist_response_payload=persist_resume_response,
+        mark_request_applied=mark_resume_request_applied,
     )
     return response
 
@@ -540,9 +566,12 @@ def _available_actions(candidate: CandidateItem, *, context: RequestContext) -> 
     if (
         candidate.status is CandidateStatus.PROMOTED
         and candidate.wiki_sync_status is WikiSyncStatus.PENDING
-        and _can_finalize_candidate(candidate, context=context)
     ):
-        return ["resume_sync"]
+        if _can_finalize_candidate(candidate, context=context):
+            return ["resume_sync"]
+        if context.role is ActorRole.SYSTEM:
+            return ["patch_preview"]
+        return []
     if candidate.status is not CandidateStatus.OPEN:
         return []
     if not _can_finalize_candidate(candidate, context=context):
@@ -551,6 +580,8 @@ def _available_actions(candidate: CandidateItem, *, context: RequestContext) -> 
 
 
 def _can_finalize_candidate(candidate: CandidateItem, *, context: RequestContext) -> bool:
+    if context.role is ActorRole.SYSTEM:
+        return False
     if context.role is ActorRole.OPERATOR:
         return False
     if (
@@ -603,19 +634,33 @@ def _build_patch_draft(
     approval_status: str,
     approved_by: str | None,
     approved_at: datetime | None,
+    treat_scope_drift_as_plan_drift: bool = False,
 ) -> WikiPatchDraft:
     target_page_id = target_page_id or candidate.related_page_id
     if target_page_id is None:
         raise ReviewStateError("candidate approval requires a target_page_id")
 
     domain_name = WIKI_DOMAIN_BY_KIND[candidate.kind]
-    existing_page = get_wiki_page(settings, target_page_id)
+    existing_page = get_wiki_page(
+        settings,
+        target_page_id,
+        course_id=candidate.course_id,
+        class_id=candidate.class_id,
+    )
+    _assert_existing_page_in_review_scope(
+        candidate,
+        existing_page,
+        treat_scope_drift_as_plan_drift=treat_scope_drift_as_plan_drift,
+    )
     resolved_path = _resolve_target_path(
         settings,
         domain_name=domain_name,
+        course_id=candidate.course_id,
+        class_scope=candidate.class_id,
         target_page_id=target_page_id,
         target_path=target_path,
         existing_page_path=Path(existing_page.path) if existing_page is not None else None,
+        treat_scope_drift_as_plan_drift=treat_scope_drift_as_plan_drift,
     )
     before_markdown = resolved_path.read_text(encoding="utf-8") if resolved_path.exists() else None
     if before_markdown is None and existing_page is not None:
@@ -692,15 +737,29 @@ def _resolve_canonical_review_target_path(
     candidate: CandidateItem,
     target_page_id: str,
     target_path: str | None,
+    treat_scope_drift_as_plan_drift: bool = False,
 ) -> str:
     domain_name = WIKI_DOMAIN_BY_KIND[candidate.kind]
-    existing_page = get_wiki_page(settings, target_page_id)
+    existing_page = get_wiki_page(
+        settings,
+        target_page_id,
+        course_id=candidate.course_id,
+        class_id=candidate.class_id,
+    )
+    _assert_existing_page_in_review_scope(
+        candidate,
+        existing_page,
+        treat_scope_drift_as_plan_drift=treat_scope_drift_as_plan_drift,
+    )
     resolved_path = _resolve_target_path(
         settings,
         domain_name=domain_name,
+        course_id=candidate.course_id,
+        class_scope=candidate.class_id,
         target_page_id=target_page_id,
         target_path=target_path,
         existing_page_path=Path(existing_page.path) if existing_page is not None else None,
+        treat_scope_drift_as_plan_drift=treat_scope_drift_as_plan_drift,
     )
     return _as_data_relative_path(settings, resolved_path)
 
@@ -724,6 +783,27 @@ def _normalize_review_target_path_input(
             return candidate_path.as_posix()
 
     return (Path("data") / candidate_path).as_posix()
+
+
+def _assert_existing_page_in_review_scope(
+    candidate: CandidateItem,
+    existing_page,
+    *,
+    treat_scope_drift_as_plan_drift: bool = False,
+) -> None:
+    if existing_page is None:
+        return
+    if (
+        existing_page.course_id != candidate.course_id
+        or existing_page.class_scope != candidate.class_id
+    ):
+        if treat_scope_drift_as_plan_drift:
+            raise CandidateStateError(
+                "pending candidate sync no longer matches the stored approval plan"
+            )
+        raise ReviewStateError(
+            "target_page_id must belong to the same course_id and class_id as the candidate"
+        )
 
 
 def _build_review_patch_fingerprint(
@@ -784,42 +864,38 @@ def _finalize_or_replay_resume_sync(
     notes: str | None,
 ) -> ReviewActionResponse | None:
     if mutation_request.response_payload is not None:
-        return ReviewActionResponse.model_validate(mutation_request.response_payload)
+        if (
+            candidate.status is CandidateStatus.PROMOTED
+            and candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+        ):
+            response = ReviewActionResponse.model_validate(mutation_request.response_payload)
+            _, _, synced_created_at = _build_wiki_sync_audit_timestamps(mutation_request.created_at)
+            _record_candidate_wiki_synced(
+                settings,
+                candidate_id=candidate.candidate_id,
+                context=context,
+                created_at=synced_created_at,
+            )
+            if mutation_request.status != "applied":
+                mark_mutation_request_applied(
+                    settings,
+                    entity_type="candidate",
+                    entity_id=candidate.candidate_id,
+                    action=RESUME_SYNC_REQUEST_ACTION,
+                    idempotency_key=context.idempotency_key,
+                    updated_at=candidate.wiki_synced_at or synced_created_at,
+                    response_payload=response.model_dump(mode="json", exclude_none=True),
+                )
+            return response
+        if mutation_request.status == "applied":
+            raise CandidateStateError(
+                "stored resumed candidate does not match the idempotent request"
+            )
     if (
         candidate.status is CandidateStatus.PROMOTED
         and candidate.wiki_sync_status is WikiSyncStatus.SYNCED
     ):
-        patch_draft = _build_patch_draft(
-            settings,
-            candidate=candidate,
-            context=context,
-            target_page_id=candidate.related_page_id,
-            target_path=candidate.wiki_sync_target_path,
-            notes=notes,
-            approval_status="approved",
-            approved_by=candidate.approved_by,
-            approved_at=candidate.approved_at,
-        )
-        response = ReviewActionResponse(
-            candidate=candidate_to_payload(candidate),
-            patch=patch_draft.patch_payload,
-            wiki_page={
-                "page_id": patch_draft.target_page_id,
-                "path": _as_data_relative_path(settings, patch_draft.target_path),
-                "operation": patch_draft.operation,
-                "updated_at": candidate.wiki_synced_at.isoformat().replace("+00:00", "Z"),
-            },
-        )
-        mark_mutation_request_applied(
-            settings,
-            entity_type="candidate",
-            entity_id=candidate.candidate_id,
-            action=RESUME_SYNC_REQUEST_ACTION,
-            idempotency_key=context.idempotency_key,
-            updated_at=candidate.wiki_synced_at or datetime.now(UTC),
-            response_payload=response.model_dump(mode="json", exclude_none=True),
-        )
-        return response
+        raise CandidateStateError("stored resumed candidate does not match the idempotent request")
     if mutation_request.status != "applied":
         return None
     if mutation_request.status == "applied":
@@ -836,12 +912,33 @@ def _complete_candidate_wiki_sync(
     notes: str | None,
     emit_pending_audit: bool = True,
     sync_anchor: datetime | None = None,
+    persist_response_payload=None,
+    mark_request_applied=None,
 ) -> ReviewActionResponse:
     pending_created_at, wiki_patch_created_at, synced_created_at = (
         _build_wiki_sync_audit_timestamps(
             sync_anchor or candidate.approved_at
         )
     )
+    predicted_synced_candidate = candidate.model_copy(
+        update={
+            "wiki_sync_status": WikiSyncStatus.SYNCED,
+            "wiki_synced_at": synced_created_at,
+            "updated_at": synced_created_at,
+        }
+    )
+    response = ReviewActionResponse(
+        candidate=candidate_to_payload(predicted_synced_candidate),
+        patch=patch_draft.patch_payload,
+        wiki_page={
+            "page_id": patch_draft.target_page_id,
+            "path": _as_data_relative_path(settings, patch_draft.target_path),
+            "operation": patch_draft.operation,
+            "updated_at": synced_created_at.isoformat().replace("+00:00", "Z"),
+        },
+    )
+    if persist_response_payload is not None:
+        persist_response_payload(response, synced_created_at)
     if emit_pending_audit:
         _record_candidate_wiki_sync_pending(
             settings,
@@ -868,16 +965,10 @@ def _complete_candidate_wiki_sync(
         context=context,
         created_at=synced_created_at,
     )
-    return ReviewActionResponse(
-        candidate=candidate_to_payload(synced_candidate),
-        patch=patch_draft.patch_payload,
-        wiki_page={
-            "page_id": patch_draft.target_page_id,
-            "path": _as_data_relative_path(settings, patch_draft.target_path),
-            "operation": patch_draft.operation,
-            "updated_at": synced_candidate.wiki_synced_at.isoformat().replace("+00:00", "Z"),
-        },
-    )
+    response = response.model_copy(update={"candidate": candidate_to_payload(synced_candidate)})
+    if mark_request_applied is not None:
+        mark_request_applied(response, synced_created_at)
+    return response
 
 
 def _build_wiki_sync_audit_timestamps(
@@ -926,6 +1017,43 @@ def _record_candidate_wiki_sync_pending(
         request_id=context.request_id,
         idempotency_key=context.idempotency_key,
         created_at=created_at,
+        notes="Candidate promotion is waiting for wiki patch application.",
+    )
+
+
+def _ensure_candidate_wiki_sync_pending_audit(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    context: RequestContext,
+) -> None:
+    existing_pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=WIKI_SYNC_PENDING_ACTION,
+    )
+    if existing_pending_events:
+        return
+
+    pending_created_at, _, _ = _build_wiki_sync_audit_timestamps(candidate.approved_at)
+    promotion_audits = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_promoted",
+    )
+    source_audit = promotion_audits[0] if promotion_audits else None
+    create_audit_event(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=WIKI_SYNC_PENDING_ACTION,
+        actor_role=source_audit.actor_role if source_audit is not None else context.role.value,
+        actor_id=source_audit.actor_id if source_audit is not None else context.actor_id,
+        request_id=source_audit.request_id if source_audit is not None else context.request_id,
+        idempotency_key=source_audit.idempotency_key if source_audit is not None else None,
+        created_at=pending_created_at,
         notes="Candidate promotion is waiting for wiki patch application.",
     )
 
@@ -1012,9 +1140,12 @@ def _resolve_target_path(
     settings: Settings,
     *,
     domain_name: str,
+    course_id: str,
+    class_scope: str,
     target_page_id: str,
     target_path: str | None,
     existing_page_path: Path | None,
+    treat_scope_drift_as_plan_drift: bool = False,
 ) -> Path:
     slug_prefix = f"page-{domain_name}-"
     if not target_page_id.startswith(slug_prefix) or target_page_id == slug_prefix:
@@ -1022,11 +1153,49 @@ def _resolve_target_path(
             f"target_page_id must match the page-{domain_name}-<slug> contract"
         )
 
+    try:
+        canonical_path = build_wiki_page_path(
+            settings,
+            domain=domain_name,
+            class_scope=class_scope,
+            page_id=target_page_id,
+        ).resolve()
+    except ValueError as exc:
+        raise ReviewStateError(str(exc)) from exc
+
     if existing_page_path is not None:
-        canonical_path = existing_page_path.resolve()
-    else:
-        slug = target_page_id[len(slug_prefix) :]
-        canonical_path = (settings.data_root / "wiki" / domain_name / f"{slug}.md").resolve()
+        resolved_existing_path = existing_page_path.resolve()
+        if resolved_existing_path != canonical_path:
+            if treat_scope_drift_as_plan_drift:
+                raise CandidateStateError(
+                    "pending candidate sync no longer matches the stored approval plan"
+                )
+            raise ReviewStateError("existing wiki page is stored outside the canonical scoped path")
+
+    if canonical_path.exists():
+        try:
+            canonical_page = load_wiki_page_from_path(canonical_path)
+        except (KeyError, OSError, ValueError) as exc:
+            if treat_scope_drift_as_plan_drift:
+                raise CandidateStateError(
+                    "pending candidate sync no longer matches the stored approval plan"
+                ) from exc
+            raise ReviewStateError(
+                "stored wiki page at the canonical path could not be read"
+            ) from exc
+        if (
+            canonical_page.page_id != target_page_id
+            or canonical_page.domain != domain_name
+            or canonical_page.course_id != course_id
+            or canonical_page.class_scope != class_scope
+        ):
+            if treat_scope_drift_as_plan_drift:
+                raise CandidateStateError(
+                    "pending candidate sync no longer matches the stored approval plan"
+                )
+            raise ReviewStateError(
+                "stored wiki page at the canonical path does not match the requested scope"
+            )
 
     if target_path:
         candidate_path = Path(target_path)

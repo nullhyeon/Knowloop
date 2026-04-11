@@ -1,27 +1,28 @@
 {
-  "candidate_id": "cand-misconception-class-calculus-1-2026-spring-a-chain-rule-duplicate-20260408T113800Z",
-  "kind": "misconception",
-  "status": "open",
-  "title": "Students mix chain rule with product rule in nested expressions",
-  "summary": "A duplicate misconception candidate covering the same confusion pattern as the canonical chain rule misconception.",
-  "class_id": "class-calculus-1-2026-spring-a",
-  "course_id": "course-calculus-1",
-  "actor_role": "system",
-  "confidence": 0.79,
-  "tags": [
-    "chain-rule",
-    "duplicate"
-  ],
-  "source_refs": [
-    {
-      "source_id": "src-lecture-note-class-calculus-1-2026-spring-a-chain-rule-support-20260408T111500Z",
-      "source_type": "lecture_note",
-      "chunk_id": "recommended-intervention"
-    }
-  ],
-  "session_refs": [
-    "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260407T133000Z"
-  ],
-  "created_at": "2026-04-08T11:38:00Z",
-  "related_page_id": "page-misconceptions-chain-rule-product-rule"
+    "candidate_id":  "cand-misconception-class-calculus-1-2026-spring-a-chain-rule-duplicate-20260408T113800Z",
+    "kind":  "misconception",
+    "status":  "open",
+    "title":  "Students mix chain rule with product rule in nested expressions",
+    "summary":  "A duplicate misconception candidate covering the same confusion pattern as the canonical chain rule misconception.",
+    "class_id":  "class-calculus-1-2026-spring-a",
+    "course_id":  "course-calculus-1",
+    "actor_role":  "system",
+    "confidence":  0.79,
+    "tags":  [
+                 "chain-rule",
+                 "duplicate"
+             ],
+    "source_refs":  [
+                        {
+                            "source_id":  "src-lecture-note-class-calculus-1-2026-spring-a-chain-rule-support-20260408T111500Z",
+                            "source_type":  "lecture_note",
+                            "chunk_id":  "recommended-intervention"
+                        }
+                    ],
+    "session_refs":  [
+                         "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260407T133000Z"
+                     ],
+    "created_at":  "2026-04-08T11:38:00Z",
+    "related_page_id":  "page-misconceptions-chain-rule-product-rule",
+    "updated_at":  "2026-04-08T11:38:00Z"
 }

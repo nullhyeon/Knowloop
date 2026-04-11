@@ -79,7 +79,7 @@ Common lifecycle values used across the MVP:
 | Raw source | `src-<source-type>-<scope-token>-<slug>-<timestamp>` | `src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z` |
 | Session | `ses-<role>-<user-id>-<class-id>-<token>` | `ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-7df8a1b0c2` |
 | Candidate | `cand-<kind>-<class-id>-<slug>-<timestamp>` | `cand-misconception-class-calculus-1-2026-spring-a-chain-rule-20260408T112000Z` |
-| Wiki page | `page-<domain>-<slug>` | `page-faq-homework-submission` |
+| Wiki page | `page-<domain>-<slug>` scoped by `course_id + class_scope` | `page-faq-homework-submission` |
 | Learning note | `learn-<student-id>-<course-id-without-prefix>-<class-id-without-prefix>` | `learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a` |
 
 ### 4.1 Session ID Notes
@@ -181,6 +181,7 @@ Required fields:
 - `source_refs`
 - `session_refs`
 - `created_at`
+- `updated_at`
 
 Optional but useful fields:
 
@@ -196,13 +197,23 @@ Optional but useful fields:
 
 Interpretation notes:
 
+- `updated_at` is the canonical freshness timestamp for maintenance and review tooling
+- legacy candidate files that predate `updated_at` must be normalized on read so runtime
+  services still see the canonical shape; the on-disk rewrite is best-effort and may be
+  retried later if the first normalization write fails
 - `promotion_attempt_id` is the server-owned identity for one approval attempt
 - `wiki_sync_target_path` and `approval_plan_fingerprint` freeze the exact wiki patch plan that may later be resumed
 - `wiki_sync_status = pending` means the candidate is promoted but the wiki sync still needs the dedicated resume path to finish
 
 Canonical store:
 
-- JSON files under `data/candidate/<kind>/<status>/<class-id>/`
+- JSON files under `data/candidate/<kind>/<class-id>/<candidate-id>.json`
+
+Notes:
+
+- `<kind>` means the canonical candidate directory token such as `misconceptions`, `faq`, `interventions`, `unresolved-questions`, or `operations-notes`
+- candidate status lives in the JSON body, not in the directory name
+- the durable path must stay stable across `open -> promoted -> merged -> dropped`
 
 ### 5.4 WikiPage
 
@@ -222,7 +233,16 @@ Required fields in frontmatter:
 
 Canonical store:
 
-- Markdown page under `data/wiki/<domain>/<slug>.md`
+- Markdown page under `data/wiki/<domain>/<class-id>/<slug>.md`
+
+Notes:
+
+- `page_id` is resolved inside the current `course_id + class_scope` boundary
+- wiki page slugs only allow lowercase letters, digits, and hyphens; path separators or traversal segments are invalid
+- the storage path carries the class scope so two classes can promote the same wiki slug without colliding on disk
+- legacy unscoped wiki files under `data/wiki/<domain>/<slug>.md` are no longer canonical; normal wiki reads ignore them and maintenance must surface them as migration-required layout issues
+- a file stored under `data/wiki/<domain>/<class-id>/...` is owned by that class path; if its frontmatter points to another scope, maintenance must surface it as invalid metadata rather than silently skipping it
+- if a legacy unscoped file is unreadable, scoped maintenance only surfaces it when matching `class_scope` survives and any surviving `course_id` also matches the current course; `course_id` alone is not enough to attribute it to one class boundary
 
 ### 5.5 LearningNote
 
@@ -342,6 +362,7 @@ Rules:
 - maintenance reports are course/class scoped, not global
 - the maintenance status surface reads the scoped persisted report for the current request context
 - report generation must not overwrite another class scope's maintenance output
+- maintenance checks must read the authoritative wiki pages under `data/wiki`, not a cached secondary index
 
 ## 9. Implementation Notes
 

@@ -17,6 +17,7 @@ from knowloop_api.db.audit import (
     get_mutation_request,
     list_audit_events,
     mark_mutation_request_applied,
+    store_mutation_request_response_payload,
 )
 from knowloop_api.db.bootstrap import bootstrap_storage
 from knowloop_api.services.candidates import (
@@ -198,6 +199,49 @@ def test_create_candidate_is_idempotent_with_same_key_even_if_candidate_id_chang
         get_candidate(settings, retried_candidate.candidate_id)
 
 
+def test_create_candidate_is_idempotent_when_updated_at_drifts_on_retry(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+
+    first_result = create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-updated-at",
+    )
+    retried_candidate = candidate.model_copy(
+        update={
+            "candidate_id": "cand-faq-homework-deadline-updated-at-retry",
+            "created_at": candidate.created_at + timedelta(minutes=1),
+            "updated_at": candidate.updated_at + timedelta(days=2),
+        }
+    )
+    second_result = create_candidate(
+        settings,
+        retried_candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-updated-at",
+    )
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        action="candidate_created",
+        idempotency_key="idem-create-updated-at",
+    )
+
+    assert second_result == first_result
+    assert len(audit_events) == 1
+    assert audit_events[0].entity_id == first_result.candidate_id
+    with pytest.raises(CandidateNotFoundError):
+        get_candidate(settings, retried_candidate.candidate_id)
+
+
 def test_create_candidate_rejects_different_request_for_same_idempotency_key(
     tmp_path: Path,
 ) -> None:
@@ -346,6 +390,447 @@ def test_create_candidate_rejects_mismatched_replay_after_interrupted_write(
             actor_id="system-seed",
             idempotency_key="idem-create-mismatch",
         )
+
+
+def test_create_candidate_recovers_when_file_exists_before_create_audit(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id="system-seed",
+    )
+    request_intent = candidate_service._build_candidate_create_request_intent(settings, candidate)
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-file-before-audit",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+    store_mutation_request_response_payload(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-file-before-audit",
+        updated_at=candidate.created_at,
+        response_payload=request_intent,
+    )
+    candidate_path = candidate_service.build_candidate_path(settings, candidate)
+    candidate_service._write_candidate(candidate_path, candidate)
+
+    recovered_candidate = create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-file-before-audit",
+    )
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        action="candidate_created",
+        idempotency_key="idem-create-file-before-audit",
+    )
+    mutation_request = get_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-file-before-audit",
+    )
+
+    assert recovered_candidate == candidate
+    assert len(audit_events) == 1
+    assert audit_events[0].entity_id == candidate.candidate_id
+    assert mutation_request is not None
+    assert mutation_request.status == "applied"
+
+
+def test_create_candidate_recovers_after_two_stage_retry_before_create_audit(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id="system-seed",
+    )
+    request_intent = candidate_service._build_candidate_create_request_intent(settings, candidate)
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-two-stage-before-audit",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+    store_mutation_request_response_payload(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-two-stage-before-audit",
+        updated_at=candidate.created_at,
+        response_payload=request_intent,
+    )
+
+    second_attempt_path = candidate_service.build_candidate_path(settings, candidate)
+    candidate_service._write_candidate(second_attempt_path, candidate)
+
+    recovered_candidate = create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-two-stage-before-audit",
+    )
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        action="candidate_created",
+        idempotency_key="idem-create-two-stage-before-audit",
+    )
+    mutation_request = get_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-two-stage-before-audit",
+    )
+
+    assert recovered_candidate == candidate
+    assert len(audit_events) == 1
+    assert audit_events[0].entity_id == candidate.candidate_id
+    assert mutation_request is not None
+    assert mutation_request.status == "applied"
+
+
+def test_create_candidate_reuses_pending_request_intent_before_any_artifact_exists(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    first_attempt_candidate = candidate.model_copy(
+        update={
+            "candidate_id": "cand-faq-homework-deadline-first-attempt",
+            "created_at": candidate.created_at - timedelta(minutes=2),
+            "updated_at": candidate.updated_at - timedelta(minutes=2),
+        }
+    )
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id="system-seed",
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-intent-mismatch",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=first_attempt_candidate.created_at,
+    )
+    store_mutation_request_response_payload(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-intent-mismatch",
+        updated_at=first_attempt_candidate.created_at,
+        response_payload=candidate_service._build_candidate_create_request_intent(
+            settings,
+            first_attempt_candidate,
+        ),
+    )
+
+    created_candidate = create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-intent-mismatch",
+    )
+    mutation_request = get_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-intent-mismatch",
+    )
+
+    assert created_candidate.candidate_id == first_attempt_candidate.candidate_id
+    assert created_candidate.created_at == first_attempt_candidate.created_at
+    assert created_candidate.updated_at == first_attempt_candidate.created_at
+    assert mutation_request is not None
+    assert mutation_request.status == "applied"
+
+
+def test_create_candidate_rejects_retry_when_pending_request_file_path_drifted(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id="system-seed",
+    )
+    request_intent = candidate_service._build_candidate_create_request_intent(settings, candidate)
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-path-drift",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+    store_mutation_request_response_payload(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-path-drift",
+        updated_at=candidate.created_at,
+        response_payload=request_intent,
+    )
+    drifted_path = (
+        settings.data_root
+        / "candidate"
+        / "faq"
+        / "class-other"
+        / f"{candidate.candidate_id}.json"
+    )
+    drifted_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_service._write_candidate(drifted_path, candidate)
+
+    with pytest.raises(
+        CandidateStateError,
+        match="stored created candidate does not match the idempotent request",
+    ):
+        create_candidate(
+            settings,
+            candidate,
+            actor_role=ActorRole.SYSTEM,
+            actor_id="system-seed",
+            idempotency_key="idem-create-path-drift",
+        )
+
+
+def test_create_candidate_does_not_recover_competing_pending_request(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id="system-seed",
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-competing-a",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+    stranded_candidate = candidate.model_copy(
+        update={
+            "candidate_id": "cand-faq-homework-deadline-stranded-a",
+        }
+    )
+    stranded_path = candidate_service.build_candidate_path(settings, stranded_candidate)
+    candidate_service._write_candidate(stranded_path, stranded_candidate)
+
+    created_candidate = create_candidate(
+        settings,
+        candidate.model_copy(
+            update={
+                "candidate_id": "cand-faq-homework-deadline-competing-b",
+                "created_at": candidate.created_at + timedelta(minutes=2),
+                "updated_at": candidate.updated_at + timedelta(days=2),
+            }
+        ),
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-competing-b",
+    )
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        action="candidate_created",
+        idempotency_key="idem-create-competing-b",
+    )
+    original_request = get_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-competing-a",
+    )
+
+    assert created_candidate.candidate_id == "cand-faq-homework-deadline-competing-b"
+    assert audit_events[0].entity_id == created_candidate.candidate_id
+    assert original_request is not None
+    assert original_request.status == "pending"
+    assert get_candidate(settings, stranded_candidate.candidate_id).candidate_id == (
+        stranded_candidate.candidate_id
+    )
+
+
+def test_create_candidate_rejects_existing_candidate_claim_when_other_pending_request_matches(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        candidate,
+        actor_id="system-seed",
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-existing-pending-a",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+    candidate_path = candidate_service.build_candidate_path(settings, candidate)
+    candidate_service._write_candidate(candidate_path, candidate)
+
+    with pytest.raises(
+        CandidateStateError,
+        match="candidate already exists under another pending request",
+    ):
+        create_candidate(
+            settings,
+            candidate,
+            actor_role=ActorRole.SYSTEM,
+            actor_id="system-seed",
+            idempotency_key="idem-create-existing-pending-b",
+        )
+
+
+def test_create_candidate_rejects_existing_audited_candidate_for_new_idempotency_key(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+
+    create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-lineage-a",
+    )
+
+    with pytest.raises(
+        CandidateStateError,
+        match="stored created candidate does not match the idempotent request",
+    ):
+        create_candidate(
+            settings,
+            candidate,
+            actor_role=ActorRole.SYSTEM,
+            actor_id="system-seed",
+            idempotency_key="idem-create-lineage-b",
+        )
+
+
+def test_create_candidate_does_not_recover_older_audited_logical_twin(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    original_candidate = create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        request_id="req-original-audited-twin",
+    )
+    retried_candidate = candidate.model_copy(
+        update={
+            "candidate_id": "cand-faq-homework-deadline-new-logical-run",
+            "created_at": candidate.created_at + timedelta(minutes=5),
+            "updated_at": candidate.updated_at + timedelta(days=1),
+        }
+    )
+    request_fingerprint = candidate_service._build_candidate_create_request_fingerprint(
+        retried_candidate,
+        actor_id="system-seed",
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-ignore-audited-twin",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-seed",
+        request_fingerprint=request_fingerprint,
+        created_at=candidate.created_at,
+    )
+
+    created_candidate = create_candidate(
+        settings,
+        retried_candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        idempotency_key="idem-create-ignore-audited-twin",
+    )
+
+    audit_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        action="candidate_created",
+        idempotency_key="idem-create-ignore-audited-twin",
+    )
+    mutation_request = get_mutation_request(
+        settings,
+        entity_type="candidate_registration",
+        entity_id="candidate_store",
+        action="candidate_created",
+        idempotency_key="idem-create-ignore-audited-twin",
+    )
+
+    assert created_candidate.candidate_id == retried_candidate.candidate_id
+    assert created_candidate.candidate_id != original_candidate.candidate_id
+    assert len(audit_events) == 1
+    assert audit_events[0].entity_id == retried_candidate.candidate_id
+    assert mutation_request is not None
+    assert mutation_request.status == "applied"
 
 
 def test_create_candidate_rejects_ambiguous_audit_replay(tmp_path: Path) -> None:
@@ -1660,19 +2145,21 @@ def test_list_candidates_filters_by_kind_status_and_class(tmp_path: Path) -> Non
     assert unknown_class_candidates == []
 
 
-def test_list_candidates_returns_newest_first(tmp_path: Path) -> None:
+def test_list_candidates_returns_most_recently_updated_first(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     bootstrap_storage(settings)
     older_candidate = load_candidate_fixture("open-faq-homework-deadline.json").model_copy(
         update={
             "candidate_id": "cand-faq-older",
             "created_at": datetime(2026, 4, 8, 10, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 4, 8, 10, 0, tzinfo=UTC),
         }
     )
     newer_candidate = load_candidate_fixture("open-misconception-chain-rule.json").model_copy(
         update={
             "candidate_id": "cand-misconception-newer",
             "created_at": older_candidate.created_at + timedelta(minutes=5),
+            "updated_at": older_candidate.created_at + timedelta(days=1),
         }
     )
     create_candidate(settings, older_candidate, actor_role=ActorRole.SYSTEM, actor_id="system")
@@ -1684,6 +2171,123 @@ def test_list_candidates_returns_newest_first(tmp_path: Path) -> None:
         "cand-misconception-newer",
         "cand-faq-older",
     ]
+
+
+def test_get_candidate_backfills_missing_updated_at_for_legacy_files(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    legacy_candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    candidate_path = candidate_service.build_candidate_path(settings, legacy_candidate)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = legacy_candidate.model_dump(mode="json", exclude_none=True)
+    legacy_payload.pop("updated_at", None)
+    candidate_path.write_text(json.dumps(legacy_payload, indent=2) + "\n", encoding="utf-8")
+
+    loaded_candidate = get_candidate(settings, legacy_candidate.candidate_id)
+    rewritten_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+
+    assert loaded_candidate.updated_at == legacy_candidate.created_at
+    assert rewritten_payload["updated_at"] == legacy_candidate.created_at.isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def test_get_candidate_returns_legacy_candidate_when_normalization_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    legacy_candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    candidate_path = candidate_service.build_candidate_path(settings, legacy_candidate)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = legacy_candidate.model_dump(mode="json", exclude_none=True)
+    legacy_payload.pop("updated_at", None)
+    candidate_path.write_text(json.dumps(legacy_payload, indent=2) + "\n", encoding="utf-8")
+
+    def flaky_write(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("forced normalization write failure")
+
+    monkeypatch.setattr(candidate_service, "_write_candidate", flaky_write)
+
+    loaded_candidate = get_candidate(settings, legacy_candidate.candidate_id)
+    persisted_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+
+    assert loaded_candidate.updated_at == legacy_candidate.created_at
+    assert "updated_at" not in persisted_payload
+
+
+def test_get_candidate_returns_legacy_candidate_when_normalization_lock_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    legacy_candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    candidate_path = candidate_service.build_candidate_path(settings, legacy_candidate)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = legacy_candidate.model_dump(mode="json", exclude_none=True)
+    legacy_payload.pop("updated_at", None)
+    candidate_path.write_text(json.dumps(legacy_payload, indent=2) + "\n", encoding="utf-8")
+
+    def blocked_lock(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise CandidateStateError("candidate changed during transition")
+
+    monkeypatch.setattr(candidate_service, "_acquire_candidate_locks", blocked_lock)
+
+    loaded_candidate = get_candidate(settings, legacy_candidate.candidate_id)
+    persisted_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+
+    assert loaded_candidate.updated_at == legacy_candidate.created_at
+    assert "updated_at" not in persisted_payload
+
+
+def test_promote_candidate_accepts_legacy_snapshot_when_normalization_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    legacy_candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    candidate_path = candidate_service.build_candidate_path(settings, legacy_candidate)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = legacy_candidate.model_dump(mode="json", exclude_none=True)
+    legacy_payload.pop("updated_at", None)
+    candidate_path.write_text(json.dumps(legacy_payload, indent=2) + "\n", encoding="utf-8")
+
+    original_write_candidate = candidate_service._write_candidate
+    write_attempts = {"count": 0}
+
+    def flaky_then_real_write(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        write_attempts["count"] += 1
+        if write_attempts["count"] == 1:
+            raise OSError("forced normalization write failure")
+        return original_write_candidate(*args, **kwargs)
+
+    monkeypatch.setattr(candidate_service, "_write_candidate", flaky_then_real_write)
+
+    loaded_candidate = get_candidate(settings, legacy_candidate.candidate_id)
+    persisted_payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+
+    assert loaded_candidate.updated_at == legacy_candidate.created_at
+    assert "updated_at" not in persisted_payload
+
+    promoted_candidate = promote_candidate(
+        settings,
+        legacy_candidate.candidate_id,
+        current_candidate_snapshot=loaded_candidate,
+        approved_by="ins-calculus-team",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        related_page_id="page-faq-homework-submission",
+    )
+
+    stored_candidate = get_candidate(settings, legacy_candidate.candidate_id)
+
+    assert promoted_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.updated_at == promoted_candidate.updated_at
 
 
 def test_list_candidates_filters_by_class_across_kinds(tmp_path: Path) -> None:

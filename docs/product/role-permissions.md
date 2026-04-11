@@ -129,6 +129,7 @@ MVP에서 다루는 역할은 다음과 같다.
 - `W`: 쓰기 가능
 - `W-propose`: 제안/후보 생성 가능
 - `W-approve`: 승인/병합/폐기 가능
+- `W-runtime`: 내부 자동화가 보조 저장과 상태 동기화를 수행할 수 있지만, 사람 승인 없이 최종 승격을 완료할 수는 없음
 - `-`: 허용하지 않음
 
 ---
@@ -142,10 +143,10 @@ MVP에서 다루는 역할은 다음과 같다.
 | Session Memory (student) | R-own | R-agg | - | 제한적 R-scope | R / W |
 | Session Memory (instructor) | - | R-own | - | - | R / W |
 | Session Memory (operator) | - | - | R-own / R-scope | 제한적 R-scope | R / W |
-| Candidate Store (academic) | - | R-scope / W-propose / W-approve | - | R-scope / W-approve | R / W |
-| Candidate Store (operations) | - | - | R-scope / W-propose | R-scope / W-approve | R / W |
-| Formal Wiki (course) | R-scope | R-scope / W-propose | - | R-scope / W-approve | R / W |
-| Formal Wiki (operations) | - | - | R-scope / W-propose | R-scope / W-approve | R / W |
+| Candidate Store (academic) | - | R-scope / W-propose / W-approve | - | R-scope / W-approve | R / W-runtime |
+| Candidate Store (operations) | - | - | R-scope / W-propose | R-scope / W-approve | R / W-runtime |
+| Formal Wiki (course) | R-scope | R-scope / W-propose | - | R-scope / W-approve | R / W-runtime |
+| Formal Wiki (operations) | - | - | R-scope / W-propose | R-scope / W-approve | R / W-runtime |
 | Learning Layer | R-own | R-agg | - | - | R / W |
 | Audit / Meta | - | 제한적 R-scope | 제한적 R-scope | R-scope | R / W |
 
@@ -287,10 +288,12 @@ validator는 “모든 정보를 다 보는 관리자”가 아니라,
 - learning layer 자동 생성
 - wiki patch draft 생성
 - audit event 기록
+- review 목록/상세/patch preview 같은 읽기 성격의 검토 보조
 
 ### 할 수 없는 것
 
 - formal wiki 최종 승격을 사람 승인 없이 완료
+- review workflow에서 approve / merge / drop / resume-sync를 직접 실행
 - 정책 예외를 스스로 결정
 
 ### 설계 의도

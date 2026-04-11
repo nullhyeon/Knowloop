@@ -300,7 +300,8 @@ Response body inside `data`:
 - `available_actions`
   - open academic candidates: `patch_preview`, `approve`, `merge`, `drop`
   - operations candidates visible to `operator`: `patch_preview`
-  - promoted candidates with `wiki_sync_status = pending`: `resume_sync`
+  - promoted candidates with `wiki_sync_status = pending`: `resume_sync` for finalize-capable roles
+  - `system` remains read-only in the review workflow, so it only receives `patch_preview`, including when a promoted candidate is still pending wiki sync
 
 ### 6.4.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
 
@@ -313,7 +314,7 @@ Request body:
 ```json
 {
   "target_page_id": "page-faq-homework-submission",
-  "target_path": "data/wiki/faq/homework-submission.md",
+  "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
   "notes": "Optional preview notes."
 }
 ```
@@ -331,6 +332,8 @@ Rules:
 - preview does not require `Idempotency-Key`
 - preview must still satisfy role and scope boundaries
 - `operator` may use preview for operations-domain candidates but remains read-only for review mutations
+- `system` may inspect review candidates and generate patch previews, but it may not finalize `approve`, `merge`, `drop`, or `resume-sync`
+- when `target_page_id` already exists, it must belong to the same `course_id` and `class_id` scope as the candidate being reviewed
 
 ### 6.4.4 `POST /api/v1/review/candidates/{candidate_id}/approve`
 
@@ -343,7 +346,7 @@ Request body:
 ```json
 {
   "target_page_id": "page-faq-homework-submission",
-  "target_path": "data/wiki/faq/homework-submission.md",
+  "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
   "approval_notes": "Promote to shared FAQ for the course wiki."
 }
 ```
@@ -354,10 +357,14 @@ Rules:
 - `instructor` may approve academic candidates
 - `operator` is read-only in the MVP review flow and cannot approve, merge, or drop candidates
 - `validator` may approve through review-scoped requests
+- `system` is read-only in the review workflow and cannot approve candidates
 - `target_path` must match the canonical wiki path for `target_page_id`
+- `target_page_id` must use the strict `page-<domain>-<slug>` contract, where `<slug>` contains only lowercase letters, digits, and hyphens
+- when `target_page_id` already exists, it must belong to the same `course_id` and `class_id` scope as the candidate being reviewed
 - successful approval promotes the candidate first with `candidate.wiki_sync_status = pending`, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch, marks the candidate `wiki_sync_status = synced`, and closes with `candidate_wiki_synced`
 - same `Idempotency-Key` plus the same approval payload replays safely
 - the approval replay contract includes a frozen patch plan fingerprint; if the candidate or wiki page drifts enough to change that plan, the retry must return `409 duplicate_action`
+- if an existing `target_page_id` drifts into another scope after a partial approval, the replay still counts as frozen-plan drift and must return `409 duplicate_action`
 - replay comparison normalizes the canonical wiki target, so omitting `target_path` or providing the canonical path replays safely
 - same `Idempotency-Key` plus a different effective approval payload returns `409 duplicate_action`
 - retry after a partial wiki-sync failure must converge to one promoted candidate state and one final wiki patch audit chain
@@ -390,12 +397,14 @@ Contract:
 - `instructor` may resume academic candidates in scope
 - `validator` may resume review-scoped candidates
 - `operator` remains read-only in the MVP review flow and cannot resume wiki sync
+- `system` remains read-only in the review workflow and cannot resume wiki sync
 - candidate must already be `status = promoted` and `wiki_sync_status = pending`
 - the server reuses the stored `promotion_attempt_id`, `wiki_sync_target_path`, and `approval_plan_fingerprint`
 - resume continues the existing pending promotion attempt and must not emit a second `candidate_wiki_sync_pending` audit event
 - the current candidate and wiki page must still match the frozen approval plan; if that plan drifts, the request returns `409 duplicate_action`
+- if the stored target page drifts into another scope before resume, that still counts as frozen-plan drift and must return `409 duplicate_action`
 - unlike `approve`, `resume-sync` may use a fresh `Idempotency-Key` because it resumes a server-owned promotion attempt rather than creating a new approval plan
-- once a `resume-sync` request succeeds, reusing the same `Idempotency-Key` with the same payload must replay the stored success response
+- once a `resume-sync` request succeeds, reusing the same `Idempotency-Key` with the same payload must replay the stored success response, even if the original request crashed after syncing the wiki/candidate but before the mutation request was marked applied
 - reusing the same `Idempotency-Key` with different `resume_notes` must return `409 duplicate_action`
 
 Response body inside `data`:
@@ -428,6 +437,7 @@ Rules:
 - target candidate must remain active
 - merge stays inside the same course/class scope
 - `operator` is not allowed to merge candidates in the MVP review flow
+- `system` is not allowed to merge candidates in the MVP review flow
 - merge replay identity is anchored to the original target candidate meaning, not only its ID; `title`, `summary`, and `related_page_id` drift make the replay a different request
 - same `Idempotency-Key` plus the same merge payload replays safely
 - same `Idempotency-Key` plus a different merge payload returns `409 duplicate_action`
@@ -458,6 +468,7 @@ Rules:
 - requires `Idempotency-Key`
 - drop is a status transition, not a delete
 - `operator` is not allowed to drop candidates in the MVP review flow
+- `system` is not allowed to drop candidates in the MVP review flow
 - the drop audit record must preserve `reason` as structured metadata as well as human-readable notes
 - same `Idempotency-Key` plus the same drop payload replays safely
 - same `Idempotency-Key` plus a different drop payload returns `409 duplicate_action`
@@ -511,6 +522,9 @@ Rules:
 
 - page visibility still respects role/domain boundaries
 - callers cannot cross course/class scope by guessing page IDs
+- canonical wiki storage is class-scoped under `data/wiki/<domain>/<class-id>/...`
+- noncanonical, unreadable, or otherwise invalid wiki files stay out of the normal wiki browser and are surfaced through maintenance as repair-required layout issues
+- unreadable legacy unscoped files only surface through scoped maintenance when `class_scope` metadata still survives and matches the current scope
 
 Response body inside `data`:
 
@@ -671,8 +685,11 @@ Allowed roles and domains:
 Rules:
 
 - this route is operational and read-model producing, so it is restricted to review-scoped maintenance owners
-- stale open candidates older than the configured threshold are returned as warnings
-- orphan `candidate_refs` and orphan `source_refs` in formal wiki pages are returned as errors
+- stale open candidates whose `updated_at` is older than the configured threshold are returned as warnings
+- orphan `candidate_refs` and source references whose manifest row or backing source file is no longer available are returned as errors
+- noncanonical, unreadable, or metadata-invalid wiki files in the current scope are returned as errors so legacy wiki storage drift cannot stay hidden
+- a wiki file that physically lives under the current class-scoped path but whose frontmatter points to another scope is treated as metadata-invalid and surfaced for repair
+- unreadable legacy unscoped files only appear when the remaining frontmatter still contains a matching `class_scope`, and any surviving `course_id` also matches the requested course; `course_id`-only or completely unattributable legacy files are left out of scoped reports to avoid cross-class leakage
 - report ordering is deterministic so persisted maintenance output stays diff-friendly
 
 Response body inside `data`:
@@ -706,6 +723,10 @@ Rules:
 - instructors may inspect maintenance health for course operations, but they cannot trigger report generation
 - maintenance status is a summary surface and does not expose raw session question bodies
 - the returned status is always scoped to the requested `course_id` and `class_id`
+- if a persisted report file is unreadable or its embedded scope does not match the requested path scope, the route returns an `error` payload for the requested scope with a `maintenance_report_unreadable` check
+- `validator` and `system` receive the full `checks` payload with `entity_id` and `details`
+- `instructor` receives a redacted `checks` payload that keeps `code`, `severity`, `entity_type`, and a stable public `summary` only
+- `last_run_at` is omitted when no report has been generated yet, or when a persisted report exists but its timestamp metadata is unreadable, because the status payload excludes null fields
 
 Response body inside `data`:
 
@@ -713,7 +734,7 @@ Response body inside `data`:
 - `course_id`
 - `class_id`
 - `status`
-- `last_run_at`
+- `last_run_at` when the persisted report includes a readable timestamp
 - `health_score`
 - `review_queue_count`
 - `summary`

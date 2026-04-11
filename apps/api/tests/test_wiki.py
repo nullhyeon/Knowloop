@@ -74,22 +74,22 @@ def seed_fixture_pack(settings: Settings) -> None:
     seed_wiki_fixture(
         settings,
         fixture_name="concepts-chain-rule.seed.md",
-        target_relative_path="wiki/concepts/chain-rule.md",
+        target_relative_path="wiki/concepts/class-calculus-1-2026-spring-a/chain-rule.md",
     )
     seed_wiki_fixture(
         settings,
         fixture_name="faq-homework-submission.after.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
     seed_wiki_fixture(
         settings,
         fixture_name="misconception-chain-rule.after.md",
-        target_relative_path="wiki/misconceptions/chain-rule-product-rule.md",
+        target_relative_path="wiki/misconceptions/class-calculus-1-2026-spring-a/chain-rule-product-rule.md",
     )
     seed_wiki_fixture(
         settings,
         fixture_name="operations-refund-policy.seed.md",
-        target_relative_path="wiki/operations/refund-policy.md",
+        target_relative_path="wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
     )
 
 
@@ -253,7 +253,7 @@ def test_wiki_detail_rejects_cross_class_scope(tmp_path: Path) -> None:
     seed_wiki_fixture(
         settings,
         fixture_name="concepts-chain-rule.seed.md",
-        target_relative_path="wiki/concepts/chain-rule-section-b.md",
+        target_relative_path="wiki/concepts/class-calculus-1-2026-spring-b/chain-rule-section-b.md",
         replacements={
             "page-concepts-chain-rule": "page-concepts-chain-rule-section-b",
             "class-calculus-1-2026-spring-a": "class-calculus-1-2026-spring-b",
@@ -269,8 +269,149 @@ def test_wiki_detail_rejects_cross_class_scope(tmp_path: Path) -> None:
         ),
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "forbidden_scope"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_wiki_detail_resolves_duplicate_page_id_within_request_scope(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    seed_fixture_pack(settings)
+    seed_wiki_fixture(
+        settings,
+        fixture_name="faq-homework-submission.after.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-b/homework-submission.md",
+        replacements={
+            "class-calculus-1-2026-spring-a": "class-calculus-1-2026-spring-b",
+            "Homework 01 is due Friday, April 10 at 11:59 PM KST.": (
+                "Section B uses the Monday deadline window."
+            ),
+        },
+    )
+
+    response = client.get(
+        "/api/v1/wiki/pages/page-faq-homework-submission",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            class_id="class-calculus-1-2026-spring-b",
+            request_id="req-student-wiki-duplicate-page-id-scope",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["page_id"] == "page-faq-homework-submission"
+    assert payload["class_scope"] == "class-calculus-1-2026-spring-b"
+    assert "Section B uses the Monday deadline window." in payload["body_markdown"]
+
+
+def test_wiki_list_ignores_noncanonical_page_paths(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    seed_fixture_pack(settings)
+    seed_wiki_fixture(
+        settings,
+        fixture_name="faq-homework-submission.after.md",
+        target_relative_path="wiki/faq/homework-submission-noncanonical.md",
+    )
+
+    response = client.get(
+        "/api/v1/wiki/pages",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-student-wiki-ignore-noncanonical",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 3
+    assert [item["page_id"] for item in payload["data"]].count("page-faq-homework-submission") == 1
+
+
+def test_wiki_list_skips_malformed_page_frontmatter(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    seed_fixture_pack(settings)
+    malformed_path = (
+        settings.data_root
+        / "wiki"
+        / "faq"
+        / "class-calculus-1-2026-spring-a"
+        / "malformed-homework-page.md"
+    )
+    malformed_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed_path.write_text(
+        """---
+page_id: page-concepts-homework-submission
+domain: faq
+title: Broken Homework Page
+course_id: course-calculus-1
+class_scope: class-calculus-1-2026-spring-a
+updated_at: 2026-04-08T11:00:00Z
+source_refs: []
+candidate_refs: []
+summary: This page has a mismatched page_id/domain contract.
+---
+
+# Broken Homework Page
+
+This malformed page should be ignored by wiki readers.
+""",
+        encoding="utf-8",
+    )
+
+    response = client.get(
+        "/api/v1/wiki/pages",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-student-wiki-ignore-malformed",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 3
+    assert all(item["page_id"] != "page-concepts-homework-submission" for item in payload["data"])
+
+
+def test_wiki_list_skips_unreadable_page_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import knowloop_api.services.wiki as wiki_service
+
+    client, settings = build_client(tmp_path)
+    seed_fixture_pack(settings)
+    unreadable_path = (
+        settings.data_root
+        / "wiki"
+        / "faq"
+        / "class-calculus-1-2026-spring-a"
+        / "homework-submission.md"
+    )
+    original_load = wiki_service._load_wiki_page
+
+    def flaky_load(path: Path):  # noqa: ANN202
+        if path.resolve() == unreadable_path.resolve():
+            raise PermissionError("forced wiki read failure")
+        return original_load(path)
+
+    monkeypatch.setattr(wiki_service, "_load_wiki_page", flaky_load)
+
+    response = client.get(
+        "/api/v1/wiki/pages",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-student-wiki-ignore-unreadable",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 2
+    assert all(item["page_id"] != "page-faq-homework-submission" for item in payload["data"])
 
 
 def test_wiki_list_applies_limit_and_offset(tmp_path: Path) -> None:

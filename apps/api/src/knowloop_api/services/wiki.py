@@ -107,16 +107,56 @@ class ForbiddenWikiScopeError(PermissionError):
     """Raised when a caller crosses the wiki visibility boundary."""
 
 
+class WikiPageAmbiguityError(ValueError):
+    """Raised when a wiki page ID resolves to multiple pages without scope."""
+
+
 ACADEMIC_WIKI_DOMAINS = frozenset({"concepts", "faq", "misconceptions", "courses"})
 OPERATIONS_WIKI_DOMAINS = frozenset({"operations"})
 ALL_WIKI_DOMAINS = ACADEMIC_WIKI_DOMAINS.union(OPERATIONS_WIKI_DOMAINS)
+PAGE_ID_SLUG_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
 
-def get_wiki_page(settings: Settings, page_id: str) -> WikiPage | None:
-    for page in list_wiki_pages(settings):
-        if page.page_id == page_id:
-            return page
-    return None
+def build_wiki_page_path(
+    settings: Settings,
+    *,
+    domain: str,
+    class_scope: str,
+    page_id: str,
+) -> Path:
+    slug_prefix = f"page-{domain}-"
+    if not page_id.startswith(slug_prefix) or page_id == slug_prefix:
+        raise ValueError(f"page_id must match the page-{domain}-<slug> contract")
+    slug = page_id[len(slug_prefix) :]
+    if not PAGE_ID_SLUG_PATTERN.fullmatch(slug):
+        raise ValueError("page_id slug must contain only lowercase letters, digits, and hyphens")
+    return settings.data_root / "wiki" / domain / class_scope / f"{slug}.md"
+
+
+def get_wiki_page(
+    settings: Settings,
+    page_id: str,
+    *,
+    course_id: str | None = None,
+    class_id: str | None = None,
+) -> WikiPage | None:
+    matches = [
+        page
+        for page in find_wiki_pages_by_id(settings, page_id)
+        if (course_id is None or page.course_id == course_id)
+        and (class_id is None or page.class_scope == class_id)
+    ]
+    if not matches:
+        return None
+    if course_id is None and class_id is None and len(matches) > 1:
+        raise WikiPageAmbiguityError(
+            f"wiki page id resolves to multiple scoped pages: {page_id}"
+        )
+    return matches[0]
+
+
+def find_wiki_pages_by_id(settings: Settings, page_id: str) -> list[WikiPage]:
+    return [page for page in list_wiki_pages(settings) if page.page_id == page_id]
 
 
 def list_wiki_pages(settings: Settings) -> list[WikiPage]:
@@ -128,7 +168,13 @@ def list_wiki_pages(settings: Settings) -> list[WikiPage]:
     for path in sorted(wiki_root.glob("**/*.md")):
         if path.name.startswith("."):
             continue
-        pages.append(_load_wiki_page(path))
+        try:
+            page = _load_wiki_page(path)
+            if not _is_canonical_wiki_page_path(settings, page=page, path=path):
+                continue
+        except (KeyError, OSError, ValueError):
+            continue
+        pages.append(page)
     return pages
 
 
@@ -194,11 +240,14 @@ def get_visible_wiki_page(
     class_id: str,
     requested_domain: RequestDomain | None,
 ) -> WikiPage:
-    page = get_wiki_page(settings, page_id)
+    page = get_wiki_page(
+        settings,
+        page_id,
+        course_id=course_id,
+        class_id=class_id,
+    )
     if page is None:
         raise WikiPageNotFoundError(f"wiki page was not found: {page_id}")
-    if page.course_id != course_id or page.class_scope != class_id:
-        raise ForbiddenWikiScopeError("Wiki page is outside the current course/class scope.")
     if page.domain not in _visible_wiki_domains(role, requested_domain=requested_domain):
         raise ForbiddenWikiScopeError("Wiki page is outside the current role boundary.")
     return page
@@ -277,6 +326,25 @@ def _load_wiki_page(path: Path) -> WikiPage:
         body_markdown=body,
         path=path.as_posix(),
     )
+
+
+def load_wiki_page_from_path(path: Path) -> WikiPage:
+    return _load_wiki_page(path)
+
+
+def _is_canonical_wiki_page_path(
+    settings: Settings,
+    *,
+    page: WikiPage,
+    path: Path,
+) -> bool:
+    canonical_path = build_wiki_page_path(
+        settings,
+        domain=page.domain,
+        class_scope=page.class_scope,
+        page_id=page.page_id,
+    ).resolve()
+    return canonical_path == path.resolve()
 
 
 def _score_page(

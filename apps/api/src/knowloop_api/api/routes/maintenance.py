@@ -11,7 +11,12 @@ from knowloop_api.api.context import (
 )
 from knowloop_api.api.errors import success_response
 from knowloop_api.core.config import Settings
-from knowloop_api.services.maintenance import build_maintenance_report, load_maintenance_report
+from knowloop_api.core.contracts import ActorRole
+from knowloop_api.services.maintenance import (
+    build_maintenance_report,
+    load_maintenance_report,
+    maintenance_report_to_status_payload,
+)
 
 
 def create_maintenance_router(settings: Settings) -> APIRouter:
@@ -40,9 +45,13 @@ def create_maintenance_router(settings: Settings) -> APIRouter:
             course_id=context.course_id,
             class_id=context.class_id,
         )
+        include_sensitive_checks = context.role in {ActorRole.VALIDATOR, ActorRole.SYSTEM}
         return success_response(
             context.request_id,
-            report.model_dump(mode="json"),
+            maintenance_report_to_status_payload(
+                report,
+                include_sensitive_checks=include_sensitive_checks,
+            ),
         )
 
     return router

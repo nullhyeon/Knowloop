@@ -945,6 +945,7 @@ def _build_candidate_proposal(
         source_refs=source_refs,
         session_refs=related_sessions,
         created_at=created_at,
+        updated_at=created_at,
         related_page_id=related_page_id,
     )
 

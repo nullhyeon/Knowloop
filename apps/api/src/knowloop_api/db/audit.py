@@ -285,6 +285,75 @@ def get_mutation_request(
     )
 
 
+def list_mutation_requests(
+    settings: Settings,
+    *,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    action: str | None = None,
+    request_fingerprint: str | None = None,
+    status: str | None = None,
+) -> list[MutationRequestRecord]:
+    query = """
+        SELECT
+            entity_type,
+            entity_id,
+            action,
+            idempotency_key,
+            actor_role,
+            actor_id,
+            request_fingerprint,
+            status,
+            response_json,
+            created_at,
+            updated_at
+        FROM mutation_requests
+    """
+    clauses: list[str] = []
+    parameters: list[str] = []
+
+    if entity_type is not None:
+        clauses.append("entity_type = ?")
+        parameters.append(entity_type)
+    if entity_id is not None:
+        clauses.append("entity_id = ?")
+        parameters.append(entity_id)
+    if action is not None:
+        clauses.append("action = ?")
+        parameters.append(action)
+    if request_fingerprint is not None:
+        clauses.append("request_fingerprint = ?")
+        parameters.append(request_fingerprint)
+    if status is not None:
+        clauses.append("status = ?")
+        parameters.append(status)
+
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+
+    query += " ORDER BY created_at DESC, idempotency_key DESC"
+
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        rows = connection.execute(query, parameters).fetchall()
+
+    return [
+        MutationRequestRecord(
+            entity_type=row[0],
+            entity_id=row[1],
+            action=row[2],
+            idempotency_key=row[3],
+            actor_role=row[4],
+            actor_id=row[5],
+            request_fingerprint=row[6],
+            status=row[7],
+            response_payload=_parse_audit_details(row[8]),
+            created_at=_parse_timestamp(row[9]),
+            updated_at=_parse_timestamp(row[10]),
+        )
+        for row in rows
+    ]
+
+
 def begin_mutation_request(
     settings: Settings,
     *,
@@ -396,6 +465,61 @@ def mark_mutation_request_applied(
     )
     if record is None:
         raise RuntimeError("failed to update mutation request")
+    return record
+
+
+def store_mutation_request_response_payload(
+    settings: Settings,
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    idempotency_key: str,
+    updated_at: datetime,
+    response_payload: dict[str, object],
+) -> MutationRequestRecord:
+    existing_record = get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    effective_updated_at = updated_at
+    if existing_record is not None and existing_record.updated_at > effective_updated_at:
+        effective_updated_at = existing_record.updated_at
+
+    timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        connection.execute(
+            """
+            UPDATE mutation_requests
+            SET response_json = ?, updated_at = ?
+            WHERE entity_type = ?
+              AND entity_id = ?
+              AND action = ?
+              AND idempotency_key = ?
+            """,
+            (
+                _serialize_audit_details(response_payload),
+                timestamp,
+                entity_type,
+                entity_id,
+                action,
+                idempotency_key,
+            ),
+        )
+        connection.commit()
+
+    record = get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    if record is None:
+        raise RuntimeError("failed to update mutation request response payload")
     return record
 
 

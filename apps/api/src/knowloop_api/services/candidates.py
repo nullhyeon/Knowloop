@@ -15,7 +15,9 @@ from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
     list_audit_events,
+    list_mutation_requests,
     mark_mutation_request_applied,
+    store_mutation_request_response_payload,
 )
 
 
@@ -65,6 +67,7 @@ class CandidateItem(BaseModel):
     source_refs: list[SourceRef] = Field(min_length=1)
     session_refs: list[str] = Field(default_factory=list)
     created_at: datetime
+    updated_at: datetime
     approved_by: str | None = None
     approved_at: datetime | None = None
     merged_into: str | None = None
@@ -74,7 +77,6 @@ class CandidateItem(BaseModel):
     approval_plan_fingerprint: str | None = None
     wiki_sync_status: WikiSyncStatus | None = None
     wiki_synced_at: datetime | None = None
-
 
 class CandidateNotFoundError(FileNotFoundError):
     """Raised when a candidate file cannot be located."""
@@ -119,7 +121,12 @@ def create_candidate(
     if candidate.actor_role is not None and candidate.actor_role is not actor_role:
         raise CandidateStateError("candidate actor_role must match the creating actor role")
 
-    candidate = candidate.model_copy(update={"actor_role": actor_role})
+    candidate = candidate.model_copy(
+        update={
+            "actor_role": actor_role,
+            "updated_at": candidate.updated_at,
+        }
+    )
     mutation_request = _begin_create_candidate_request(
         settings,
         candidate=candidate,
@@ -134,11 +141,46 @@ def create_candidate(
     )
     if replayed_candidate is not None:
         return replayed_candidate
+    mutation_request = _ensure_create_candidate_request_intent(
+        settings,
+        mutation_request=mutation_request,
+        candidate=candidate,
+        idempotency_key=idempotency_key,
+    )
+    candidate = _apply_create_request_intent(candidate, mutation_request=mutation_request)
+    recovered_candidate = _recover_create_candidate_without_audit(
+        settings,
+        mutation_request=mutation_request,
+        requested_candidate=candidate,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        notes=notes,
+    )
+    if recovered_candidate is not None:
+        return recovered_candidate
 
     candidate_path = build_candidate_path(settings, candidate)
     existing_candidate = _find_existing_candidate(settings, candidate.candidate_id)
     if existing_candidate is not None:
         if existing_candidate == candidate:
+            if _has_competing_pending_create_requests(
+                settings,
+                mutation_request=mutation_request,
+                idempotency_key=idempotency_key,
+                ):
+                raise CandidateStateError(
+                    "candidate already exists under another pending request"
+                )
+            if idempotency_key is not None and _candidate_belongs_to_other_create_lineage(
+                settings,
+                candidate_id=existing_candidate.candidate_id,
+                idempotency_key=idempotency_key,
+            ):
+                raise CandidateStateError(
+                    "stored created candidate does not match the idempotent request"
+                )
             _ensure_candidate_created_audit(
                 settings,
                 candidate=existing_candidate,
@@ -224,6 +266,7 @@ def upsert_candidate_signal(
             "summary": candidate.summary or existing_candidate.summary,
             "related_page_id": existing_candidate.related_page_id or candidate.related_page_id,
             "actor_role": existing_candidate.actor_role or actor_role,
+            "updated_at": datetime.now(UTC),
         }
     )
     if updated_candidate == existing_candidate:
@@ -257,8 +300,7 @@ def upsert_candidate_signal(
 
 def get_candidate(settings: Settings, candidate_id: str) -> CandidateItem:
     candidate_path = find_candidate_path(settings, candidate_id)
-    payload = json.loads(candidate_path.read_text(encoding="utf-8"))
-    return CandidateItem.model_validate(payload)
+    return _load_candidate_file(candidate_path)
 
 
 def list_candidates(
@@ -273,7 +315,7 @@ def list_candidates(
         return []
 
     candidates = [
-        CandidateItem.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        _load_candidate_file(path)
         for path in _iter_candidate_paths(
             candidate_root,
             kind=kind,
@@ -290,7 +332,7 @@ def list_candidates(
 
     return sorted(
         candidates,
-        key=lambda candidate: (candidate.created_at, candidate.candidate_id),
+        key=lambda candidate: (candidate.updated_at, candidate.created_at, candidate.candidate_id),
         reverse=True,
     )
 
@@ -381,6 +423,7 @@ def promote_candidate(
             ),
             "wiki_sync_status": WikiSyncStatus.PENDING,
             "wiki_synced_at": None,
+            "updated_at": transition_at,
         }
     )
     request_fingerprint_payload = {
@@ -519,6 +562,7 @@ def merge_candidate(
                 current_target.source_refs,
                 current_candidate.source_refs,
             ),
+            "updated_at": transition_at,
         }
     )
     updated_candidate = current_candidate.model_copy(
@@ -527,6 +571,7 @@ def merge_candidate(
             "merged_into": target_candidate_id,
             "approved_by": actor_id,
             "approved_at": transition_at,
+            "updated_at": transition_at,
         }
     )
     mutation_request = _begin_transition_request(
@@ -653,6 +698,7 @@ def drop_candidate(
             "status": CandidateStatus.DROPPED,
             "approved_by": actor_id,
             "approved_at": transition_at,
+            "updated_at": transition_at,
         }
     )
     request_fingerprint_payload = {
@@ -765,6 +811,7 @@ def mark_candidate_wiki_synced(
         update={
             "wiki_sync_status": WikiSyncStatus.SYNCED,
             "wiki_synced_at": effective_synced_at,
+            "updated_at": effective_synced_at,
         }
     )
     candidate_path = find_candidate_path(settings, candidate_id)
@@ -803,6 +850,39 @@ def find_candidate_path(settings: Settings, candidate_id: str) -> Path:
 def _write_candidate(path: Path, candidate: CandidateItem) -> None:
     payload = candidate.model_dump(mode="json", exclude_none=True)
     _write_text_atomically(path, json.dumps(payload, indent=2) + "\n")
+
+
+def _validate_candidate_payload(
+    payload: dict[str, object],
+) -> tuple[CandidateItem, bool]:
+    had_updated_at = "updated_at" in payload
+    normalized_payload = payload
+    if not had_updated_at and "created_at" in payload:
+        normalized_payload = {**payload, "updated_at": payload["created_at"]}
+    return CandidateItem.model_validate(normalized_payload), had_updated_at
+
+
+def _load_candidate_file(path: Path) -> CandidateItem:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    candidate, had_updated_at = _validate_candidate_payload(payload)
+    if had_updated_at:
+        return candidate
+
+    try:
+        lock_paths = _acquire_candidate_locks([path])
+    except CandidateStateError:
+        return candidate
+    try:
+        refreshed_payload = json.loads(path.read_text(encoding="utf-8"))
+        candidate, refreshed_had_updated_at = _validate_candidate_payload(refreshed_payload)
+        if not refreshed_had_updated_at:
+            try:
+                _write_candidate(path, candidate)
+            except OSError:
+                pass
+    finally:
+        _release_candidate_locks(lock_paths)
+    return candidate
 
 
 def _assert_status(candidate: CandidateItem, *, expected: CandidateStatus) -> None:
@@ -890,6 +970,86 @@ def _begin_create_candidate_request(
     return mutation_request
 
 
+def _ensure_create_candidate_request_intent(
+    settings: Settings,
+    *,
+    mutation_request,
+    candidate: CandidateItem,
+    idempotency_key: str | None,
+):
+    if mutation_request is None or idempotency_key is None:
+        return mutation_request
+
+    expected_intent = _build_candidate_create_request_intent(settings, candidate)
+    existing_intent = mutation_request.response_payload
+    if existing_intent is not None:
+        if existing_intent != expected_intent:
+            if _create_request_has_durable_artifact(settings, mutation_request=mutation_request):
+                raise CandidateStateError(
+                    "stored created candidate does not match the idempotent request"
+                )
+        return mutation_request
+
+    return store_mutation_request_response_payload(
+        settings,
+        entity_type=CREATE_REQUEST_ENTITY_TYPE,
+        entity_id=CREATE_REQUEST_ENTITY_ID,
+        action=CREATE_ACTION,
+        idempotency_key=idempotency_key,
+        updated_at=candidate.created_at,
+        response_payload=expected_intent,
+    )
+
+
+def _create_request_has_durable_artifact(
+    settings: Settings,
+    *,
+    mutation_request,
+) -> bool:
+    if list_audit_events(
+        settings,
+        entity_type="candidate",
+        action=CREATE_ACTION,
+        idempotency_key=mutation_request.idempotency_key,
+    ):
+        return True
+
+    existing_intent = mutation_request.response_payload or {}
+    expected_candidate_id = existing_intent.get("candidate_id")
+    expected_path = existing_intent.get("path")
+    if not isinstance(expected_candidate_id, str) or not isinstance(expected_path, str):
+        return False
+
+    try:
+        stored_candidate_path = find_candidate_path(settings, expected_candidate_id)
+    except CandidateNotFoundError:
+        return False
+
+    return str(stored_candidate_path.resolve()) == str(Path(expected_path).resolve())
+
+
+def _apply_create_request_intent(
+    candidate: CandidateItem,
+    *,
+    mutation_request,
+) -> CandidateItem:
+    if mutation_request is None or mutation_request.response_payload is None:
+        return candidate
+
+    request_intent = mutation_request.response_payload
+    candidate_id = request_intent.get("candidate_id")
+    if not isinstance(candidate_id, str):
+        return candidate
+
+    return candidate.model_copy(
+        update={
+            "candidate_id": candidate_id,
+            "created_at": mutation_request.created_at,
+            "updated_at": mutation_request.created_at,
+        }
+    )
+
+
 def _begin_transition_request(
     settings: Settings,
     *,
@@ -954,13 +1114,26 @@ def _build_candidate_create_request_fingerprint(
 ) -> str:
     candidate_payload = candidate.model_dump(
         mode="json",
-        exclude={"candidate_id", "created_at"},
+        exclude={"candidate_id", "created_at", "updated_at"},
         exclude_none=True,
     )
     return _build_request_fingerprint(
         candidate=candidate_payload,
         actor_id=actor_id,
     )
+
+
+def _build_candidate_create_request_intent(
+    settings: Settings,
+    candidate: CandidateItem,
+) -> dict[str, object]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "course_id": candidate.course_id,
+        "class_id": candidate.class_id,
+        "kind": candidate.kind.value,
+        "path": str(build_candidate_path(settings, candidate)),
+    }
 
 
 def _candidate_state_fingerprint(
@@ -1102,6 +1275,139 @@ def _mark_create_candidate_applied(
         idempotency_key=idempotency_key,
         updated_at=updated_at,
     )
+
+
+def _recover_create_candidate_without_audit(
+    settings: Settings,
+    *,
+    mutation_request,
+    requested_candidate: CandidateItem,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    request_id: str | None,
+    idempotency_key: str | None,
+    notes: str | None,
+) -> CandidateItem | None:
+    if mutation_request is None or idempotency_key is None:
+        return None
+    request_intent = mutation_request.response_payload
+    if request_intent is None:
+        return None
+    expected_candidate_id = request_intent.get("candidate_id")
+    expected_path = request_intent.get("path")
+    if not isinstance(expected_candidate_id, str) or not isinstance(expected_path, str):
+        return None
+
+    try:
+        stored_candidate_path = find_candidate_path(settings, expected_candidate_id)
+    except CandidateNotFoundError:
+        stored_candidate_path = None
+    if stored_candidate_path is not None and str(stored_candidate_path.resolve()) != str(
+        Path(expected_path).resolve()
+    ):
+        raise CandidateStateError("stored created candidate does not match the idempotent request")
+
+    competing_requests = _list_competing_pending_create_requests(
+        settings,
+        mutation_request=mutation_request,
+        idempotency_key=idempotency_key,
+    )
+    if competing_requests:
+        return None
+
+    matching_candidates = [
+        candidate
+        for candidate in list_candidates(settings, class_id=requested_candidate.class_id)
+        if candidate.course_id == requested_candidate.course_id
+        and candidate.candidate_id == expected_candidate_id
+        and not list_audit_events(
+            settings,
+            entity_type="candidate",
+            entity_id=candidate.candidate_id,
+            action=CREATE_ACTION,
+        )
+        and _build_candidate_create_request_fingerprint(
+            candidate,
+            actor_id=mutation_request.actor_id,
+        )
+        == mutation_request.request_fingerprint
+    ]
+    if not matching_candidates:
+        return None
+    if len(matching_candidates) > 1:
+        raise CandidateStateError("stored created candidate replay is ambiguous")
+
+    recovered_candidate = matching_candidates[0]
+    _ensure_candidate_created_audit(
+        settings,
+        candidate=recovered_candidate,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        notes=notes,
+    )
+    _mark_create_candidate_applied(
+        settings,
+        idempotency_key=idempotency_key,
+        updated_at=datetime.now(UTC),
+    )
+    return recovered_candidate
+
+
+def _list_competing_pending_create_requests(
+    settings: Settings,
+    *,
+    mutation_request,
+    idempotency_key: str | None,
+) -> list:
+    if mutation_request is None:
+        return []
+
+    return [
+        request
+        for request in list_mutation_requests(
+            settings,
+            entity_type=CREATE_REQUEST_ENTITY_TYPE,
+            entity_id=CREATE_REQUEST_ENTITY_ID,
+            action=CREATE_ACTION,
+            request_fingerprint=mutation_request.request_fingerprint,
+            status="pending",
+        )
+        if request.idempotency_key != idempotency_key
+    ]
+
+
+def _has_competing_pending_create_requests(
+    settings: Settings,
+    *,
+    mutation_request,
+    idempotency_key: str | None,
+) -> bool:
+    return bool(
+        _list_competing_pending_create_requests(
+            settings,
+            mutation_request=mutation_request,
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+def _candidate_belongs_to_other_create_lineage(
+    settings: Settings,
+    *,
+    candidate_id: str,
+    idempotency_key: str,
+) -> bool:
+    create_audits = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate_id,
+        action=CREATE_ACTION,
+    )
+    if not create_audits:
+        return False
+    return not any(audit.idempotency_key == idempotency_key for audit in create_audits)
 
 
 def _finalize_or_replay_promote(
@@ -1407,8 +1713,7 @@ def _find_existing_candidate(settings: Settings, candidate_id: str) -> Candidate
     if len(matches) > 1:
         raise CandidateStateError(f"candidate id is ambiguous: {candidate_id}")
 
-    payload = json.loads(matches[0].read_text(encoding="utf-8"))
-    return CandidateItem.model_validate(payload)
+    return _load_candidate_file(matches[0])
 
 
 def _find_matching_open_candidate(
@@ -1466,7 +1771,7 @@ def _apply_candidate_transaction(
                 continue
             if snapshot is None:
                 raise CandidateStateError("candidate changed during transition")
-            current_candidate = CandidateItem.model_validate(json.loads(snapshot))
+            current_candidate, _ = _validate_candidate_payload(json.loads(snapshot))
             if current_candidate != expected_candidate:
                 raise CandidateStateError("candidate changed during transition")
 

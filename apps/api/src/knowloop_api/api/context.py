@@ -39,7 +39,6 @@ REVIEW_MUTATION_ROLES = frozenset(
     {
         ActorRole.INSTRUCTOR,
         ActorRole.VALIDATOR,
-        ActorRole.SYSTEM,
     }
 )
 INSTRUCTOR_INSIGHT_ROUTE_DOMAINS = {

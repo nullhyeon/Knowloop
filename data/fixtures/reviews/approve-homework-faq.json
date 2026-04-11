@@ -12,7 +12,7 @@
   },
   "request_body": {
     "target_page_id": "page-faq-homework-submission",
-    "target_path": "data/wiki/faq/homework-submission.md",
+    "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     "approval_notes": "Promote to shared FAQ for the course wiki."
   },
   "expected": {

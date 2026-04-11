@@ -26,6 +26,7 @@ from knowloop_api.services.sessions import (
     save_session,
 )
 from knowloop_api.services.sources import SourceRegistrationInput, register_source
+from knowloop_api.services.wiki import build_wiki_page_path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_ROOT = REPO_ROOT / "data" / "fixtures"
@@ -102,11 +103,11 @@ def _seed_wiki(settings: Settings, source_id_map: dict[str, str]) -> None:
         for fixture_source_id, runtime_source_id in source_id_map.items():
             contents = contents.replace(fixture_source_id, runtime_source_id)
         metadata, _body = parse_frontmatter_document(contents)
-        destination = (
-            settings.data_root
-            / "wiki"
-            / str(metadata["domain"])
-            / _wiki_slug_from_fixture_name(wiki_file.name)
+        destination = build_wiki_page_path(
+            settings,
+            domain=str(metadata["domain"]),
+            class_scope=str(metadata["class_scope"]),
+            page_id=str(metadata["page_id"]),
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(contents, encoding="utf-8")
@@ -129,11 +130,6 @@ def _seed_actor_id(actor_role: ActorRole) -> str:
     if actor_role is ActorRole.OPERATOR:
         return "ops-academic-office"
     return "system-seed"
-
-
-def _wiki_slug_from_fixture_name(file_name: str) -> str:
-    stem = file_name.removesuffix(".seed.md")
-    return "-".join(stem.split("-")[1:]) + ".md"
 
 
 def _parse_timestamp(value: str):

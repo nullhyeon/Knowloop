@@ -2,7 +2,7 @@ import hashlib
 import json
 import shutil
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jsonschema
@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, SourceType
 from knowloop_api.core.frontmatter import parse_frontmatter_document
-from knowloop_api.db.audit import list_audit_events
+from knowloop_api.db.audit import get_mutation_request, list_audit_events
 from knowloop_api.main import create_app
 from knowloop_api.services.candidates import (
     CandidateItem,
@@ -162,6 +162,48 @@ def test_review_candidate_list_returns_visible_candidates_for_instructor(tmp_pat
     assert all(item["review_domain"] == "academic" for item in payload["data"])
 
 
+def test_review_candidate_list_orders_by_candidate_updated_at(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    older = load_candidate_fixture("open-faq-homework-deadline.json").model_copy(
+        update={
+            "candidate_id": (
+                "cand-faq-class-calculus-1-2026-spring-a-"
+                "homework-ordering-older-20260408T103000Z"
+            ),
+            "created_at": datetime(2026, 4, 8, 10, 30, tzinfo=UTC),
+            "updated_at": datetime(2026, 4, 8, 10, 30, tzinfo=UTC),
+        }
+    )
+    newer = load_candidate_fixture("open-misconception-chain-rule.json").model_copy(
+        update={
+            "candidate_id": (
+                "cand-misconception-class-calculus-1-2026-spring-a-"
+                "ordering-newer-20260408T110000Z"
+            ),
+            "created_at": datetime(2026, 4, 8, 11, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 4, 9, 9, 15, tzinfo=UTC),
+        }
+    )
+    create_candidate(settings, older, actor_role=ActorRole.SYSTEM, actor_id="system-seed")
+    create_candidate(settings, newer, actor_role=ActorRole.SYSTEM, actor_id="system-seed")
+
+    response = client.get(
+        "/api/v1/review/candidates",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-list-ordering",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert [item["candidate_id"] for item in payload[:2]] == [
+        newer.candidate_id,
+        older.candidate_id,
+    ]
+
+
 def test_review_candidate_detail_returns_audit_history_and_actions(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
@@ -195,7 +237,7 @@ def test_review_candidate_detail_exposes_resume_sync_for_pending_candidate(
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     original_write_wiki_page = review_service._write_wiki_page
@@ -234,6 +276,57 @@ def test_review_candidate_detail_exposes_resume_sync_for_pending_candidate(
     assert payload["available_actions"] == ["resume_sync"]
 
 
+def test_review_candidate_detail_keeps_system_read_only_for_pending_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+
+    detail_response = client.get(
+        f"/api/v1/review/candidates/{candidate.candidate_id}",
+        headers=build_headers(
+            role="system",
+            actor_id="system-review-observer",
+            request_id="req-review-detail-system-pending-sync",
+        ),
+    )
+
+    assert detail_response.status_code == 200
+    payload = detail_response.json()["data"]
+    assert payload["candidate"]["status"] == "promoted"
+    assert payload["candidate"]["wiki_sync_status"] == "pending"
+    assert payload["available_actions"] == ["patch_preview"]
+
+
 def test_review_patch_preview_matches_homework_fixture_contract(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     review_fixture = load_review_fixture("patch-preview-homework-faq.json")
@@ -242,7 +335,7 @@ def test_review_patch_preview_matches_homework_fixture_contract(tmp_path: Path) 
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
     expected_after_contents = (
         FIXTURE_ROOT / "wiki" / "faq-homework-submission.after.md"
@@ -289,13 +382,136 @@ def test_review_patch_preview_rejects_invalid_target_page_id_contract(
         ),
         json={
             "target_page_id": "page-faq-homework-submission",
-            "target_path": "data/wiki/operations/refund-policy.md",
+            "target_path": "data/wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
             "notes": "Reject mismatched page contract for operations wiki preview.",
         },
     )
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_review_patch_preview_rejects_target_page_id_path_traversal(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/patch-preview",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-preview-path-traversal",
+        ),
+        json={
+            "target_page_id": "page-faq-../../operations/class-calculus-1-2026-spring-a/injected",
+            "notes": "Reject page_id path traversal before any wiki path is resolved.",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_review_patch_preview_treats_target_page_id_as_scope_local(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    cross_scope_path = (
+        settings.data_root
+        / "wiki"
+        / "faq"
+        / "class-calculus-1-2026-spring-b"
+        / "homework-submission-cross-scope.md"
+    )
+    cross_scope_path.parent.mkdir(parents=True, exist_ok=True)
+    cross_scope_path.write_text(
+        """---
+page_id: page-faq-homework-submission-cross-scope
+domain: faq
+title: Homework Submission
+course_id: course-calculus-1
+class_scope: class-calculus-1-2026-spring-b
+updated_at: 2026-04-08T10:40:00Z
+source_refs: []
+candidate_refs: []
+summary: A cross-scope page that must not be previewed from another class.
+---
+
+# Homework Submission
+
+This page belongs to another class scope.
+""",
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/patch-preview",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-preview-scope-local-page-id",
+        ),
+        json={
+            "target_page_id": "page-faq-homework-submission-cross-scope",
+            "notes": "Scope-local page IDs should resolve to the current class path.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["patch"]["target_page_id"] == "page-faq-homework-submission-cross-scope"
+    assert (
+        payload["patch"]["target_path"]
+        == "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission-cross-scope.md"
+    )
+    assert payload["before_markdown"] is None
+
+
+def test_review_patch_preview_returns_domain_error_for_malformed_canonical_wiki_page(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    malformed_path = (
+        settings.data_root
+        / "wiki"
+        / "faq"
+        / "class-calculus-1-2026-spring-a"
+        / "homework-submission.md"
+    )
+    malformed_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed_path.write_text(
+        """---
+page_id page-faq-homework-submission
+domain: faq
+course_id: course-calculus-1
+class_scope: class-calculus-1-2026-spring-a
+---
+
+# Homework Submission
+
+This canonical page is malformed and should not crash the review flow.
+""",
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/patch-preview",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-preview-malformed-canonical-page",
+        ),
+        json={
+            "target_page_id": "page-faq-homework-submission",
+            "notes": "Malformed canonical page should surface as a review error.",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert "could not be read" in response.json()["error"]["message"]
 
 
 def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) -> None:
@@ -306,7 +522,7 @@ def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) 
     written_path = seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
     expected_after_contents = (
         FIXTURE_ROOT / "wiki" / "faq-homework-submission.after.md"
@@ -388,7 +604,7 @@ def test_review_approve_rejects_reused_idempotency_key_with_different_payload(
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     first_response = client.post(
@@ -456,7 +672,7 @@ def test_review_approve_replays_when_canonical_target_path_is_omitted_then_expli
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     first_response = client.post(
@@ -508,7 +724,7 @@ def test_review_approve_requires_idempotency_key_at_route_boundary(tmp_path: Pat
         ),
         json={
             "target_page_id": "page-faq-homework-submission",
-            "target_path": "data/wiki/faq/homework-submission.md",
+            "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
             "approval_notes": "Boundary guard should reject missing idempotency.",
         },
     )
@@ -525,7 +741,7 @@ def test_review_approve_rejects_noncanonical_target_path_on_replay(tmp_path: Pat
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     first_response = client.post(
@@ -555,7 +771,7 @@ def test_review_approve_rejects_noncanonical_target_path_before_promotion(tmp_pa
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     response = client.post(
@@ -601,7 +817,7 @@ def test_review_approve_recovers_after_wiki_write_failure(
     written_path = seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     original_write_wiki_page = review_service._write_wiki_page
@@ -679,7 +895,7 @@ def test_review_resume_sync_completes_pending_candidate_with_new_idempotency_key
     written_path = seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
     expected_after_contents = (
         FIXTURE_ROOT / "wiki" / "faq-homework-submission.after.md"
@@ -827,6 +1043,403 @@ def test_review_resume_sync_completes_pending_candidate_with_new_idempotency_key
     assert len(resumed_wiki_audit) == 1
 
 
+def test_review_resume_sync_backfills_missing_pending_audit_after_approve_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_record_pending = review_service._record_candidate_wiki_sync_pending
+    pending_attempts = {"count": 0}
+
+    def flaky_record_pending(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        pending_attempts["count"] += 1
+        if pending_attempts["count"] == 1:
+            raise OSError("forced pending audit gap")
+        return original_record_pending(*args, **kwargs)
+
+    monkeypatch.setattr(review_service, "_record_candidate_wiki_sync_pending", flaky_record_pending)
+
+    approve_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert approve_response.status_code == 500
+    pending_candidate = get_candidate(settings, candidate.candidate_id)
+    assert pending_candidate.status is CandidateStatus.PROMOTED
+    assert pending_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+
+    pending_events_before_resume = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    assert pending_events_before_resume == []
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-pending-gap",
+            idempotency_key="idem-fixture-resume-homework-faq-pending-gap",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after the pending audit marker was skipped."},
+    )
+
+    assert resume_response.status_code == 200
+
+    backfilled_pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+    resumed_pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+        idempotency_key="idem-fixture-resume-homework-faq-pending-gap",
+    )
+    resumed_synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-resume-homework-faq-pending-gap",
+    )
+
+    assert len(backfilled_pending_events) == 1
+    assert resumed_pending_events == []
+    assert len(resumed_synced_events) == 1
+
+
+def test_review_resume_sync_replays_stored_response_after_finalize_marker_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+
+    original_mark_applied = review_service.mark_mutation_request_applied
+    finalize_attempts = {"count": 0}
+
+    def flaky_mark_applied(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if kwargs.get("action") == review_service.RESUME_SYNC_REQUEST_ACTION:
+            finalize_attempts["count"] += 1
+            if finalize_attempts["count"] == 1:
+                raise OSError("forced resume finalize marker failure")
+        return original_mark_applied(*args, **kwargs)
+
+    monkeypatch.setattr(review_service, "mark_mutation_request_applied", flaky_mark_applied)
+
+    failed_resume = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-finalize-fail",
+            idempotency_key="idem-fixture-resume-homework-faq-finalize-fail",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient finalization marker failure."},
+    )
+
+    assert failed_resume.status_code == 500
+
+    recovered_candidate = get_candidate(settings, candidate.candidate_id)
+    assert recovered_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+
+    resume_request = get_mutation_request(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=review_service.RESUME_SYNC_REQUEST_ACTION,
+        idempotency_key="idem-fixture-resume-homework-faq-finalize-fail",
+    )
+    assert resume_request is not None
+    assert resume_request.status == "pending"
+    assert resume_request.response_payload is not None
+
+    written_path.write_text(
+        "not valid markdown frontmatter",
+        encoding="utf-8",
+    )
+
+    replay_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-finalize-fail-replay",
+            idempotency_key="idem-fixture-resume-homework-faq-finalize-fail",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient finalization marker failure."},
+    )
+
+    assert replay_response.status_code == 200
+    replay_payload = replay_response.json()["data"]
+    assert replay_payload["candidate"]["wiki_sync_status"] == "synced"
+    assert replay_payload["patch"]["target_page_id"] == "page-faq-homework-submission"
+
+    finalized_request = get_mutation_request(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=review_service.RESUME_SYNC_REQUEST_ACTION,
+        idempotency_key="idem-fixture-resume-homework-faq-finalize-fail",
+    )
+    assert finalized_request is not None
+    assert finalized_request.status == "applied"
+    assert finalized_request.response_payload == replay_payload
+
+
+def test_review_resume_sync_reuses_same_audit_chain_after_mark_candidate_sync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    approve_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert approve_response.status_code == 500
+
+    original_mark_candidate_wiki_synced = review_service.mark_candidate_wiki_synced
+    sync_attempts = {"count": 0}
+
+    def flaky_mark_candidate_wiki_synced(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        sync_attempts["count"] += 1
+        if sync_attempts["count"] == 1:
+            raise OSError("forced candidate sync write failure")
+        return original_mark_candidate_wiki_synced(*args, **kwargs)
+
+    monkeypatch.setattr(
+        review_service,
+        "mark_candidate_wiki_synced",
+        flaky_mark_candidate_wiki_synced,
+    )
+
+    failed_resume = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-sync-fail",
+            idempotency_key="idem-fixture-resume-homework-faq-sync-fail",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient candidate sync failure."},
+    )
+
+    assert failed_resume.status_code == 500
+    pending_candidate = get_candidate(settings, candidate.candidate_id)
+    assert pending_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+
+    replay_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-sync-fail-replay",
+            idempotency_key="idem-fixture-resume-homework-faq-sync-fail",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient candidate sync failure."},
+    )
+
+    assert replay_response.status_code == 200
+    recovered_candidate = get_candidate(settings, candidate.candidate_id)
+    assert recovered_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+
+    resumed_synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-resume-homework-faq-sync-fail",
+    )
+    resumed_wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-resume-homework-faq-sync-fail",
+    )
+
+    assert len(resumed_synced_events) == 1
+    assert len(resumed_wiki_audit) == 1
+
+
+def test_review_resume_sync_backfills_missing_synced_audit_after_partial_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    approve_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert approve_response.status_code == 500
+
+    original_record_candidate_wiki_synced = review_service._record_candidate_wiki_synced
+    synced_audit_attempts = {"count": 0}
+
+    def flaky_record_candidate_wiki_synced(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        synced_audit_attempts["count"] += 1
+        if synced_audit_attempts["count"] == 1:
+            raise OSError("forced candidate synced audit failure")
+        return original_record_candidate_wiki_synced(*args, **kwargs)
+
+    monkeypatch.setattr(
+        review_service,
+        "_record_candidate_wiki_synced",
+        flaky_record_candidate_wiki_synced,
+    )
+
+    failed_resume = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-synced-audit-fail",
+            idempotency_key="idem-fixture-resume-homework-faq-synced-audit-fail",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient synced-audit failure."},
+    )
+
+    assert failed_resume.status_code == 500
+    synced_candidate = get_candidate(settings, candidate.candidate_id)
+    assert synced_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+
+    replay_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-synced-audit-fail-replay",
+            idempotency_key="idem-fixture-resume-homework-faq-synced-audit-fail",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient synced-audit failure."},
+    )
+
+    assert replay_response.status_code == 200
+
+    resumed_synced_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_synced",
+        idempotency_key="idem-fixture-resume-homework-faq-synced-audit-fail",
+    )
+    resumed_wiki_audit = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-resume-homework-faq-synced-audit-fail",
+    )
+
+    assert len(resumed_synced_events) == 1
+    assert len(resumed_wiki_audit) == 1
+
+
 def test_review_resume_sync_rejects_reused_idempotency_key_with_different_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -840,7 +1453,7 @@ def test_review_resume_sync_rejects_reused_idempotency_key_with_different_payloa
     seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     original_write_wiki_page = review_service._write_wiki_page
@@ -905,7 +1518,7 @@ def test_review_resume_sync_returns_duplicate_action_when_stored_plan_drifts(
     written_path = seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     original_write_wiki_page = review_service._write_wiki_page
@@ -970,6 +1583,124 @@ def test_review_resume_sync_returns_duplicate_action_when_stored_plan_drifts(
     assert wiki_audit == []
 
 
+def test_review_resume_sync_returns_duplicate_action_when_target_page_drifts_out_of_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+    written_path.write_text(
+        written_path.read_text(encoding="utf-8").replace(
+            "class_scope: class-calculus-1-2026-spring-a",
+            "class_scope: class-calculus-1-2026-spring-b",
+        ),
+        encoding="utf-8",
+    )
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-scope-drift",
+            idempotency_key="idem-fixture-resume-homework-faq-scope-drift",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the frozen approval plan after a scope drift."},
+    )
+
+    assert resume_response.status_code == 409
+    assert resume_response.json()["error"]["code"] == "duplicate_action"
+
+
+def test_review_resume_sync_returns_duplicate_action_when_target_page_drifts_to_other_course(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+    written_path.write_text(
+        written_path.read_text(encoding="utf-8").replace(
+            "course_id: course-calculus-1",
+            "course_id: course-linear-algebra-1",
+        ),
+        encoding="utf-8",
+    )
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-course-drift",
+            idempotency_key="idem-fixture-resume-homework-faq-course-drift",
+            domain="academic",
+        ),
+        json={
+            "resume_notes": "Resume should fail when the approved page drifts to another course."
+        },
+    )
+
+    assert resume_response.status_code == 409
+    assert resume_response.json()["error"]["code"] == "duplicate_action"
+
+
 def test_review_approve_recovers_after_wiki_patch_audit_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -983,7 +1714,7 @@ def test_review_approve_recovers_after_wiki_patch_audit_failure(
     written_path = seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
     expected_after_contents = (
         FIXTURE_ROOT / "wiki" / "faq-homework-submission.after.md"
@@ -1119,7 +1850,7 @@ def test_review_approve_rejects_replay_when_patch_plan_drifts_after_partial_fail
     written_path = seed_wiki_fixture(
         settings,
         source_filename="faq-homework-submission.seed.md",
-        target_relative_path="wiki/faq/homework-submission.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
     )
 
     original_write_wiki_page = review_service._write_wiki_page
@@ -1188,6 +1919,61 @@ def test_review_approve_rejects_replay_when_patch_plan_drifts_after_partial_fail
     assert len(pending_events) == 1
     assert wiki_audit == []
     assert synced_events == []
+
+
+def test_review_approve_replay_returns_duplicate_action_when_target_page_drifts_out_of_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 500
+    written_path.write_text(
+        written_path.read_text(encoding="utf-8").replace(
+            "class_scope: class-calculus-1-2026-spring-a",
+            "class_scope: class-calculus-1-2026-spring-b",
+        ),
+        encoding="utf-8",
+    )
+
+    second_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-fixture-approve-homework-faq-scope-drift-retry",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert second_response.status_code == 409
+    assert second_response.json()["error"]["code"] == "duplicate_action"
 
 
 def test_review_merge_endpoint_merges_duplicate_candidate(tmp_path: Path) -> None:
@@ -1438,7 +2224,7 @@ def test_operator_can_list_operations_candidates_but_cannot_approve_them(tmp_pat
     seed_wiki_fixture(
         settings,
         source_filename="operations-refund-policy.seed.md",
-        target_relative_path="wiki/operations/refund-policy.md",
+        target_relative_path="wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
     )
 
     list_response = client.get(
@@ -1459,7 +2245,7 @@ def test_operator_can_list_operations_candidates_but_cannot_approve_them(tmp_pat
         ),
         json={
             "target_page_id": "page-operations-refund-policy",
-            "target_path": "data/wiki/operations/refund-policy.md",
+            "target_path": "data/wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
             "approval_notes": "Operator should not be able to finalize this promotion.",
         },
     )
@@ -1480,7 +2266,7 @@ def test_operator_can_list_operations_candidates_but_cannot_approve_them(tmp_pat
         ),
         json={
             "target_page_id": "page-operations-refund-policy",
-            "target_path": "data/wiki/operations/refund-policy.md",
+            "target_path": "data/wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
             "notes": "Operators may preview but not finalize operations wiki changes.",
         },
     )
@@ -1561,7 +2347,7 @@ def test_system_can_preview_operations_candidate_in_review_domain(tmp_path: Path
     seed_wiki_fixture(
         settings,
         source_filename="operations-refund-policy.seed.md",
-        target_relative_path="wiki/operations/refund-policy.md",
+        target_relative_path="wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
     )
 
     response = client.post(
@@ -1573,7 +2359,7 @@ def test_system_can_preview_operations_candidate_in_review_domain(tmp_path: Path
         ),
         json={
             "target_page_id": "page-operations-refund-policy",
-            "target_path": "data/wiki/operations/refund-policy.md",
+            "target_path": "data/wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
             "notes": "Preview validator-equivalent operations patch generation.",
         },
     )
@@ -1583,6 +2369,122 @@ def test_system_can_preview_operations_candidate_in_review_domain(tmp_path: Path
     assert payload["candidate"]["review_domain"] == "operations"
     assert payload["patch"]["target_page_id"] == "page-operations-refund-policy"
     assert payload["patch"]["operation"] == "update"
+
+
+def test_system_cannot_finalize_review_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    academic_candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    operations_candidate = seed_candidate(settings, "open-operations-refund.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_source_fixture(settings, "operations-refund-policy.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="operations-refund-policy.seed.md",
+        target_relative_path="wiki/operations/class-calculus-1-2026-spring-a/refund-policy.md",
+    )
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    instructor_approve_response = client.post(
+        f"/api/v1/review/candidates/{academic_candidate.candidate_id}/approve",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-system-review-prime-pending",
+            idempotency_key="idem-system-review-prime-pending",
+        ),
+        json={
+            "target_page_id": "page-faq-homework-submission",
+            "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+            "approval_notes": "Prime a pending sync state before the system tries to resume it.",
+        },
+    )
+
+    assert instructor_approve_response.status_code == 500
+    promoted_candidate = get_candidate(settings, academic_candidate.candidate_id)
+    assert promoted_candidate.status is CandidateStatus.PROMOTED
+    assert promoted_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+
+    approve_response = client.post(
+        f"/api/v1/review/candidates/{academic_candidate.candidate_id}/approve",
+        headers=build_headers(
+            role="system",
+            actor_id="system-review-bot",
+            request_id="req-system-review-approve",
+            idempotency_key="idem-system-review-approve",
+        ),
+        json={
+            "target_page_id": "page-faq-homework-submission",
+            "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+            "approval_notes": "System should not finalize wiki promotion.",
+        },
+    )
+    merge_response = client.post(
+        f"/api/v1/review/candidates/{academic_candidate.candidate_id}/merge",
+        headers=build_headers(
+            role="system",
+            actor_id="system-review-bot",
+            request_id="req-system-review-merge",
+            idempotency_key="idem-system-review-merge",
+        ),
+        json={
+            "target_candidate_id": academic_candidate.candidate_id,
+            "merge_notes": "System should not merge review candidates.",
+        },
+    )
+    drop_response = client.post(
+        f"/api/v1/review/candidates/{operations_candidate.candidate_id}/drop",
+        headers=build_headers(
+            role="system",
+            actor_id="system-review-bot",
+            request_id="req-system-review-drop",
+            idempotency_key="idem-system-review-drop",
+        ),
+        json={
+            "reason": "obsolete_operations_signal",
+            "drop_notes": "System should not drop review candidates.",
+        },
+    )
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{promoted_candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="system",
+            actor_id="system-review-bot",
+            request_id="req-system-review-resume",
+            idempotency_key="idem-system-review-resume",
+        ),
+        json={
+            "resume_notes": "System should not resume promotion attempts.",
+        },
+    )
+
+    for response in (
+        approve_response,
+        merge_response,
+        drop_response,
+        resume_response,
+    ):
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden_scope"
 
 
 def test_system_review_endpoints_require_explicit_review_domain(tmp_path: Path) -> None:
