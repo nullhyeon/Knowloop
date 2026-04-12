@@ -21,7 +21,8 @@ SESSIONS_SCHEMA_STATEMENTS = [
         source_refs_json TEXT NOT NULL DEFAULT '[]',
         retrieval_refs_json TEXT NOT NULL DEFAULT '[]',
         candidate_refs_json TEXT NOT NULL DEFAULT '[]',
-        learning_note_refs_json TEXT NOT NULL DEFAULT '[]'
+        learning_note_refs_json TEXT NOT NULL DEFAULT '[]',
+        replay_intent_json TEXT
     )
     """,
     """
@@ -88,6 +89,7 @@ SESSIONS_MIGRATION_COLUMN_DEFINITIONS = {
     "retrieval_refs_json": "TEXT NOT NULL DEFAULT '[]'",
     "candidate_refs_json": "TEXT NOT NULL DEFAULT '[]'",
     "learning_note_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+    "replay_intent_json": "TEXT",
 }
 
 AUDIT_EVENT_MIGRATION_COLUMN_DEFINITIONS = {
@@ -124,6 +126,7 @@ SESSIONS_REQUIRED_COLUMNS = {
     "retrieval_refs_json",
     "candidate_refs_json",
     "learning_note_refs_json",
+    "replay_intent_json",
 }
 
 AUDIT_REQUIRED_COLUMNS = {

@@ -237,8 +237,13 @@ def upsert_candidate_signal(
     request_id: str | None = None,
     idempotency_key: str | None = None,
     notes: str | None = None,
+    allow_match_by_metadata: bool = True,
 ) -> tuple[CandidateItem, str]:
-    existing_candidate = _find_matching_open_candidate(settings, candidate)
+    existing_candidate = _find_existing_candidate(settings, candidate.candidate_id)
+    if existing_candidate is not None and existing_candidate.status is not CandidateStatus.OPEN:
+        existing_candidate = None
+    if existing_candidate is None and allow_match_by_metadata:
+        existing_candidate = _find_matching_open_candidate(settings, candidate)
     if existing_candidate is None:
         created = create_candidate(
             settings,
@@ -251,7 +256,7 @@ def upsert_candidate_signal(
         )
         return created, "create"
 
-    updated_candidate = existing_candidate.model_copy(
+    merged_candidate = existing_candidate.model_copy(
         update={
             "tags": _merge_unique_strings(existing_candidate.tags, candidate.tags),
             "source_refs": _merge_source_refs(
@@ -266,11 +271,18 @@ def upsert_candidate_signal(
             "summary": candidate.summary or existing_candidate.summary,
             "related_page_id": existing_candidate.related_page_id or candidate.related_page_id,
             "actor_role": existing_candidate.actor_role or actor_role,
+        }
+    )
+    if merged_candidate == existing_candidate:
+        candidate_action = (
+            "create" if existing_candidate.candidate_id == candidate.candidate_id else "update"
+        )
+        return existing_candidate, candidate_action
+    updated_candidate = merged_candidate.model_copy(
+        update={
             "updated_at": datetime.now(UTC),
         }
     )
-    if updated_candidate == existing_candidate:
-        return existing_candidate, "create"
 
     candidate_path = find_candidate_path(settings, existing_candidate.candidate_id)
     _apply_candidate_transaction(
@@ -290,6 +302,10 @@ def upsert_candidate_signal(
             from_status=existing_candidate.status.value,
             to_status=updated_candidate.status.value,
             notes=notes or "Merged new query signal into an existing open candidate.",
+            details={
+                "proposed_candidate_id": candidate.candidate_id,
+                "target_id": existing_candidate.candidate_id,
+            },
             request_id=request_id,
             idempotency_key=idempotency_key,
             created_at=datetime.now(UTC),

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import knowloop_api.db.audit as audit_db
 import knowloop_api.services.candidates as candidate_service
 from knowloop_api.core.config import Settings
 from knowloop_api.db.audit import (
@@ -580,6 +581,86 @@ def test_create_candidate_reuses_pending_request_intent_before_any_artifact_exis
     assert created_candidate.updated_at == first_attempt_candidate.created_at
     assert mutation_request is not None
     assert mutation_request.status == "applied"
+
+
+def test_upsert_candidate_signal_is_noop_when_exact_candidate_already_matches(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+
+    created_candidate = create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        request_id="req-create-upsert-noop",
+    )
+
+    upserted_candidate, upsert_action = candidate_service.upsert_candidate_signal(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        request_id="req-upsert-noop",
+        idempotency_key="idem-upsert-noop",
+    )
+
+    upsert_audits = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=created_candidate.candidate_id,
+        action="candidate_signal_upserted",
+    )
+
+    assert upserted_candidate == created_candidate
+    assert upsert_action == "create"
+    assert upsert_audits == []
+
+
+def test_upsert_candidate_signal_can_lock_replay_to_proposed_candidate_id(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    foreign_candidate = load_candidate_fixture("open-misconception-chain-rule.json").model_copy(
+        update={
+            "candidate_id": "cand-foreign-chain-rule-existing",
+            "session_refs": ["ses-foreign-existing"],
+        }
+    )
+    proposed_candidate = foreign_candidate.model_copy(
+        update={
+            "candidate_id": "cand-proposed-chain-rule-replay",
+            "session_refs": ["ses-replay-owned"],
+        }
+    )
+
+    create_candidate(
+        settings,
+        foreign_candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        request_id="req-create-foreign-candidate",
+    )
+
+    recovered_candidate, recovered_action = candidate_service.upsert_candidate_signal(
+        settings,
+        proposed_candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        request_id="req-upsert-replay-locked",
+        idempotency_key="idem-upsert-replay-locked",
+        allow_match_by_metadata=False,
+    )
+
+    assert recovered_action == "create"
+    assert recovered_candidate.candidate_id == proposed_candidate.candidate_id
+    assert get_candidate(settings, foreign_candidate.candidate_id).candidate_id == (
+        foreign_candidate.candidate_id
+    )
+    assert get_candidate(settings, proposed_candidate.candidate_id).candidate_id == (
+        proposed_candidate.candidate_id
+    )
 
 
 def test_create_candidate_rejects_retry_when_pending_request_file_path_drifted(
@@ -2539,6 +2620,125 @@ def test_create_audit_event_returns_existing_row_on_duplicate_insert(tmp_path: P
     )
 
     assert second_event == first_event
+
+
+def test_create_audit_event_generates_unique_suffix_for_same_timestamp_collisions(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = datetime(2026, 4, 8, 13, 0, 0, 123456, tzinfo=UTC)
+
+    first_event = create_audit_event(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-query-engine",
+        request_id="req-learning-collision-01",
+        created_at=created_at,
+    )
+    second_event = create_audit_event(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-query-engine",
+        request_id="req-learning-collision-02",
+        created_at=created_at,
+    )
+
+    assert second_event != first_event
+    assert second_event.event_id != first_event.event_id
+    assert second_event.request_id == "req-learning-collision-02"
+    learning_events = list_audit_events(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+    )
+    assert len(learning_events) == 2
+
+
+def test_create_audit_event_reuses_deterministic_suffix_on_collision_retries(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = datetime(2026, 4, 8, 13, 0, 0, 123456, tzinfo=UTC)
+
+    create_audit_event(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-query-engine",
+        request_id="req-learning-collision-anchor",
+        created_at=created_at,
+    )
+    second_event = create_audit_event(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-query-engine",
+        request_id="req-learning-collision-retry",
+        created_at=created_at,
+    )
+    retried_second_event = create_audit_event(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-query-engine",
+        request_id="req-learning-collision-retry",
+        created_at=created_at,
+    )
+
+    assert retried_second_event == second_event
+    learning_events = list_audit_events(
+        settings,
+        entity_type="learning_note",
+        entity_id="learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
+        action="learning_generated",
+    )
+    assert len(learning_events) == 2
+
+
+def test_create_audit_event_reraises_non_event_id_integrity_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = datetime(2026, 4, 8, 13, 0, 0, 123456, tzinfo=UTC)
+    insert_attempts = {"count": 0}
+    original_insert = audit_db._insert_audit_event
+
+    def fail_non_event_id_constraint(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        insert_attempts["count"] += 1
+        if insert_attempts["count"] == 1:
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: audit_events.request_id")
+        return original_insert(*args, **kwargs)
+
+    monkeypatch.setattr(audit_db, "_insert_audit_event", fail_non_event_id_constraint)
+
+    with pytest.raises(sqlite3.IntegrityError, match="audit_events.request_id"):
+        create_audit_event(
+            settings,
+            entity_type="candidate",
+            entity_id="cand-audit-non-event-id-conflict",
+            action="candidate_created",
+            actor_role=ActorRole.SYSTEM.value,
+            created_at=created_at,
+        )
+
+    assert insert_attempts["count"] == 1
 
 
 def test_list_audit_events_uses_stable_tiebreaker_for_equal_timestamps(tmp_path: Path) -> None:
