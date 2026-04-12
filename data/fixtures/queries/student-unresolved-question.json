@@ -32,6 +32,9 @@
         "status": "open"
       }
     ],
+    "side_effects": {
+      "mutation_request_delta": 0
+    },
     "learning_note_written": false,
     "candidate": {
       "kind": "unresolved_question",

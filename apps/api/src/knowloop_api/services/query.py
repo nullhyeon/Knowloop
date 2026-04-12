@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field, field_validator
 from knowloop_api.api.context import RequestContext
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain, SourceType
+from knowloop_api.core.query_contracts import (
+    QUERY_ANSWER_BASIS_ORDER,
+    AnswerBasisLabel,
+    ResponseMode,
+)
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -40,6 +45,11 @@ from knowloop_api.services.learning import (
     build_learning_note_id,
     get_learning_note,
     upsert_learning_note,
+)
+from knowloop_api.services.llm_runtime import (
+    EvidenceBlock,
+    LLMAnswerContext,
+    generate_grounded_answer,
 )
 from knowloop_api.services.sessions import (
     SessionNotFoundError,
@@ -139,7 +149,7 @@ class QueryRequest(BaseModel):
     message: str = Field(min_length=1)
     attachment_source_ids: list[str] = Field(default_factory=list)
     allow_raw_source_fallback: bool = False
-    response_mode: Literal["default", "concise", "teaching", "review"] = "default"
+    response_mode: ResponseMode = ResponseMode.DEFAULT
 
     @field_validator("message")
     @classmethod
@@ -185,6 +195,11 @@ class QueryResponse(BaseModel):
     writeback_plan: list[WritebackPlanItem]
     session_id: str
     created_at: datetime
+
+
+class BuiltAnswer(BaseModel):
+    response_answer: str
+    stored_answer: str
 
 
 class LearningReplayProposal(BaseModel):
@@ -339,6 +354,10 @@ def respond_to_query(
         if replayed_response is not None:
             return replayed_response
     existing_session = _load_existing_query_session(settings, session_id=session_id)
+    if mutation_request is not None and existing_session is None:
+        raise QueryStorageBusyError(
+            "query replay requires durable session state before replay can succeed"
+        )
     created_at = (
         existing_session.created_at
         if existing_session is not None
@@ -360,6 +379,7 @@ def respond_to_query(
     )
     recovered_writeback_items: dict[str, WritebackPlanItem] = {}
     replay_recovery_writeback = False
+    response_answer: str
 
     if mutation_request is not None and existing_session is not None:
         replayed_response = _wait_for_stored_query_response(
@@ -440,7 +460,7 @@ def respond_to_query(
                 "query replay recovery requires frozen write-back targets before retry"
             )
         replay_recovery_writeback = True
-        answer = existing_session.answer
+        response_answer = replayed_response.answer
         answer_basis = replayed_response.answer_basis
         retrieval_refs = replayed_response.retrieval_refs
         learning_proposal = recovered_learning_proposal
@@ -542,7 +562,7 @@ def respond_to_query(
             learning_note=answer_learning_note,
             candidate_kind=candidate_kind,
         )
-        answer = _build_answer(
+        built_answer = _build_answer(
             settings,
             request=request,
             context=context,
@@ -550,7 +570,9 @@ def respond_to_query(
             raw_source_hits=raw_source_hits,
             answer_basis=answer_basis,
             learning_note=answer_learning_note,
+            session_matches=session_matches,
         )
+        response_answer = built_answer.response_answer
         retrieval_refs = _build_retrieval_refs(
             settings,
             context=context,
@@ -583,6 +605,11 @@ def respond_to_query(
             created_at=created_at,
             candidate_kind=candidate_kind,
         )
+        replay_seed_writeback_plan = _build_query_replay_seed_writeback_plan(
+            session_id=session_id,
+            learning_proposal=learning_proposal,
+            candidate_proposal=candidate_proposal,
+        )
 
         session_record = SessionRecord(
             session_id=session_id,
@@ -591,7 +618,7 @@ def respond_to_query(
             class_id=context.class_id,
             course_id=context.course_id,
             question=request.message,
-            answer=answer,
+            answer=built_answer.stored_answer,
             created_at=created_at,
             tags=_build_session_tags(candidate_kind, top_wiki_match),
             source_refs=_collect_primary_source_refs(
@@ -610,6 +637,7 @@ def respond_to_query(
                 idempotency_key=context.idempotency_key,
                 learning_proposal=learning_proposal,
                 candidate_proposal=candidate_proposal,
+                writeback_plan=replay_seed_writeback_plan,
             ),
         )
 
@@ -751,7 +779,7 @@ def respond_to_query(
                     ) from exc
                 session_record = concurrent_session
                 created_at = concurrent_session.created_at
-                answer = concurrent_session.answer
+                response_answer = concurrent_replayed_response.answer
                 answer_basis = concurrent_replayed_response.answer_basis
                 retrieval_refs = [
                     RetrievalRef.model_validate(item) for item in concurrent_session.retrieval_refs
@@ -785,7 +813,10 @@ def respond_to_query(
 
         if learning_proposal is not None:
             existing_learning_item = recovered_writeback_items.get("learning_note")
-            if existing_learning_item is not None and existing_learning_item.status != "failed":
+            if (
+                existing_learning_item is not None
+                and existing_learning_item.status not in {"failed", "registered"}
+            ):
                 stored_learning_note_id = existing_learning_item.target_id
                 writeback_plan.append(existing_learning_item)
             else:
@@ -839,7 +870,10 @@ def respond_to_query(
 
         if candidate_proposal is not None:
             existing_candidate_item = recovered_writeback_items.get("candidate")
-            if existing_candidate_item is not None and existing_candidate_item.status != "failed":
+            if (
+                existing_candidate_item is not None
+                and existing_candidate_item.status not in {"failed", "registered"}
+            ):
                 stored_candidate_id = existing_candidate_item.target_id
                 writeback_plan.append(existing_candidate_item)
             else:
@@ -942,26 +976,32 @@ def respond_to_query(
             )
 
         response = QueryResponse(
-            answer=answer,
+            answer=response_answer,
             answer_basis=answer_basis,
             retrieval_refs=retrieval_refs,
             writeback_plan=writeback_plan,
             session_id=session_record.session_id,
             created_at=created_at,
         )
+        durable_response = _build_durable_query_response(
+            session=session_record,
+            answer_basis=answer_basis,
+            retrieval_refs=retrieval_refs,
+            writeback_plan=writeback_plan,
+        )
         session_record = _persist_query_replay_intent(
             settings,
             session=session_record,
-            response=response,
+            response=durable_response,
             answer_basis=answer_basis,
             idempotency_key=context.idempotency_key,
             learning_proposal=learning_proposal,
             candidate_proposal=candidate_proposal,
         )
         if mutation_request is not None:
-            response_payload = response.model_dump(mode="json", exclude_none=True)
+            response_payload = durable_response.model_dump(mode="json", exclude_none=True)
             if _recovered_query_response_is_complete(
-                response,
+                durable_response,
                 session=session_record,
                 learning_proposal=learning_proposal,
                 candidate_proposal=candidate_proposal,
@@ -1140,10 +1180,28 @@ def _load_replayed_query_response(
     payload = mutation_request.response_payload
     if not isinstance(payload, dict):
         return None
-    replayed_response = QueryResponse.model_validate(payload)
+    cached_response = QueryResponse.model_validate(payload)
     existing_session = _load_existing_query_session(settings, session_id=session_id)
     if existing_session is None:
-        return replayed_response
+        return None
+    if mutation_request.status == "applied":
+        replayed_response = _recover_query_response_from_existing_session(
+            settings,
+            session=existing_session,
+            idempotency_key=idempotency_key,
+        )
+        return _reconcile_cached_query_response_payload(
+            settings,
+            cached_response=cached_response,
+            durable_response=replayed_response,
+            session=existing_session,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+    replayed_response = _align_pending_query_response_with_session_answer(
+        cached_response,
+        session=existing_session,
+    )
     learning_proposal = None
     candidate_proposal = None
     if mutation_request.status != "applied":
@@ -1170,22 +1228,21 @@ def _load_replayed_query_response(
         request_id=request_id,
         idempotency_key=idempotency_key,
     )
-    if mutation_request.status != "applied":
-        if _recovered_query_response_is_complete(
-            replayed_response,
-            session=existing_session,
-            learning_proposal=learning_proposal,
-            candidate_proposal=candidate_proposal,
-        ):
-            mark_mutation_request_applied(
-                settings,
-                entity_type="query",
-                entity_id=session_id,
-                action=QUERY_MUTATION_ACTION,
-                idempotency_key=idempotency_key,
-                updated_at=existing_session.created_at,
-                response_payload=payload,
-            )
+    if _recovered_query_response_is_complete(
+        replayed_response,
+        session=existing_session,
+        learning_proposal=learning_proposal,
+        candidate_proposal=candidate_proposal,
+    ):
+        mark_mutation_request_applied(
+            settings,
+            entity_type="query",
+            entity_id=session_id,
+            action=QUERY_MUTATION_ACTION,
+            idempotency_key=idempotency_key,
+            updated_at=existing_session.created_at,
+            response_payload=replayed_response.model_dump(mode="json", exclude_none=True),
+        )
     return replayed_response
 
 
@@ -1290,6 +1347,44 @@ def _build_query_session_audit_details(
     ).model_dump(mode="json", exclude_none=True)
     payload["idempotency_key"] = idempotency_key
     return payload
+
+
+def _build_query_replay_seed_writeback_plan(
+    *,
+    session_id: str,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+) -> list[WritebackPlanItem]:
+    writeback_plan = [
+        WritebackPlanItem(
+            kind="session",
+            action="save",
+            status="registered",
+            target_id=session_id,
+            explanation=SESSION_WRITEBACK_EXPLANATION,
+        )
+    ]
+    if learning_proposal is not None:
+        writeback_plan.append(
+            WritebackPlanItem(
+                kind="learning_note",
+                action="update",
+                status="registered",
+                target_id=learning_proposal.learning_note_id,
+                explanation=LEARNING_WRITEBACK_EXPLANATION,
+            )
+        )
+    if candidate_proposal is not None:
+        writeback_plan.append(
+            WritebackPlanItem(
+                kind="candidate",
+                action="create",
+                status="registered",
+                target_id=candidate_proposal.candidate_id,
+                explanation=CANDIDATE_WRITEBACK_EXPLANATION,
+            )
+        )
+    return writeback_plan
 
 
 def _persist_query_replay_intent(
@@ -1435,6 +1530,103 @@ def _recover_query_response_from_existing_session(
         session_id=session.session_id,
         created_at=session.created_at,
     )
+
+
+def _build_durable_query_response(
+    session: SessionRecord,
+    *,
+    answer_basis: list[str],
+    retrieval_refs: list[RetrievalRef],
+    writeback_plan: list[WritebackPlanItem],
+) -> QueryResponse:
+    return QueryResponse(
+        answer=session.answer,
+        answer_basis=_normalize_answer_basis(answer_basis),
+        retrieval_refs=[
+            RetrievalRef.model_validate(item.model_dump(mode="json"))
+            for item in retrieval_refs
+        ],
+        writeback_plan=[
+            WritebackPlanItem.model_validate(item.model_dump(mode="json"))
+            for item in writeback_plan
+        ],
+        session_id=session.session_id,
+        created_at=session.created_at,
+    )
+
+
+def _align_pending_query_response_with_session_answer(
+    response: QueryResponse,
+    *,
+    session: SessionRecord,
+) -> QueryResponse:
+    if response.answer == session.answer:
+        return response
+    return response.model_copy(update={"answer": session.answer})
+
+
+def _reconcile_cached_query_response_payload(
+    settings: Settings,
+    *,
+    cached_response: QueryResponse | None,
+    durable_response: QueryResponse,
+    session: SessionRecord,
+    request_id: str,
+    idempotency_key: str | None,
+) -> QueryResponse:
+    if cached_response is not None:
+        cached_payload = cached_response.model_dump(mode="json", exclude_none=True)
+    else:
+        cached_payload = None
+    durable_payload = durable_response.model_dump(mode="json", exclude_none=True)
+    if cached_payload == durable_payload:
+        return durable_response
+    if idempotency_key is not None:
+        store_mutation_request_response_payload(
+            settings,
+            entity_type="query",
+            entity_id=session.session_id,
+            action=QUERY_MUTATION_ACTION,
+            idempotency_key=idempotency_key,
+            updated_at=session.created_at,
+            response_payload=durable_payload,
+        )
+    drift_fields: list[str]
+    if cached_payload is None:
+        drift_fields = ["cached_payload_missing_or_invalid"]
+    else:
+        drift_fields = sorted(
+            field_name
+            for field_name, field_value in durable_payload.items()
+            if cached_payload.get(field_name) != field_value
+        )
+    create_audit_event(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action="query_replay_payload_drift_detected",
+        actor_role=ActorRole.SYSTEM.value,
+        actor_id="system-query-engine",
+        notes=(
+            "Replay payload drifted from the stored deterministic session-owned state; "
+            "the replay cache was repaired from durable storage."
+        ),
+        details={
+            "drift_fields": drift_fields,
+            "cached_answer_sha256": (
+                hashlib.sha256(cached_response.answer.encode("utf-8")).hexdigest()
+                if cached_response is not None
+                else None
+            ),
+            "session_answer_sha256": hashlib.sha256(
+                durable_response.answer.encode("utf-8")
+            ).hexdigest(),
+        },
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        created_at=session.created_at,
+    )
+    return durable_response
 
 
 def _recovered_query_response_is_complete(
@@ -1697,19 +1889,13 @@ def _recover_answer_basis(
             return _normalize_answer_basis(saved_replay_intent.answer_basis)
     derived = _derive_answer_basis_from_retrieval_refs(retrieval_refs)
     if not derived and session.source_refs:
-        return ["raw_source_fallback"]
+        return [AnswerBasisLabel.RAW_SOURCE_FALLBACK.value]
     return derived
 
 
 def _normalize_answer_basis(answer_basis: list[str]) -> list[str]:
-    valid_order = (
-        "formal_wiki",
-        "session_context",
-        "learning_context",
-        "raw_source_fallback",
-    )
     normalized: list[str] = []
-    for basis in valid_order:
+    for basis in QUERY_ANSWER_BASIS_ORDER:
         if basis in answer_basis and basis not in normalized:
             normalized.append(basis)
     return normalized
@@ -2011,14 +2197,20 @@ def _derive_answer_basis_from_retrieval_refs(
 ) -> list[str]:
     basis: list[str] = []
     for ref in retrieval_refs:
-        if ref.entity_type == "wiki_page" and "formal_wiki" not in basis:
-            basis.append("formal_wiki")
-        elif ref.entity_type == "session" and "session_context" not in basis:
-            basis.append("session_context")
-        elif ref.entity_type == "learning_note" and "learning_context" not in basis:
-            basis.append("learning_context")
-        elif ref.entity_type == "raw_source" and "raw_source_fallback" not in basis:
-            basis.append("raw_source_fallback")
+        if ref.entity_type == "wiki_page" and AnswerBasisLabel.FORMAL_WIKI.value not in basis:
+            basis.append(AnswerBasisLabel.FORMAL_WIKI.value)
+        elif ref.entity_type == "session" and AnswerBasisLabel.SESSION_CONTEXT.value not in basis:
+            basis.append(AnswerBasisLabel.SESSION_CONTEXT.value)
+        elif (
+            ref.entity_type == "learning_note"
+            and AnswerBasisLabel.LEARNING_CONTEXT.value not in basis
+        ):
+            basis.append(AnswerBasisLabel.LEARNING_CONTEXT.value)
+        elif (
+            ref.entity_type == "raw_source"
+            and AnswerBasisLabel.RAW_SOURCE_FALLBACK.value not in basis
+        ):
+            basis.append(AnswerBasisLabel.RAW_SOURCE_FALLBACK.value)
     return basis
 
 
@@ -2034,23 +2226,67 @@ def _build_answer_basis(
 ) -> list[str]:
     basis: list[str] = []
     if top_wiki_match is not None:
-        basis.append("formal_wiki")
+        basis.append(AnswerBasisLabel.FORMAL_WIKI.value)
     if context.role is ActorRole.STUDENT and top_wiki_match is not None and session_matches:
-        basis.append("session_context")
+        basis.append(AnswerBasisLabel.SESSION_CONTEXT.value)
     if _should_emit_learning_context(context=context, learning_note=learning_note):
-        basis.append("learning_context")
+        basis.append(AnswerBasisLabel.LEARNING_CONTEXT.value)
     if _should_emit_raw_source_basis(
         context=context,
         request=request,
         top_wiki_match=top_wiki_match,
         raw_source_hits=raw_source_hits,
     ):
-        basis.append("raw_source_fallback")
+        basis.append(AnswerBasisLabel.RAW_SOURCE_FALLBACK.value)
     return basis
 
 
 def _build_answer(
     settings: Settings,
+    *,
+    request: QueryRequest,
+    context: RequestContext,
+    top_wiki_match: WikiPageMatch | None,
+    raw_source_hits: list[RawSourceHit],
+    answer_basis: list[str],
+    learning_note: LearningNote | None,
+    session_matches: list[SessionRecord],
+) -> BuiltAnswer:
+    fallback_answer = _build_fallback_answer(
+        request=request,
+        context=context,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=raw_source_hits,
+        answer_basis=answer_basis,
+        learning_note=learning_note,
+    )
+    llm_answer = generate_grounded_answer(
+        settings,
+        context=LLMAnswerContext(
+            role=context.role,
+            domain=context.domain,
+            response_mode=request.response_mode.value,
+            question=request.message,
+            answer_basis=tuple(answer_basis),
+            fallback_answer=fallback_answer,
+            evidence_blocks=_build_llm_evidence_blocks(
+                context=context,
+                answer_basis=answer_basis,
+                top_wiki_match=top_wiki_match,
+                raw_source_hits=raw_source_hits,
+                session_matches=session_matches,
+                learning_note=learning_note,
+            ),
+            request_id=context.request_id,
+        ),
+    )
+    return BuiltAnswer(
+        response_answer=llm_answer or fallback_answer,
+        stored_answer=fallback_answer,
+    )
+
+
+def _build_fallback_answer(
     *,
     request: QueryRequest,
     context: RequestContext,
@@ -2100,7 +2336,7 @@ def _build_answer(
             "If the expression looks like f(g(x)), differentiate the outer "
             "function first and then multiply by the derivative of the inner function."
         )
-        if request.response_mode == "teaching":
+        if request.response_mode is ResponseMode.TEACHING:
             answer += (
                 " A quick check is to ask whether the expression is nested or simply multiplied."
             )
@@ -2165,6 +2401,107 @@ def _build_answer(
     )
 
 
+def _build_llm_evidence_blocks(
+    *,
+    context: RequestContext,
+    answer_basis: list[str],
+    top_wiki_match: WikiPageMatch | None,
+    raw_source_hits: list[RawSourceHit],
+    session_matches: list[SessionRecord],
+    learning_note: LearningNote | None,
+) -> tuple[EvidenceBlock, ...]:
+    allowed_basis = set(answer_basis)
+    blocks: list[EvidenceBlock] = []
+    wiki_block = (
+        _build_wiki_evidence_block(top_wiki_match)
+        if AnswerBasisLabel.FORMAL_WIKI.value in allowed_basis
+        else None
+    )
+    if wiki_block is not None:
+        blocks.append(wiki_block)
+    learning_block = (
+        _build_learning_evidence_block(learning_note)
+        if AnswerBasisLabel.LEARNING_CONTEXT.value in allowed_basis
+        else None
+    )
+    if learning_block is not None:
+        blocks.append(learning_block)
+    raw_source_block = (
+        _build_raw_source_evidence_block(raw_source_hits)
+        if (
+            AnswerBasisLabel.RAW_SOURCE_FALLBACK.value in allowed_basis
+            and context.role is not ActorRole.STUDENT
+        )
+        else None
+    )
+    if raw_source_block is not None:
+        blocks.append(raw_source_block)
+    session_block = (
+        _build_session_evidence_block(session_matches)
+        if AnswerBasisLabel.SESSION_CONTEXT.value in allowed_basis
+        else None
+    )
+    if session_block is not None:
+        blocks.append(session_block)
+    return tuple(blocks)
+
+
+def _build_wiki_evidence_block(top_wiki_match: WikiPageMatch | None) -> EvidenceBlock | None:
+    if top_wiki_match is None:
+        return None
+    page = top_wiki_match.page
+    return EvidenceBlock(
+        label="formal_wiki",
+        lines=(
+            f"Title: {page.title}",
+            f"Summary: {page.summary}",
+        ),
+    )
+
+
+def _build_raw_source_evidence_block(raw_source_hits: list[RawSourceHit]) -> EvidenceBlock | None:
+    if not raw_source_hits:
+        return None
+    lines: list[str] = []
+    for index, hit in enumerate(raw_source_hits[:2], start=1):
+        lines.append(f"Reference {index} type: {hit.source.source_type.value}")
+    if not lines:
+        return None
+    return EvidenceBlock(label="raw_source_metadata", lines=tuple(lines))
+
+
+def _build_session_evidence_block(session_matches: list[SessionRecord]) -> EvidenceBlock | None:
+    context_lines: list[str] = []
+    for session in session_matches[:2]:
+        summarized = _summarize_session_context_for_llm(session)
+        if summarized is not None:
+            context_lines.append(summarized)
+    if not context_lines:
+        return None
+    return EvidenceBlock(label="session_context_summary", lines=tuple(context_lines))
+
+
+def _build_learning_evidence_block(learning_note: LearningNote | None) -> EvidenceBlock | None:
+    if learning_note is None:
+        return None
+    lines = [
+        f"Summary: {learning_note.summary or 'none'}",
+        f"Gaps: {', '.join(learning_note.gaps) if learning_note.gaps else 'none'}",
+        "Next actions: "
+        + (", ".join(learning_note.next_actions) if learning_note.next_actions else "none"),
+    ]
+    return EvidenceBlock(label="learning_context", lines=tuple(lines))
+
+
+def _summarize_session_context_for_llm(session: SessionRecord) -> str | None:
+    normalized_question = re.sub(r"\s+", " ", session.question).strip().rstrip("?.!")
+    if not normalized_question:
+        return None
+    if len(normalized_question) > 96:
+        normalized_question = normalized_question[:93].rstrip() + "..."
+    return f"- Prior topic: {normalized_question}"
+
+
 def _build_homework_answer(items: list[RawSourceHit]) -> str:
     due_line = _find_line(items, keywords=("submitted by", "deadline", "due"))
     submit_line = _find_line(items, keywords=("submit", "lms"))
@@ -2180,9 +2517,9 @@ def _build_homework_answer(items: list[RawSourceHit]) -> str:
 
 
 def _shape_answer(answer: str, *, response_mode: str, context: RequestContext) -> str:
-    if response_mode == "concise":
+    if response_mode == ResponseMode.CONCISE.value:
         return answer
-    if response_mode == "teaching" and context.role is ActorRole.STUDENT:
+    if response_mode == ResponseMode.TEACHING.value and context.role is ActorRole.STUDENT:
         return (
             answer
             + " Try one nested-function example and one product example to test the difference."

@@ -11,18 +11,17 @@ class ApiError(Exception):
     message: str
     request_id: str
     details: dict[str, Any] = field(default_factory=dict)
+    retry_after_seconds: int | None = None
 
-    def to_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "request_id": self.request_id,
+    def to_payload(self, *, request_id: str | None = None) -> dict[str, Any]:
+        return {
+            "request_id": request_id or self.request_id,
             "error": {
                 "code": self.code,
                 "message": self.message,
+                "details": self.details,
             },
         }
-        if self.details:
-            payload["error"]["details"] = self.details
-        return payload
 
 
 def success_response(

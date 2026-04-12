@@ -1,8 +1,8 @@
 {
-    "fixture_id":  "qf-student-chain-rule-followup-01",
-    "description":  "Student asks a follow-up chain-rule question after a learning note already exists.",
+    "fixture_id":  "qf-student-chain-rule-followup-replay-01",
+    "description":  "Student replays a follow-up chain-rule query that already relied on a pre-existing learning note and should preserve the same learning-context answer basis.",
     "setup_fixtures":  [
-                           "student-chain-rule-confusion.json"
+                           "student-chain-rule-learning-followup.json"
                        ],
     "request_headers":  {
                             "X-Knowloop-Role":  "student",
@@ -10,7 +10,7 @@
                             "X-Knowloop-Course-Id":  "course-calculus-1",
                             "X-Knowloop-Class-Id":  "class-calculus-1-2026-spring-a",
                             "X-Knowloop-Domain":  "academic",
-                            "X-Request-Id":  "req-fixture-student-chain-rule-followup-01",
+                            "X-Request-Id":  "req-fixture-student-chain-rule-followup-replay-01",
                             "Idempotency-Key":  "idem-fixture-student-chain-rule-followup-01"
                         },
     "request_body":  {
@@ -51,7 +51,11 @@
                                             }
                                         ],
                      "side_effects":  {
-                                          "mutation_request_delta":  1,
+                                          "session_delta":  0,
+                                          "candidate_delta":  0,
+                                          "learning_note_unchanged":  true,
+                                          "request_audit_delta":  0,
+                                          "mutation_request_delta":  0,
                                           "mutation_request_status":  "applied",
                                           "stored_response_payload":  true
                                       },

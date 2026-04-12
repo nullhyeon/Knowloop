@@ -13,7 +13,11 @@ EXPECTED_FIXTURE_FILES = [
     "sources/instructor-note-chain-rule-support.md",
     "sources/operations-refund-policy.md",
     "queries/student-chain-rule-confusion.json",
+    "queries/student-chain-rule-replay.json",
+    "queries/student-chain-rule-replay-after-intervening-followup.json",
+    "queries/student-chain-rule-replay-conflict.json",
     "queries/student-chain-rule-learning-followup.json",
+    "queries/student-chain-rule-learning-followup-replay.json",
     "queries/student-homework-deadline-01.json",
     "queries/student-homework-deadline-02.json",
     "queries/student-unresolved-question.json",
@@ -90,21 +94,39 @@ def test_query_fixtures_define_request_context_and_expected_outputs() -> None:
         assert required_keys.issubset(payload)
         assert REQUIRED_CONTEXT_HEADERS.issubset(payload["request_headers"])
         assert "message" in payload["request_body"]
+        for setup_fixture_name in payload.get("setup_fixtures", []):
+            assert (FIXTURE_ROOT / "queries" / setup_fixture_name).exists()
         if "error" in payload["expected"]:
             assert "status_code" in payload["expected"]
             assert "code" in payload["expected"]["error"]
             assert "message_contains" in payload["expected"]["error"]
-            side_effects = payload["expected"].get("side_effects")
-            if side_effects is not None:
-                assert "session_delta" in side_effects
-                assert "candidate_delta" in side_effects
-                assert "learning_note_unchanged" in side_effects
-                assert "request_audit_delta" in side_effects
+            side_effects = payload["expected"]["side_effects"]
+            assert "session_delta" in side_effects
+            assert "candidate_delta" in side_effects
+            assert "learning_note_unchanged" in side_effects
+            assert "request_audit_delta" in side_effects
+            assert "mutation_request_delta" in side_effects
+            assert isinstance(side_effects["mutation_request_delta"], int)
         else:
             assert "answer_basis" in payload["expected"]
             assert "retrieval_entity_types" in payload["expected"]
             assert "writeback_plan" in payload["expected"]
             assert "learning_note_written" in payload["expected"]
+            side_effects = payload["expected"].get("side_effects")
+            assert side_effects is not None
+            assert "mutation_request_delta" in side_effects
+            assert isinstance(side_effects["mutation_request_delta"], int)
+            if "Idempotency-Key" in payload["request_headers"]:
+                assert side_effects["mutation_request_status"] == "applied"
+                assert side_effects["stored_response_payload"] is True
+            if "session_delta" in side_effects:
+                assert isinstance(side_effects["session_delta"], int)
+            if "request_audit_delta" in side_effects:
+                assert isinstance(side_effects["request_audit_delta"], int)
+            if "candidate_delta" in side_effects:
+                assert isinstance(side_effects["candidate_delta"], int)
+            if "learning_note_unchanged" in side_effects:
+                assert isinstance(side_effects["learning_note_unchanged"], bool)
 
 
 def test_review_fixtures_define_idempotent_mutations() -> None:

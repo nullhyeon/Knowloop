@@ -18,6 +18,8 @@ It bridges four other contracts:
 3. Learning notes are personal learning-state hints, not public facts.
 4. Raw sources are fallback evidence, not the default answer layer.
 5. Open candidates are write-back outputs, not authoritative answer inputs for student queries.
+6. If an optional LLM rewrite is enabled, it may decorate the immediate HTTP response only.
+   The stored session answer and replay-authoritative answer remain deterministic.
 6. Query and write-back are related but separate steps.
    The answer is generated first. Then the system decides what should be stored.
 
@@ -31,14 +33,24 @@ Every query is resolved inside this scope:
 - `class_id`
 - `domain`
 
-Role defaults:
+Public query roles:
+
+- `student`
+- `instructor`
+- `operator`
+- `validator`
+
+The public `POST /api/v1/query/respond` contract does not expose a `system` caller role.
+
+If the request context does not satisfy role and domain rules, the query must fail before retrieval begins.
+If `domain` is omitted, the server must normalize it using `Public Query Default Domains v1` before any permission or replay-ownership lookup.
+
+`Public Query Default Domains v1`:
 
 - `student` -> `academic`
 - `instructor` -> `academic`
 - `operator` -> `operations`
 - `validator` -> `review`
-
-If the request context does not satisfy role and domain rules, the query must fail before retrieval begins.
 
 ## 4. Retrieval Priority
 
@@ -185,7 +197,7 @@ Rules:
 - session save failure is fatal for the request
 - learning write-back failure returns success for the query but emits `learning_writeback_failed`
 - candidate write-back failure returns success for the query but emits `candidate_writeback_failed`
-- session artifact-link failure returns success for the query but emits `session_artifact_link_failed`
+- session artifact-link failure returns success for the query but emits `session_artifact_link_failed`, including replay-time repair attempts
 
 ## 7. Idempotency and Replay
 
@@ -194,10 +206,33 @@ Rules:
 Rules:
 
 - the same `Idempotency-Key` plus the same scoped payload must resolve to the same session mutation
-- reusing the same `Idempotency-Key` with a different payload in the same scope must fail with a conflict
+- that replay scope uses the normalized query boundary: `role + actor_id + course_id + class_id + domain`
+- omitted query body fields normalize before fingerprinting: `attachment_source_ids -> []`, `allow_raw_source_fallback -> false`, `response_mode -> default`
+- the effective request fingerprint inside that scope is derived from the normalized body contract: trimmed `message`, sorted+deduplicated `attachment_source_ids`, `allow_raw_source_fallback`, and `response_mode`
+- the replay-owner record lives in `mutation_requests`; for query mutations it uses the deterministic replay-owned `session_id` plus the effective request fingerprint to classify same-key retries before the expensive work finishes
+- once a query mutation succeeds, later same-key retries replay the stored response shape instead of regenerating a fresh retrieval plan from newer history
+- replay preserves the stored deterministic `data` payload and write-back outcome; the outer HTTP `request_id` remains attempt-local tracing metadata and is server-owned for that attempt
+- when an optional LLM rewrite decorates the first successful HTTP response, replay and recovery still use the deterministic stored answer from the session row
+- if two identical same-key requests race, the losing request must recover the stored session/result instead of surfacing a false payload-conflict error
+- if a same-key race is still actively progressing, the retry may briefly wait for the winner's stored replay payload before taking over recovery work
+- if a retry lands while the original request has only persisted the session row, the retry must finish the pending learning/candidate write-backs before caching the replay response
+- a session row that already exists while the replay-owner record is still `pending` is still visible to normal read surfaces inside the caller's role boundary, but replay acceptance is not considered complete until the matching `mutation_requests` row reaches `applied`
+- pending replay ownership uses a bounded lease backed by `mutation_requests.updated_at`; active work refreshes that timestamp and retries may reclaim recovery only after that lease expires
+- if the stored replay payload still cannot be recovered after bounded recovery work, the route must return `503 storage_busy` instead of a transient payload-conflict response or a partially reconstructed answer
+- reusing the same `Idempotency-Key` with a different effective request fingerprint in the same scope must fail with a conflict; if pending ownership is already provable from the replay-owner record, this `duplicate_action` outcome takes precedence even before the earlier mutation reaches `applied`
+- if the server cannot yet prove same-key ownership from the pending replay-owner record, it must return `503 storage_busy` instead of guessing between `duplicate_action` and safe replay
+- when the server can estimate a safe retry window for `storage_busy`, it should expose that via `Retry-After`
+- rejected query requests must not create durable `mutation_requests` rows; idempotency state begins only once the request passes scope and verified-context gates
+- replay must preserve the original answer basis; if the first successful attempt used a pre-existing learning note, the replay must still emit the same `learning_context` evidence instead of dropping it because the session was later appended to that note
+- persisted replay recovery data must use a versioned query-owned contract (`contract_version`, `answer_basis`, `learning_proposal`, `candidate_proposal`, `writeback_plan`)
+- `session.replay_intent` is the authoritative final replay contract and must carry the final `writeback_plan`
+- `session_saved` audit details are an immutable seed copy of the same contract family and may omit final write-back outcomes when the request later progresses; they remain valid for recovering answer basis, idempotency ownership, and the original learning/candidate proposals
+- replay audit recovery may start from `Idempotency-Key`, but durable recovery ownership must stay anchored to replay-owned state such as the deterministic `session_id`, `mutation_requests`, and frozen targets inside `session.replay_intent`; `request_id` remains attempt-local tracing metadata even when later repair attempts emit additional audits
+- retries may finish pending learning-note, candidate, or session-link writes only when the target IDs and proposal fields are already frozen by `session.replay_intent` or the `session_saved` seed copy; replay recovery must never invent new target IDs or mutate the proposal under the same replay owner
+- successful idempotent query fixtures must declare `mutation_request_delta`, `mutation_request_status`, and `stored_response_payload` so first-run writes and zero-delta replays still prove the cached replay payload remains in `applied` state
 - ordinary requests without `Idempotency-Key` still create normal per-turn session records
 
-This keeps retries safe without turning `X-Request-Id` into the semantic source of truth for mutation replay.
+This keeps retries safe without turning a client-supplied `X-Request-Id` into the semantic source of truth for mutation replay or audit recovery.
 
 ## 8. Role-Specific Summary
 
@@ -251,7 +286,9 @@ Retrieval order:
 
 Write-back:
 
-- not through the student query path
+- session only, so the validator can replay the same scoped review query safely
+- no learning-note writes
+- no candidate writes
 - validator promotion actions belong to dedicated review endpoints
 
 ### 8.5 Dedicated Review Endpoints

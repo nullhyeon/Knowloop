@@ -1,7 +1,9 @@
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from knowloop_api.api.context import get_server_request_id
+from knowloop_api.api.errors import success_response
 from knowloop_api.core.config import Settings
 from knowloop_api.db.bootstrap import build_storage_readiness_payload
 
@@ -10,21 +12,19 @@ def create_system_router(settings: Settings) -> APIRouter:
     router = APIRouter(prefix="/system", tags=["system"])
 
     @router.get("/health")
-    def system_health() -> dict[str, Any]:
-        return {
-            "request_id": "system-health",
-            "data": {
+    def system_health(request: Request) -> dict[str, Any]:
+        return success_response(
+            get_server_request_id(request),
+            {
                 "status": "ok",
             },
-            "meta": {},
-        }
+        )
 
     @router.get("/ready")
-    def system_ready() -> dict[str, Any]:
-        return {
-            "request_id": "system-ready",
-            "data": build_storage_readiness_payload(settings),
-            "meta": {},
-        }
+    def system_ready(request: Request) -> dict[str, Any]:
+        return success_response(
+            get_server_request_id(request),
+            build_storage_readiness_payload(settings),
+        )
 
     return router

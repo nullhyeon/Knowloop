@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime
@@ -56,12 +57,7 @@ def create_audit_event(
     created_at: datetime | None = None,
 ) -> AuditEventRecord:
     event_timestamp = created_at or datetime.now(UTC)
-    event = AuditEventRecord(
-        event_id=build_audit_event_id(
-            action=action,
-            entity_id=entity_id,
-            created_at=event_timestamp,
-        ),
+    event = _build_audit_event_record(
         entity_type=entity_type,
         entity_id=entity_id,
         action=action,
@@ -77,49 +73,31 @@ def create_audit_event(
     )
 
     with sqlite3.connect(settings.audit_db_path) as connection:
-        try:
-            connection.execute(
-                """
-                INSERT INTO audit_events (
-                    event_id,
-                    entity_type,
-                    entity_id,
-                    action,
-                    actor_role,
-                    actor_id,
-                    from_status,
-                    to_status,
-                    notes,
-                    details_json,
-                    request_id,
-                    idempotency_key,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.event_id,
-                    event.entity_type,
-                    event.entity_id,
-                    event.action,
-                    event.actor_role,
-                    event.actor_id,
-                    event.from_status,
-                    event.to_status,
-                    event.notes,
-                    _serialize_audit_details(event.details),
-                    event.request_id,
-                    event.idempotency_key,
-                    event.created_at.isoformat().replace("+00:00", "Z"),
-                ),
-            )
-        except sqlite3.IntegrityError:
-            existing_event = get_audit_event(settings, event.event_id)
-            if existing_event is None:
-                raise
-            return existing_event
-        connection.commit()
-
-    return event
+        for _attempt in range(5):
+            try:
+                _insert_audit_event(connection, event)
+                connection.commit()
+                return event
+            except sqlite3.IntegrityError as exc:
+                if not _is_audit_event_id_conflict(exc):
+                    raise
+                existing_event = _get_audit_event_in_connection(connection, event.event_id)
+                if existing_event is not None and _audit_events_equivalent(existing_event, event):
+                    return existing_event
+                event = event.model_copy(
+                    update={
+                        "event_id": build_audit_event_id(
+                            action=action,
+                            entity_id=entity_id,
+                            created_at=event_timestamp,
+                            collision_suffix=_build_audit_event_collision_suffix(
+                                event,
+                                attempt=_attempt,
+                            ),
+                        )
+                    }
+                )
+        raise RuntimeError("failed to allocate a unique audit event id")
 
 
 def list_audit_events(
@@ -129,6 +107,7 @@ def list_audit_events(
     entity_id: str | None = None,
     action: str | None = None,
     idempotency_key: str | None = None,
+    request_id: str | None = None,
 ) -> list[AuditEventRecord]:
     query = """
         SELECT
@@ -162,6 +141,9 @@ def list_audit_events(
     if idempotency_key is not None:
         clauses.append("idempotency_key = ?")
         parameters.append(idempotency_key)
+    if request_id is not None:
+        clauses.append("request_id = ?")
+        parameters.append(request_id)
 
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
@@ -233,6 +215,27 @@ def get_audit_event(settings: Settings, event_id: str) -> AuditEventRecord | Non
         idempotency_key=row[11],
         created_at=_parse_timestamp(row[12]),
     )
+
+
+def update_audit_event_details(
+    settings: Settings,
+    *,
+    event_id: str,
+    details: dict[str, object],
+) -> AuditEventRecord | None:
+    serialized_details = _serialize_audit_details(details)
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        connection.execute(
+            """
+            UPDATE audit_events
+            SET details_json = ?
+            WHERE event_id = ?
+            """,
+            (serialized_details, event_id),
+        )
+        connection.commit()
+
+    return get_audit_event(settings, event_id)
 
 
 def get_mutation_request(
@@ -523,9 +526,220 @@ def store_mutation_request_response_payload(
     return record
 
 
-def build_audit_event_id(*, action: str, entity_id: str, created_at: datetime) -> str:
+def touch_mutation_request(
+    settings: Settings,
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    idempotency_key: str,
+    updated_at: datetime,
+) -> MutationRequestRecord:
+    existing_record = get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    effective_updated_at = updated_at
+    if existing_record is not None and existing_record.updated_at > effective_updated_at:
+        effective_updated_at = existing_record.updated_at
+
+    timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        connection.execute(
+            """
+            UPDATE mutation_requests
+            SET updated_at = ?
+            WHERE entity_type = ?
+              AND entity_id = ?
+              AND action = ?
+              AND idempotency_key = ?
+            """,
+            (
+                timestamp,
+                entity_type,
+                entity_id,
+                action,
+                idempotency_key,
+            ),
+        )
+        connection.commit()
+
+    record = get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    if record is None:
+        raise RuntimeError("failed to touch mutation request")
+    return record
+
+
+def build_audit_event_id(
+    *,
+    action: str,
+    entity_id: str,
+    created_at: datetime,
+    collision_suffix: str | None = None,
+) -> str:
     timestamp = created_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    return f"evt-{action}-{entity_id}-{timestamp}"
+    base_event_id = f"evt-{action}-{entity_id}-{timestamp}"
+    if collision_suffix is None:
+        return base_event_id
+    return f"{base_event_id}-{collision_suffix}"
+
+
+def _build_audit_event_record(
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    actor_role: str,
+    actor_id: str | None,
+    from_status: str | None,
+    to_status: str | None,
+    notes: str | None,
+    details: dict[str, object] | None,
+    request_id: str | None,
+    idempotency_key: str | None,
+    created_at: datetime,
+) -> AuditEventRecord:
+    return AuditEventRecord(
+        event_id=build_audit_event_id(
+            action=action,
+            entity_id=entity_id,
+            created_at=created_at,
+        ),
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        from_status=from_status,
+        to_status=to_status,
+        notes=notes,
+        details=details,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        created_at=created_at,
+    )
+
+
+def _insert_audit_event(connection: sqlite3.Connection, event: AuditEventRecord) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_events (
+            event_id,
+            entity_type,
+            entity_id,
+            action,
+            actor_role,
+            actor_id,
+            from_status,
+            to_status,
+            notes,
+            details_json,
+            request_id,
+            idempotency_key,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event.event_id,
+            event.entity_type,
+            event.entity_id,
+            event.action,
+            event.actor_role,
+            event.actor_id,
+            event.from_status,
+            event.to_status,
+            event.notes,
+            _serialize_audit_details(event.details),
+            event.request_id,
+            event.idempotency_key,
+            event.created_at.isoformat().replace("+00:00", "Z"),
+        ),
+    )
+
+
+def _get_audit_event_in_connection(
+    connection: sqlite3.Connection,
+    event_id: str,
+) -> AuditEventRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+            event_id,
+            entity_type,
+            entity_id,
+            action,
+            actor_role,
+            actor_id,
+            from_status,
+            to_status,
+            notes,
+            details_json,
+            request_id,
+            idempotency_key,
+            created_at
+        FROM audit_events
+        WHERE event_id = ?
+        """,
+        (event_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return AuditEventRecord(
+        event_id=row[0],
+        entity_type=row[1],
+        entity_id=row[2],
+        action=row[3],
+        actor_role=row[4],
+        actor_id=row[5],
+        from_status=row[6],
+        to_status=row[7],
+        notes=row[8],
+        details=_parse_audit_details(row[9]),
+        request_id=row[10],
+        idempotency_key=row[11],
+        created_at=_parse_timestamp(row[12]),
+    )
+
+
+def _audit_events_equivalent(
+    existing_event: AuditEventRecord,
+    candidate_event: AuditEventRecord,
+) -> bool:
+    return existing_event.model_dump(exclude={"event_id"}) == candidate_event.model_dump(
+        exclude={"event_id"}
+    )
+
+
+def _is_audit_event_id_conflict(error: sqlite3.IntegrityError) -> bool:
+    message = str(error).lower()
+    return "unique constraint failed" in message and "audit_events.event_id" in message
+
+
+def _build_audit_event_collision_suffix(
+    event: AuditEventRecord,
+    *,
+    attempt: int,
+) -> str:
+    digest = hashlib.sha1(
+        json.dumps(
+            event.model_dump(mode="json", exclude={"event_id"}, exclude_none=False),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    if attempt == 0:
+        return digest
+    return f"{digest}-{attempt}"
 
 
 def _parse_timestamp(value: str) -> datetime:

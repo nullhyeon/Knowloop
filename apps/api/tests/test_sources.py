@@ -62,6 +62,18 @@ def build_headers(
     return headers
 
 
+def assert_server_owned_request_id(
+    response,
+    *,
+    client_request_id: str | None,
+) -> None:
+    payload = response.json()
+    assert payload["request_id"]
+    assert response.headers["X-Request-Id"] == payload["request_id"]
+    if client_request_id is not None:
+        assert payload["request_id"] != client_request_id
+
+
 def test_register_source_endpoint_persists_raw_file_manifest_and_audit(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
 
@@ -85,7 +97,7 @@ def test_register_source_endpoint_persists_raw_file_manifest_and_audit(tmp_path:
 
     payload = response.json()
     assert response.status_code == 201
-    assert payload["request_id"] == "req-source-register"
+    assert_server_owned_request_id(response, client_request_id="req-source-register")
     assert payload["data"]["source_type"] == "lecture_note"
     assert payload["data"]["status"] == "registered"
     assert payload["data"]["stored_path"].startswith(
@@ -105,6 +117,67 @@ def test_register_source_endpoint_persists_raw_file_manifest_and_audit(tmp_path:
     assert manifest.sources[0].source_id == stored_source.source_id
     assert audit_events[0].action == "source_registered"
     assert audit_events[0].idempotency_key == "idem-source-register"
+
+
+def test_register_source_endpoint_uses_server_owned_request_ids(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.post(
+        "/api/v1/sources/register",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-client-supplied-source",
+            idempotency_key="idem-source-server-owned-request-id",
+        ),
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "# Chain Rule\nUse the outer derivative after the inner derivative.",
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule.md",
+        },
+    )
+
+    assert response.status_code == 201
+    assert_server_owned_request_id(response, client_request_id="req-client-supplied-source")
+
+
+def test_register_source_endpoint_replay_uses_attempt_local_request_ids(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+    headers = build_headers(
+        role="instructor",
+        actor_id="ins-calculus-team",
+        request_id="req-client-supplied-source-replay",
+        idempotency_key="idem-source-http-replay",
+    )
+    body = {
+        "source_type": "lecture_note",
+        "title": "Week 03 Chain Rule",
+        "content": "# Chain Rule\nUse the outer derivative after the inner derivative.",
+        "mime_type": "text/markdown",
+        "filename": "week-03-chain-rule.md",
+    }
+
+    first_response = client.post("/api/v1/sources/register", headers=headers, json=body)
+    second_response = client.post("/api/v1/sources/register", headers=headers, json=body)
+
+    first_payload = first_response.json()
+    second_payload = second_response.json()
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert first_payload["data"] == second_payload["data"]
+    assert first_payload["data"]["source_id"] == second_payload["data"]["source_id"]
+    assert first_payload["request_id"] != second_payload["request_id"]
+    assert_server_owned_request_id(
+        first_response,
+        client_request_id="req-client-supplied-source-replay",
+    )
+    assert_server_owned_request_id(
+        second_response,
+        client_request_id="req-client-supplied-source-replay",
+    )
 
 
 def test_register_source_is_idempotent_with_same_key(tmp_path: Path) -> None:
@@ -1054,6 +1127,7 @@ def test_source_endpoints_require_request_context_headers(tmp_path: Path) -> Non
     response = client.get("/api/v1/sources")
 
     assert response.status_code == 422
+    assert_server_owned_request_id(response, client_request_id=None)
     assert response.json()["error"]["code"] == "missing_context"
 
 
@@ -1071,6 +1145,7 @@ def test_register_source_endpoint_requires_idempotency_key(tmp_path: Path) -> No
     )
 
     assert response.status_code == 422
+    assert_server_owned_request_id(response, client_request_id="req-test-source")
     assert response.json()["error"]["code"] == "validation_failed"
     assert response.json()["error"]["details"]["header"] == "Idempotency-Key"
 
@@ -1088,6 +1163,7 @@ def test_source_endpoints_reject_invalid_scope_headers(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 422
+    assert_server_owned_request_id(response, client_request_id="req-test-source")
     assert response.json()["error"]["code"] == "validation_failed"
 
 
@@ -1128,8 +1204,10 @@ def test_source_read_endpoints_reject_invalid_domain_override(tmp_path: Path) ->
     )
 
     assert list_response.status_code == 422
+    assert_server_owned_request_id(list_response, client_request_id="req-test-source")
     assert list_response.json()["error"]["code"] == "validation_failed"
     assert detail_response.status_code == 422
+    assert_server_owned_request_id(detail_response, client_request_id="req-test-source")
     assert detail_response.json()["error"]["code"] == "validation_failed"
 
 
@@ -1142,6 +1220,7 @@ def test_source_endpoints_reject_actor_id_role_mismatch(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 422
+    assert_server_owned_request_id(response, client_request_id="req-test-source")
     assert response.json()["error"]["code"] == "validation_failed"
 
 
@@ -1163,7 +1242,7 @@ def test_source_endpoints_wrap_body_validation_errors_in_contract_envelope(tmp_p
     )
 
     assert response.status_code == 422
-    assert response.json()["request_id"] == "req-test-source"
+    assert_server_owned_request_id(response, client_request_id="req-test-source")
     assert response.json()["error"]["code"] == "validation_failed"
     error_details = response.json()["error"]["details"]["errors"][0]
     assert "input" not in error_details
@@ -1195,7 +1274,7 @@ def test_register_source_endpoint_wraps_manifest_failures_in_contract_envelope(
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "internal_error"
-    assert response.json()["request_id"] == "req-test-source"
+    assert_server_owned_request_id(response, client_request_id="req-test-source")
 
 
 def test_register_source_endpoint_wraps_audit_failures_in_contract_envelope(
@@ -1227,7 +1306,7 @@ def test_register_source_endpoint_wraps_audit_failures_in_contract_envelope(
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "internal_error"
-    assert response.json()["request_id"] == "req-test-source"
+    assert_server_owned_request_id(response, client_request_id="req-test-source")
 
 
 def test_source_endpoints_reject_blank_titles_after_trimming(tmp_path: Path) -> None:
@@ -1452,4 +1531,6 @@ def test_register_source_endpoint_returns_conflict_for_non_idempotent_collision(
 
     assert first_response.status_code == 201
     assert second_response.status_code == 409
+    assert_server_owned_request_id(first_response, client_request_id="req-test-source")
+    assert_server_owned_request_id(second_response, client_request_id="req-test-source")
     assert second_response.json()["error"]["code"] == "duplicate_action"

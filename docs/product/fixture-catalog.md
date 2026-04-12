@@ -91,7 +91,11 @@ Coverage intent:
 Current fixture files:
 
 - `queries/student-chain-rule-confusion.json`
+- `queries/student-chain-rule-replay.json`
+- `queries/student-chain-rule-replay-after-intervening-followup.json`
+- `queries/student-chain-rule-replay-conflict.json`
 - `queries/student-chain-rule-learning-followup.json`
+- `queries/student-chain-rule-learning-followup-replay.json`
 - `queries/student-homework-deadline-01.json`
 - `queries/student-homework-deadline-02.json`
 - `queries/student-unresolved-question.json`
@@ -107,6 +111,17 @@ Expected behavior per fixture:
   - retrieval refs show `wiki_page` and `session`
   - write-back creates `session`, `learning_note`, and `candidate`
   - candidate kind is `misconception`
+- `student-chain-rule-replay.json`
+  - reuses the same `Idempotency-Key` as the base chain-rule fixture
+  - returns the same write-back targets without creating a second session, learning note, candidate, or request-scoped audit trail
+- `student-chain-rule-replay-after-intervening-followup.json`
+  - retries the original chain-rule request after a newer related session already exists
+  - verifies late replay still returns the stored response shape instead of re-deriving a new retrieval state
+- delayed race-winner recovery is covered by dedicated query tests
+  - a loser that collides after session save must wait for the winner's replay payload before attempting takeover recovery
+- `student-chain-rule-replay-conflict.json`
+  - reuses the same `Idempotency-Key` with a different payload
+  - verifies `duplicate_action` and proves the rejected replay leaves durable state untouched, including no new query mutation-request row
 - `student-homework-deadline-01.json`
   - answer is satisfied by formal wiki
   - retrieval refs stay on `wiki_page`
@@ -118,6 +133,9 @@ Expected behavior per fixture:
   - uses `setup_fixtures` to create a prior learning note and recent same-user context
   - verifies that `learning_context` appears only on the follow-up turn, not the setup turn
   - verifies candidate write-back transitions from `create/open` to `update/updated`
+- `student-chain-rule-learning-followup-replay.json`
+  - replays the follow-up query with the same `Idempotency-Key`
+  - verifies that a pre-existing learning note still contributes `learning_context` during replay while durable state stays unchanged
 - `student-unresolved-question.json`
   - answer uses raw fallback without exposing raw source entities to the student response
   - unresolved query may generate a reviewable `unresolved_question` candidate when fallback evidence exists
@@ -130,10 +148,11 @@ Expected behavior per fixture:
   - aggregates repeated class session links into candidate write-back without exposing raw student transcript bodies in the answer surface
 - `student-no-fallback-error.json`
   - verifies `insufficient_verified_context` when verified wiki coverage is missing and fallback is disabled
-  - verifies that the failed request leaves session, candidate, learning-note, and request-audit state unchanged
+  - verifies that the failed request leaves session, candidate, learning-note, request-audit, and query mutation-request state unchanged
 - `student-forbidden-attachment-error.json`
   - verifies `forbidden_scope` when a student attempts to attach a raw source directly
   - uses canonical fixture source IDs that are resolved to runtime source IDs during test execution
+  - verifies that the rejected request does not register idempotency state
 
 ## 7. Session Fixtures
 
@@ -220,7 +239,10 @@ The fixture pack intentionally proves these product choices:
 - student homework questions that are already covered by wiki remain session-only
 - instructor homework review questions can generate FAQ candidates without changing the student path
 - query fixtures lock retrieval entity types and write-back action/status pairs, not only answer basis
-- declarative error fixtures prove that failed query requests do not silently mutate durable state or request-scoped audit history
+- declarative error fixtures prove that failed query requests do not silently mutate durable state, request-scoped audit history, or query mutation-request state
+- declarative success fixtures with `Idempotency-Key` also declare `mutation_request_delta`, `mutation_request_status`, and `stored_response_payload` so replay caching stays explicit instead of being inferred from counts alone
+- successful query fixtures also validate the versioned `session.replay_intent` / `session_saved` audit payload contract, including the persisted `writeback_plan`, so replay recovery data is not an undocumented side channel
+- declarative replay fixtures prove both same-key success replay and same-key conflict rejection without relying on hand-written one-off tests
 - write-back failures should be auditable without turning every query failure into a hard API failure
 
 ## 13. Maintenance Rules

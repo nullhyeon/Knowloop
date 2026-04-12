@@ -31,6 +31,9 @@
         "status": "registered"
       }
     ],
+    "side_effects": {
+      "mutation_request_delta": 0
+    },
     "learning_note_written": false,
     "candidate": null
   }

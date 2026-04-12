@@ -87,12 +87,14 @@ Common lifecycle values used across the MVP:
 `POST /api/v1/query/respond` creates session IDs in two modes:
 
 - normal request: timestamp-backed turn ID plus a short random suffix
-- idempotent replay: stable ID derived from `Idempotency-Key`
+- idempotent replay: stable ID derived from the normalized replay scope plus `Idempotency-Key`
 
 This is intentional:
 
 - repeated genuine questions should still be able to create new session records
-- safe client retries should collapse onto the same session when `Idempotency-Key` is supplied
+- safe client retries should collapse onto the same session only inside the same normalized replay scope
+- the normalized replay scope for query sessions is `role + actor_id + course_id + class_id + domain`
+- session ID derivation is deliberately narrower than the full replay fingerprint: it stays stable for same-scope retries, while the full normalized query body still determines whether the request is replay-compatible or must return `409 duplicate_action`
 
 ### 4.2 Raw Source ID Notes
 
@@ -158,6 +160,7 @@ Optional but expected fields:
 - `retrieval_refs`
 - `candidate_refs`
 - `learning_note_refs`
+- `replay_intent`
 
 Canonical store:
 
@@ -292,13 +295,113 @@ Optional fields:
 - `from_status`
 - `to_status`
 - `notes`
-- `details_json` for action-specific structured metadata only; the current MVP contract uses it for drop `reason`
+- `details_json` for action-specific structured metadata; the current MVP contract uses it for drop `reason`, query `session_saved` replay seeds, and other action-scoped recovery details that are explicitly locked by the owning workflow contract
 - `request_id`
 - `idempotency_key`
 
 Canonical store:
 
 - SQLite table: `audit_events`
+
+Structured `details_json` contracts locked in the MVP:
+
+- `candidate_dropped`
+  - `reason`
+- `session_saved`
+  - immutable `QueryReplayIntent` seed used for bounded replay recovery when the final `sessions.replay_intent` copy has not been refreshed yet
+- `candidate_wiki_sync_pending`
+  - `candidate_id`
+  - `promotion_attempt_id`
+  - `approval_plan_fingerprint`
+- `wiki_patch_applied`
+  - `candidate_id`
+  - `promotion_attempt_id`
+  - `approval_plan_fingerprint`
+- `candidate_wiki_synced`
+  - `candidate_id`
+  - `promotion_attempt_id`
+  - `approval_plan_fingerprint`
+
+Interpretation notes:
+
+- the three wiki-sync audit actions above form a single frozen promotion-attempt chain
+- `candidate_id` is always required for that chain, even on the `wiki_page`-owned `wiki_patch_applied` event, so replay recovery can correlate the page mutation back to the candidate that owns the frozen approval plan
+- `promotion_attempt_id` and `approval_plan_fingerprint` identify the immutable promotion attempt that replay and resume logic must converge onto
+- read-side legacy compatibility checks for wiki-sync audits operate over the full `entity_type + entity_id + action` chain, not only rows whose `idempotency_key` is `NULL`
+- legacy pre-details rows may still exist for older promotion attempts; replay recovery may treat them as compatible only when that `entity_type + entity_id + action` chain is otherwise unique, but new writes must persist the structured details above
+- candidate-owned wiki-sync actions may upgrade a unique legacy row in place; page-owned `wiki_patch_applied` rows must preserve historical attempts when the frozen promotion identity cannot be proven from the existing row
+
+### 5.7 MutationRequest
+
+Purpose: replay-owner record for idempotent mutations that are still pending, recovering, or already accepted.
+
+Required fields:
+
+- `entity_type`
+- `entity_id`
+- `action`
+- `idempotency_key`
+- `actor_role`
+- `request_fingerprint`
+- `status`
+- `created_at`
+- `updated_at`
+
+Optional but expected fields:
+
+- `actor_id`
+- `response_payload`
+
+Status values:
+
+- `pending`
+- `applied`
+
+Interpretation notes:
+
+- for query mutations, `entity_id` is the deterministic `session_id` derived from the normalized replay scope plus `Idempotency-Key`
+- the normalized replay scope for query mutations is `role + actor_id + course_id + class_id + domain`; when `domain` is omitted, it is normalized using `Public Query Default Domains v1` before `session_id` derivation
+- query mutations do not persist `course_id`, `class_id`, or `domain` as standalone `mutation_requests` columns in the current MVP; those scope components stay encoded inside the deterministic `session_id`, while `actor_role`, `actor_id`, and `request_fingerprint` remain first-class columns
+- `request_fingerprint` is the canonical effective-request fingerprint for that replay scope; for query mutations it is derived from the normalized body contract only: trimmed `message`, sorted+deduplicated `attachment_source_ids`, `allow_raw_source_fallback`, and `response_mode`
+- `status=pending` means the mutation owns the replay reservation but may still be computing or repairing durable side effects
+- pending replay ownership is a bounded liveness lease keyed by `updated_at`; active work refreshes that timestamp and retries may treat the reservation as stale after the lease window expires
+- `status=applied` means the mutation owns the accepted replay result and `response_payload` is the canonical replayable API `data` payload
+- query routes must create the replay-owner row only after the request has passed scope and verified-context gates; rejected requests do not leave durable `mutation_requests` rows behind
+- incomplete or degraded pending rows are treated as recovery state, not as reusable accepted replay state; callers must receive bounded retry semantics until cleanup or recovery can re-establish a valid owner
+- a durable session row may already exist while the matching replay-owner row is still `pending`; read surfaces may expose that session row inside the normal role boundary, but idempotent replay is not considered durably accepted until the matching `mutation_requests` row reaches `applied`
+- cleanup or recovery after a failed in-flight mutation must not leave a stale `pending` reservation that permanently blocks future retries under the same normalized scope and `Idempotency-Key`
+
+Canonical store:
+
+- SQLite table: `mutation_requests`
+
+### 5.8 QueryReplayIntent
+
+Purpose: authoritative query-owned recovery contract for rebuilding accepted replay results and finishing bounded write-back repair without inventing new targets.
+
+Required fields:
+
+- `contract_version`
+- `answer_basis`
+- `writeback_plan`
+
+Optional but expected fields:
+
+- `idempotency_key`
+- `learning_proposal`
+- `candidate_proposal`
+
+Interpretation notes:
+
+- the authoritative final copy lives in `sessions.replay_intent`
+- `audit_events.details_json` on the `session_saved` action stores an immutable seed copy of the same contract family for recovery when the final session row has not yet been refreshed
+- `mutation_requests.response_payload` stores the accepted API `data` payload for replay, not a second independent write-back proposal schema
+- for review `resume-sync`, `mutation_requests.response_payload` may also carry an internal `_resume_contract` object containing the frozen `promotion_attempt_id` and `approval_plan_fingerprint`; this is storage metadata for replay ownership, not part of the public HTTP response contract
+- replay recovery may repair unfinished learning-note, candidate, or session-link writes only when the target IDs and write-back plan are already frozen by this contract family; retries must not invent new target IDs or generate a different proposal under the same replay owner
+
+Contract schema:
+
+- `schemas/query_replay_intent.json`
 
 ## 6. Source Reference Contract
 

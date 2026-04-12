@@ -4,7 +4,10 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 
-from knowloop_api.api.context import RequestContext, get_request_context
+from knowloop_api.api.context import (
+    RequestContext,
+    get_public_query_request_context,
+)
 from knowloop_api.api.errors import ApiError, success_response
 from knowloop_api.core.config import Settings
 from knowloop_api.services.query import (
@@ -13,6 +16,7 @@ from knowloop_api.services.query import (
     QueryReplayConflictError,
     QueryRequest,
     QueryStateError,
+    QueryStorageBusyError,
     respond_to_query,
 )
 
@@ -23,7 +27,7 @@ def create_query_router(settings: Settings) -> APIRouter:
     @router.post("/respond")
     def respond_to_query_endpoint(
         payload: QueryRequest,
-        context: Annotated[RequestContext, Depends(get_request_context)],
+        context: Annotated[RequestContext, Depends(get_public_query_request_context)],
     ) -> dict[str, Any]:
         try:
             response = respond_to_query(settings, payload, context=context)
@@ -45,6 +49,13 @@ def create_query_router(settings: Settings) -> APIRouter:
             raise ApiError(
                 status_code=409,
                 code="duplicate_action",
+                message=str(exc),
+                request_id=context.request_id,
+            ) from exc
+        except QueryStorageBusyError as exc:
+            raise ApiError(
+                status_code=503,
+                code="storage_busy",
                 message=str(exc),
                 request_id=context.request_id,
             ) from exc

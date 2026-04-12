@@ -109,6 +109,7 @@ def upsert_learning_note(
     *,
     actor_id: str | None = None,
     request_id: str | None = None,
+    idempotency_key: str | None = None,
     notes: str | None = None,
 ) -> LearningNote:
     validate_actor_id(note.student_id, actor_role=ActorRole.STUDENT)
@@ -141,6 +142,8 @@ def upsert_learning_note(
                 "updated_at": note.updated_at or note.created_at,
             }
         )
+        if merged == existing:
+            return existing
 
     _write_learning_files(settings, merged)
     create_audit_event(
@@ -151,6 +154,7 @@ def upsert_learning_note(
         actor_role=merged.actor_role.value,
         actor_id=actor_id,
         request_id=request_id,
+        idempotency_key=idempotency_key,
         notes=notes,
         created_at=merged.updated_at or merged.created_at,
     )

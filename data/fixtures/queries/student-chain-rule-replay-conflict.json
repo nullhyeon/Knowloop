@@ -1,17 +1,20 @@
 {
-  "fixture_id": "qf-student-no-fallback-error-01",
-  "description": "Student asks a question with no verified wiki coverage and disables raw fallback.",
+  "fixture_id": "qf-student-chain-rule-replay-conflict-01",
+  "description": "Student reuses the chain-rule Idempotency-Key for a different query payload and should get a duplicate_action error without new side effects.",
+  "setup_fixtures": [
+    "student-chain-rule-confusion.json"
+  ],
   "request_headers": {
     "X-Knowloop-Role": "student",
     "X-Knowloop-Actor-Id": "stu-kim-minji",
     "X-Knowloop-Course-Id": "course-calculus-1",
     "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
     "X-Knowloop-Domain": "academic",
-    "X-Request-Id": "req-fixture-student-no-fallback-error-01",
-    "Idempotency-Key": "idem-fixture-student-no-fallback-error-01"
+    "X-Request-Id": "req-fixture-student-chain-rule-replay-conflict-01",
+    "Idempotency-Key": "idem-fixture-student-chain-rule-01"
   },
   "request_body": {
-    "message": "What is the convergence test for this sequence?",
+    "message": "When is Homework 01 due?",
     "attachment_source_ids": [],
     "allow_raw_source_fallback": false,
     "response_mode": "default"
@@ -19,8 +22,8 @@
   "expected": {
     "status_code": 409,
     "error": {
-      "code": "insufficient_verified_context",
-      "message_contains": "raw source fallback is disabled"
+      "code": "duplicate_action",
+      "message_contains": "Idempotency-Key was reused for a different query payload"
     },
     "side_effects": {
       "session_delta": 0,

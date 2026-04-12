@@ -1,8 +1,8 @@
 {
-    "fixture_id":  "qf-student-chain-rule-followup-01",
-    "description":  "Student asks a follow-up chain-rule question after a learning note already exists.",
+    "fixture_id":  "qf-student-chain-rule-replay-delayed-01",
+    "description":  "Student retries the original chain-rule question after an intervening related follow-up session and should still replay the stored response.",
     "setup_fixtures":  [
-                           "student-chain-rule-confusion.json"
+                           "student-chain-rule-learning-followup.json"
                        ],
     "request_headers":  {
                             "X-Knowloop-Role":  "student",
@@ -10,28 +10,25 @@
                             "X-Knowloop-Course-Id":  "course-calculus-1",
                             "X-Knowloop-Class-Id":  "class-calculus-1-2026-spring-a",
                             "X-Knowloop-Domain":  "academic",
-                            "X-Request-Id":  "req-fixture-student-chain-rule-followup-01",
-                            "Idempotency-Key":  "idem-fixture-student-chain-rule-followup-01"
+                            "X-Request-Id":  "req-fixture-student-chain-rule-replay-delayed-01",
+                            "Idempotency-Key":  "idem-fixture-student-chain-rule-01"
                         },
     "request_body":  {
-                         "message":  "I am still mixing up the chain rule and product rule.",
+                         "message":  "I still do not understand when the chain rule is different from the product rule.",
                          "attachment_source_ids":  [
 
                                                    ],
                          "allow_raw_source_fallback":  true,
-                         "response_mode":  "default"
+                         "response_mode":  "teaching"
                      },
     "expected":  {
                      "answer_basis":  [
                                           "formal_wiki",
-                                          "session_context",
-                                          "learning_context"
+                                          "session_context"
                                       ],
                      "retrieval_entity_types":  [
                                                     "wiki_page",
-                                                    "session",
-                                                    "session",
-                                                    "learning_note"
+                                                    "session"
                                                 ],
                      "writeback_plan":  [
                                             {
@@ -46,19 +43,23 @@
                                             },
                                             {
                                                 "kind":  "candidate",
-                                                "action":  "update",
-                                                "status":  "updated"
+                                                "action":  "create",
+                                                "status":  "open"
                                             }
                                         ],
                      "side_effects":  {
-                                          "mutation_request_delta":  1,
+                                          "session_delta":  0,
+                                          "candidate_delta":  0,
+                                          "learning_note_unchanged":  true,
+                                          "request_audit_delta":  0,
+                                          "mutation_request_delta":  0,
                                           "mutation_request_status":  "applied",
                                           "stored_response_payload":  true
                                       },
                      "learning_note_written":  true,
                      "learning_note":  {
                                            "concept_contains":  "chain rule",
-                                           "min_session_ref_count":  2
+                                           "min_session_ref_count":  1
                                        },
                      "candidate":  {
                                        "kind":  "misconception",
@@ -66,7 +67,7 @@
                                        "related_page_id":  "page-misconceptions-chain-rule-product-rule",
                                        "min_confidence":  0.8,
                                        "min_source_ref_count":  2,
-                                       "min_session_ref_count":  3
+                                       "min_session_ref_count":  2
                                    }
                  }
 }

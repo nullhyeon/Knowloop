@@ -66,15 +66,15 @@ QUERY_ERROR_FIXTURE_NAMES = (
 )
 
 
-def build_settings(tmp_path: Path) -> Settings:
+def build_settings(tmp_path: Path, **overrides) -> Settings:
     digest = hashlib.sha1(str(tmp_path).encode("utf-8")).hexdigest()[:10]
     data_root = Path(tempfile.gettempdir()) / "kl" / digest
     shutil.rmtree(data_root, ignore_errors=True)
-    return Settings(data_root=data_root)
+    return Settings(data_root=data_root, **overrides)
 
 
-def build_client(tmp_path: Path) -> tuple[TestClient, Settings]:
-    settings = build_settings(tmp_path)
+def build_client(tmp_path: Path, **settings_overrides) -> tuple[TestClient, Settings]:
+    settings = build_settings(tmp_path, **settings_overrides)
     return TestClient(create_app(settings), raise_server_exceptions=False), settings
 
 
@@ -1472,6 +1472,225 @@ def test_load_replayed_query_response_blocks_mismatched_frozen_targets_before_re
     assert repair_calls["count"] == 0
 
 
+def test_load_replayed_query_response_requires_durable_session_state(
+    tmp_path: Path,
+) -> None:
+    _client, settings = build_client(tmp_path)
+    created_at = _parse_timestamp("2026-04-10T12:09:00Z")
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-missing-session",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-missing-session",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fp-replay-missing-session",
+        created_at=created_at,
+    )
+    store_mutation_request_response_payload(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-missing-session",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-missing-session",
+        updated_at=created_at,
+        response_payload=query_service.QueryResponse(
+            answer="LLM decorated answer that must not become replay truth.",
+            answer_basis=["formal_wiki"],
+            retrieval_refs=[],
+            writeback_plan=[
+                query_service.WritebackPlanItem(
+                    kind="session",
+                    action="save",
+                    status="registered",
+                    target_id="ses-replay-missing-session",
+                    explanation=query_service.SESSION_WRITEBACK_EXPLANATION,
+                )
+            ],
+            session_id="ses-replay-missing-session",
+            created_at=created_at,
+        ).model_dump(mode="json", exclude_none=True),
+    )
+    mutation_request = next(
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == "ses-replay-missing-session"
+        and record.idempotency_key == "idem-replay-missing-session"
+    )
+
+    loaded = query_service._load_replayed_query_response(
+        mutation_request,
+        settings=settings,
+        session_id="ses-replay-missing-session",
+        request_id="req-replay-missing-session",
+        idempotency_key="idem-replay-missing-session",
+    )
+
+    assert loaded is None
+
+
+def test_load_replayed_query_response_reprojects_deterministic_payload_from_session_state(
+    tmp_path: Path,
+) -> None:
+    _client, settings = build_client(tmp_path)
+    created_at = _parse_timestamp("2026-04-10T12:09:30Z")
+    session = SessionRecord(
+        session_id="ses-replay-answer-drift",
+        role=ActorRole.STUDENT,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        question="When is the chain rule different from the product rule?",
+        answer="Use the chain rule for nested functions, then multiply by the inner derivative.",
+        created_at=created_at,
+        tags=["misconception"],
+        retrieval_refs=[
+            {
+                "entity_type": "wiki_page",
+                "entity_id": "page-misconceptions-chain-rule-product-rule",
+                "reason": "matched concept page",
+                "source_refs": [],
+            }
+        ],
+    )
+    save_session(
+        settings,
+        session,
+        request_id="req-replay-answer-drift-seed",
+        idempotency_key="idem-replay-answer-drift",
+        details=None,
+    )
+    durable_response = query_service.QueryResponse(
+        answer=session.answer,
+        answer_basis=["formal_wiki"],
+        retrieval_refs=[
+            query_service.RetrievalRef(
+                entity_type="wiki_page",
+                entity_id="page-misconceptions-chain-rule-product-rule",
+                reason="matched concept page",
+                source_refs=[],
+            )
+        ],
+        writeback_plan=[
+            query_service.WritebackPlanItem(
+                kind="session",
+                action="save",
+                status="registered",
+                target_id=session.session_id,
+                explanation=query_service.SESSION_WRITEBACK_EXPLANATION,
+            ),
+            query_service.WritebackPlanItem(
+                kind="learning_note",
+                action="update",
+                status="generated",
+                target_id="learn-stu-kim-minji-course-calculus-1-class-calculus-1-2026-spring-a",
+                explanation=query_service.LEARNING_WRITEBACK_EXPLANATION,
+            ),
+        ],
+        session_id=session.session_id,
+        created_at=created_at,
+    )
+    session = query_service._persist_query_replay_intent(
+        settings,
+        session=session,
+        response=durable_response,
+        answer_basis=durable_response.answer_basis,
+        idempotency_key="idem-replay-answer-drift",
+        learning_proposal=None,
+        candidate_proposal=None,
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-answer-drift",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fp-replay-answer-drift",
+        created_at=created_at,
+    )
+    stale_payload = query_service.QueryResponse(
+        answer="LLM decorated answer that drifted from session storage.",
+        answer_basis=["raw_source_fallback"],
+        retrieval_refs=[
+            query_service.RetrievalRef(
+                entity_type="raw_source",
+                entity_id="src-drifted-raw-source",
+                reason="stale provider cache",
+                source_refs=[],
+            )
+        ],
+        writeback_plan=[
+            query_service.WritebackPlanItem(
+                kind="session",
+                action="save",
+                status="registered",
+                target_id=session.session_id,
+                explanation=query_service.SESSION_WRITEBACK_EXPLANATION,
+            ),
+            query_service.WritebackPlanItem(
+                kind="candidate",
+                action="create",
+                status="open",
+                target_id="cand-drifted-cache",
+                explanation=query_service.CANDIDATE_WRITEBACK_EXPLANATION,
+            ),
+        ],
+        session_id=session.session_id,
+        created_at=created_at,
+    ).model_dump(mode="json", exclude_none=True)
+    mark_mutation_request_applied(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-answer-drift",
+        updated_at=created_at,
+        response_payload=stale_payload,
+    )
+    mutation_request = next(
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session.session_id
+        and record.idempotency_key == "idem-replay-answer-drift"
+    )
+
+    loaded = query_service._load_replayed_query_response(
+        mutation_request,
+        settings=settings,
+        session_id=session.session_id,
+        request_id="req-replay-answer-drift-retry",
+        idempotency_key="idem-replay-answer-drift",
+    )
+
+    assert loaded is not None
+    assert loaded.model_dump(mode="json") == durable_response.model_dump(mode="json")
+    refreshed_mutation = next(
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session.session_id
+        and record.idempotency_key == "idem-replay-answer-drift"
+    )
+    assert refreshed_mutation.response_payload == durable_response.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    drift_audits = [
+        event
+        for event in list_audit_events(settings, request_id="req-replay-answer-drift-retry")
+        if event.action == "query_replay_payload_drift_detected"
+    ]
+    assert len(drift_audits) == 1
+    assert drift_audits[0].details["drift_fields"] == [
+        "answer",
+        "answer_basis",
+        "retrieval_refs",
+        "writeback_plan",
+    ]
+
+
 def test_recover_candidate_writeback_item_uses_proposed_candidate_id_from_upsert_audit(
     tmp_path: Path,
 ) -> None:
@@ -1573,6 +1792,553 @@ def test_query_endpoint_matches_declarative_error_fixtures(
         settings,
         fixture,
         source_id_map=source_id_map,
+    )
+
+
+def test_query_endpoint_llm_rewrite_keeps_non_answer_contract_artifacts_stable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _load_query_fixture("student-chain-rule-confusion.json")
+    fixed_now = _parse_timestamp("2026-04-11T01:02:03.456789Z")
+    original_datetime = query_service.datetime
+
+    class FixedDateTime(original_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    def canonicalize(data: dict[str, object]) -> dict[str, object]:
+        normalized = deepcopy(data)
+        normalized.pop("answer", None)
+        return normalized
+
+    monkeypatch.setattr(query_service, "datetime", FixedDateTime)
+
+    baseline_client, baseline_settings = build_client(tmp_path / "baseline")
+    baseline_source_ids = seed_query_runtime(baseline_settings)
+    baseline_response = _run_query_fixture_request(
+        baseline_client,
+        fixture,
+        source_id_map=baseline_source_ids,
+    )
+    assert baseline_response.status_code == 200
+    baseline_payload = baseline_response.json()
+
+    monkeypatch.setattr(
+        query_service,
+        "generate_grounded_answer",
+        lambda _settings, *, context: (
+            "Use the chain rule when one function is nested inside another, "
+            "and compare it with a side-by-side product rule example."
+        ),
+    )
+
+    llm_client, llm_settings = build_client(
+        tmp_path / "llm",
+        llm_enabled=True,
+        openai_api_key="test-key",
+    )
+    llm_source_ids = seed_query_runtime(llm_settings)
+    llm_response = _run_query_fixture_request(
+        llm_client,
+        fixture,
+        source_id_map=llm_source_ids,
+    )
+    assert llm_response.status_code == 200
+    llm_payload = llm_response.json()
+
+    assert llm_payload["data"]["answer"] != baseline_payload["data"]["answer"]
+    assert canonicalize(llm_payload["data"]) == canonicalize(baseline_payload["data"])
+
+    stored_session = get_session(llm_settings, llm_payload["data"]["session_id"])
+    assert stored_session.answer == baseline_payload["data"]["answer"]
+
+
+def test_query_endpoint_llm_rewrite_keeps_replay_payload_deterministic(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = deepcopy(_load_query_fixture("student-chain-rule-confusion.json"))
+    fixture["request_headers"]["Idempotency-Key"] = "idem-query-llm-durable-01"
+
+    monkeypatch.setattr(
+        query_service,
+        "generate_grounded_answer",
+        lambda _settings, *, context: (
+            "Use the chain rule when one function is nested inside another, "
+            "and compare it with a side-by-side product rule example."
+        ),
+    )
+
+    client, settings = build_client(
+        tmp_path,
+        llm_enabled=True,
+        openai_api_key="test-key",
+    )
+    source_ids = seed_query_runtime(settings)
+
+    first = _run_query_fixture_request(
+        client,
+        fixture,
+        source_id_map=source_ids,
+    )
+    assert first.status_code == 200
+    first_payload = first.json()["data"]
+    stored_session = get_session(settings, first_payload["session_id"])
+    assert stored_session.answer != first_payload["answer"]
+
+    _assert_query_mutation_request_cached(
+        settings,
+        session_id=first_payload["session_id"],
+        idempotency_key=fixture["request_headers"]["Idempotency-Key"],
+        response_payload={
+            **first_payload,
+            "answer": stored_session.answer,
+        },
+    )
+
+    second_headers = {
+        **fixture["request_headers"],
+        "X-Request-Id": "req-query-llm-durable-02",
+    }
+    second = client.post(
+        "/api/v1/query/respond",
+        headers=second_headers,
+        json=_resolve_query_request_body(
+            fixture["request_body"],
+            source_id_map=source_ids,
+        ),
+    )
+    assert second.status_code == 200
+    assert second.json()["data"]["answer"] == stored_session.answer
+
+
+def test_query_endpoint_llm_guard_falls_back_without_contract_drift(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KNOWLOOP_ALLOW_LIVE_LLM_IN_TESTS", "true")
+    fixture = _load_query_fixture("student-chain-rule-confusion.json")
+    fixed_now = _parse_timestamp("2026-04-11T01:02:03.456789Z")
+    original_datetime = query_service.datetime
+
+    class FixedDateTime(original_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    def canonicalize(data: dict[str, object]) -> dict[str, object]:
+        return deepcopy(data)
+
+    class FakeResponses:
+        def parse(self, **kwargs):  # noqa: ANN003
+            class Response:
+                output_parsed = type(
+                    "ParsedPayload",
+                    (),
+                    {
+                        "rewritten_text": (
+                            "See src-lecture-note-week-03 at C:\\data\\wiki\\formal.md."
+                        )
+                    },
+                )()
+
+            return Response()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, timeout: float) -> None:
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr(query_service, "datetime", FixedDateTime)
+
+    baseline_client, baseline_settings = build_client(tmp_path / "baseline")
+    baseline_source_ids = seed_query_runtime(baseline_settings)
+    baseline_response = _run_query_fixture_request(
+        baseline_client,
+        fixture,
+        source_id_map=baseline_source_ids,
+    )
+    assert baseline_response.status_code == 200
+    baseline_payload = baseline_response.json()
+
+    monkeypatch.setattr("knowloop_api.services.llm_runtime.OpenAI", FakeClient)
+
+    llm_client, llm_settings = build_client(
+        tmp_path / "llm",
+        llm_enabled=True,
+        openai_api_key="test-key",
+    )
+    llm_source_ids = seed_query_runtime(llm_settings)
+    llm_response = _run_query_fixture_request(
+        llm_client,
+        fixture,
+        source_id_map=llm_source_ids,
+    )
+    assert llm_response.status_code == 200
+    llm_payload = llm_response.json()
+
+    assert canonicalize(llm_payload["data"]) == canonicalize(baseline_payload["data"])
+
+
+def test_query_build_answer_uses_fallback_when_live_provider_output_is_rejected(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KNOWLOOP_ALLOW_LIVE_LLM_IN_TESTS", "true")
+
+    class FakeResponses:
+        def parse(self, **kwargs):  # noqa: ANN003
+            class Response:
+                output_parsed = {
+                    "rewritten_text": "See src-lecture-note-week-03 at C:\\data\\wiki\\formal.md."
+                }
+
+            return Response()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, timeout: float) -> None:
+            self.responses = FakeResponses()
+
+    monkeypatch.setattr("knowloop_api.services.llm_runtime.OpenAI", FakeClient)
+
+    _client, settings = build_client(
+        tmp_path / "llm-build-answer",
+        llm_enabled=True,
+        openai_api_key="test-key",
+    )
+    seed_query_runtime(settings)
+    context = RequestContext(
+        role=ActorRole.STUDENT,
+        actor_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-query-llm-build-answer-01",
+        idempotency_key=None,
+    )
+    request = query_service.QueryRequest(
+        message="When should I use the chain rule instead of the product rule?",
+        allow_raw_source_fallback=True,
+        response_mode="teaching",
+    )
+    tokens = query_service._tokenize(request.message)
+    session_matches = list_recent_sessions(
+        settings,
+        user_id=context.actor_id,
+        class_id=context.class_id,
+        course_id=context.course_id,
+        limit=5,
+    )
+    wiki_matches = query_service.search_wiki_pages(
+        settings,
+        role=context.role,
+        course_id=context.course_id,
+        class_id=context.class_id,
+        requested_domain=context.domain,
+        message=request.message,
+        limit=5,
+    )
+    top_wiki_match = wiki_matches[0] if wiki_matches else None
+    raw_source_hits = query_service._collect_raw_source_hits(
+        settings,
+        context=context,
+        request=request,
+        tokens=tokens,
+        recent_sessions=session_matches,
+        top_wiki_match=top_wiki_match,
+    )
+    learning_note = get_learning_note(
+        settings,
+        student_id=context.actor_id,
+        course_id=context.course_id,
+        class_id=context.class_id,
+    )
+    answer_basis = query_service._build_answer_basis(
+        context=context,
+        request=request,
+        session_matches=session_matches,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=raw_source_hits,
+        learning_note=learning_note,
+        candidate_kind=None,
+    )
+
+    built_answer = query_service._build_answer(
+        settings,
+        request=request,
+        context=context,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=raw_source_hits,
+        answer_basis=answer_basis,
+        learning_note=learning_note,
+        session_matches=session_matches,
+    )
+    expected_fallback = query_service._build_fallback_answer(
+        request=request,
+        context=context,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=raw_source_hits,
+        answer_basis=answer_basis,
+        learning_note=learning_note,
+    )
+
+    assert built_answer.response_answer == expected_fallback
+    assert built_answer.stored_answer == expected_fallback
+
+
+def test_query_build_answer_prefers_llm_output_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    _client, settings = build_client(
+        tmp_path / "llm-prefers-runtime",
+        llm_enabled=True,
+        openai_api_key="test-key",
+    )
+    context = RequestContext(
+        role=ActorRole.STUDENT,
+        actor_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-llm-answer-01",
+        idempotency_key=None,
+    )
+    request = query_service.QueryRequest(
+        message="When do I use the chain rule?",
+        attachment_source_ids=[],
+        allow_raw_source_fallback=False,
+        response_mode="teaching",
+    )
+
+    monkeypatch.setattr(
+        query_service,
+        "generate_grounded_answer",
+        lambda _settings, *, context: (
+            "Use the chain rule when one function is nested inside another."
+        ),
+    )
+
+    answer = query_service._build_answer(
+        settings,
+        request=request,
+        context=context,
+        top_wiki_match=None,
+        raw_source_hits=[],
+        answer_basis=["formal_wiki"],
+        learning_note=None,
+        session_matches=[],
+    )
+
+    assert (
+        answer.response_answer
+        == "Use the chain rule when one function is nested inside another."
+    )
+    assert answer.stored_answer != answer.response_answer
+    assert "product rule" in answer.stored_answer
+
+
+def test_query_build_answer_falls_back_when_llm_runtime_returns_none(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _client, settings = build_client(
+        tmp_path / "llm-fallback-runtime",
+        llm_enabled=True,
+        openai_api_key="test-key",
+    )
+    context = RequestContext(
+        role=ActorRole.STUDENT,
+        actor_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-llm-answer-02",
+        idempotency_key=None,
+    )
+    request = query_service.QueryRequest(
+        message="When do I use the chain rule?",
+        attachment_source_ids=[],
+        allow_raw_source_fallback=False,
+        response_mode="teaching",
+    )
+
+    monkeypatch.setattr(
+        query_service,
+        "generate_grounded_answer",
+        lambda _settings, *, context: None,
+    )
+
+    answer = query_service._build_answer(
+        settings,
+        request=request,
+        context=context,
+        top_wiki_match=None,
+        raw_source_hits=[],
+        answer_basis=["formal_wiki"],
+        learning_note=None,
+        session_matches=[],
+    )
+
+    assert answer.response_answer == answer.stored_answer
+    assert "Use the chain rule when one function is nested inside another" in answer.response_answer
+
+
+def test_query_builds_minimized_llm_evidence_blocks(tmp_path: Path) -> None:
+    _client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+    context = RequestContext(
+        role=ActorRole.STUDENT,
+        actor_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-query-llm-evidence-01",
+        idempotency_key=None,
+    )
+    request = query_service.QueryRequest(
+        message=(
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        attachment_source_ids=[],
+        allow_raw_source_fallback=True,
+        response_mode="teaching",
+    )
+    tokens = query_service._tokenize(request.message)
+    recent_sessions = list_recent_sessions(
+        settings,
+        user_id=context.actor_id,
+        class_id=context.class_id,
+        course_id=context.course_id,
+        limit=5,
+    )
+    wiki_matches = query_service.search_wiki_pages(
+        settings,
+        role=context.role,
+        course_id=context.course_id,
+        class_id=context.class_id,
+        requested_domain=context.domain,
+        message=request.message,
+        limit=5,
+    )
+    raw_source_hits = query_service._collect_raw_source_hits(
+        settings,
+        context=context,
+        request=request,
+        tokens=tokens,
+        recent_sessions=recent_sessions,
+        top_wiki_match=wiki_matches[0] if wiki_matches else None,
+    )
+    learning_note = get_learning_note(
+        settings,
+        student_id=context.actor_id,
+        course_id=context.course_id,
+        class_id=context.class_id,
+    )
+
+    evidence_blocks = query_service._build_llm_evidence_blocks(
+        context=context,
+        answer_basis=[
+            "formal_wiki",
+            "session_context",
+            "learning_context",
+            "raw_source_fallback",
+        ],
+        top_wiki_match=wiki_matches[0] if wiki_matches else None,
+        raw_source_hits=raw_source_hits,
+        session_matches=recent_sessions,
+        learning_note=learning_note,
+    )
+
+    wiki_block = next(block for block in evidence_blocks if block.label == "formal_wiki")
+    assert all("Path:" not in line for line in wiki_block.lines)
+    assert all("Source refs:" not in line for line in wiki_block.lines)
+    assert all(line.startswith(("Title: ", "Summary: ")) for line in wiki_block.lines)
+    assert "raw_source_metadata" not in {block.label for block in evidence_blocks}
+    assert all(line.startswith("- Prior topic:") for line in next(
+        block for block in evidence_blocks if block.label == "session_context_summary"
+    ).lines)
+    learning_block = next(
+        (block for block in evidence_blocks if block.label == "learning_context"),
+        None,
+    )
+    if learning_block is not None:
+        assert all(
+            line.startswith(("Summary: ", "Gaps: ", "Next actions: "))
+            for line in learning_block.lines
+        )
+
+    instructor_context = RequestContext(
+        role=ActorRole.INSTRUCTOR,
+        actor_id="ins-prof-lee",
+        course_id=context.course_id,
+        class_id=context.class_id,
+        domain=context.domain,
+        request_id="req-query-llm-evidence-02",
+        idempotency_key=None,
+    )
+    instructor_blocks = query_service._build_llm_evidence_blocks(
+        context=instructor_context,
+        answer_basis=[
+            "formal_wiki",
+            "session_context",
+            "learning_context",
+            "raw_source_fallback",
+        ],
+        top_wiki_match=wiki_matches[0] if wiki_matches else None,
+        raw_source_hits=raw_source_hits,
+        session_matches=recent_sessions,
+        learning_note=learning_note,
+    )
+    raw_block = next(
+        block for block in instructor_blocks if block.label == "raw_source_metadata"
+    )
+    assert all(line.startswith("Reference ") and " type: " in line for line in raw_block.lines)
+    assert all("src-" not in line for line in raw_block.lines)
+    assert all("\\" not in line and "/" not in line for line in raw_block.lines)
+    assert all("submitted by" not in line.lower() for line in raw_block.lines)
+
+    gated_blocks = query_service._build_llm_evidence_blocks(
+        context=context,
+        answer_basis=["formal_wiki"],
+        top_wiki_match=wiki_matches[0] if wiki_matches else None,
+        raw_source_hits=raw_source_hits,
+        session_matches=recent_sessions,
+        learning_note=learning_note,
+    )
+    assert [block.label for block in gated_blocks] == ["formal_wiki"]
+
+
+def test_query_session_context_evidence_ignores_storage_tags(tmp_path: Path) -> None:
+    _client, _settings = build_client(tmp_path)
+    session = SessionRecord(
+        session_id="ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-llm-tags",
+        role=ActorRole.STUDENT,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        question="When is the chain rule different from the product rule in nested functions?",
+        answer="Use the outer derivative first, then multiply by the inner derivative.",
+        created_at=_parse_timestamp("2026-04-11T02:03:04Z"),
+        tags=["academic", "misconception", "faq", "chain-rule"],
+        source_refs=[],
+        retrieval_refs=[],
+        candidate_refs=[],
+        learning_note_refs=[],
+        replay_intent=None,
+    )
+
+    block = query_service._build_session_evidence_block([session])
+
+    assert block == query_service.EvidenceBlock(
+        label="session_context_summary",
+        lines=(
+            "- Prior topic: When is the chain rule different from the product rule in "
+            "nested functions",
+        ),
     )
 
 
@@ -2293,6 +3059,91 @@ def test_query_endpoint_recovers_when_identical_idempotent_request_loses_save_ra
         "learning_note",
         "candidate",
     ]
+    assert race_state["save_calls"] == 1
+
+
+def test_query_endpoint_race_loser_returns_durable_answer_even_when_llm_rewrites(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+
+    original_save_session = query_service.save_session
+    original_load_existing_query_session = query_service._load_existing_query_session
+    race_state = {"load_calls": 0, "save_calls": 0}
+
+    def fake_generate_grounded_answer(*args, **kwargs):
+        return "LLM decorated explanation that must not survive race recovery."
+
+    def racey_load_existing_query_session(current_settings, *, session_id: str):
+        race_state["load_calls"] += 1
+        if race_state["load_calls"] == 1:
+            return None
+        return original_load_existing_query_session(current_settings, session_id=session_id)
+
+    def racey_save_session(
+        current_settings,
+        session_record,
+        *,
+        request_id=None,
+        idempotency_key=None,
+        details=None,
+        raise_on_existing=False,
+    ):
+        race_state["save_calls"] += 1
+        if race_state["save_calls"] == 1:
+            original_save_session(
+                current_settings,
+                session_record,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                details=details,
+                raise_on_existing=False,
+            )
+        return original_save_session(
+            current_settings,
+            session_record,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            details=details,
+            raise_on_existing=raise_on_existing,
+        )
+
+    monkeypatch.setattr(query_service, "generate_grounded_answer", fake_generate_grounded_answer)
+    monkeypatch.setattr(
+        query_service,
+        "_load_existing_query_session",
+        racey_load_existing_query_session,
+    )
+    monkeypatch.setattr(query_service, "save_session", racey_save_session)
+
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "X-Request-Id": "req-query-identical-idem-race-llm-01",
+        "Idempotency-Key": "idem-query-identical-race-llm-01",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "teaching",
+    }
+
+    response = client.post("/api/v1/query/respond", headers=headers, json=body)
+
+    assert response.status_code == 200
+    session_id = response.json()["data"]["session_id"]
+    stored_session = get_session(settings, session_id)
+    assert response.json()["data"]["answer"] == stored_session.answer
+    assert response.json()["data"]["answer"] != fake_generate_grounded_answer()
     assert race_state["save_calls"] == 1
 
 
@@ -3171,6 +4022,18 @@ def test_query_endpoint_completes_pending_existing_session_before_replay(
         headers={**headers, "X-Request-Id": "req-query-pending-existing-session-01"},
         json=body,
     )
+    pending_sessions = list_recent_sessions(
+        settings,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        limit=5,
+    )
+    pending_mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.idempotency_key == headers["Idempotency-Key"]
+    ]
     second = client.post(
         "/api/v1/query/respond",
         headers={**headers, "X-Request-Id": "req-query-pending-existing-session-02"},
@@ -3178,6 +4041,15 @@ def test_query_endpoint_completes_pending_existing_session_before_replay(
     )
 
     assert first.status_code == 500
+    assert len(pending_mutation_requests) == 1
+    pending_session = get_session(settings, pending_mutation_requests[0].entity_id)
+    assert pending_session.session_id in {session.session_id for session in pending_sessions}
+    assert isinstance(pending_session.replay_intent, dict)
+    assert [item["kind"] for item in pending_session.replay_intent["writeback_plan"]] == [
+        "session",
+        "learning_note",
+        "candidate",
+    ]
     assert second.status_code == 200
     assert [item["kind"] for item in second.json()["data"]["writeback_plan"]] == [
         "session",
@@ -3263,6 +4135,18 @@ def test_query_endpoint_recovers_when_session_saved_audit_is_missing(
         headers={**headers, "X-Request-Id": "req-query-missing-session-audit-01"},
         json=body,
     )
+    pending_sessions = list_recent_sessions(
+        settings,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        limit=5,
+    )
+    pending_mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.idempotency_key == headers["Idempotency-Key"]
+    ]
     second = client.post(
         "/api/v1/query/respond",
         headers={**headers, "X-Request-Id": "req-query-missing-session-audit-02"},
@@ -3270,6 +4154,15 @@ def test_query_endpoint_recovers_when_session_saved_audit_is_missing(
     )
 
     assert first.status_code == 500
+    assert len(pending_mutation_requests) == 1
+    pending_session = get_session(settings, pending_mutation_requests[0].entity_id)
+    assert pending_session.session_id in {session.session_id for session in pending_sessions}
+    assert isinstance(pending_session.replay_intent, dict)
+    assert [item["kind"] for item in pending_session.replay_intent["writeback_plan"]] == [
+        "session",
+        "learning_note",
+        "candidate",
+    ]
     assert second.status_code == 200
     assert [item["kind"] for item in second.json()["data"]["writeback_plan"]] == [
         "session",
