@@ -1,7 +1,9 @@
+import math
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 API_ROOT = Path(__file__).resolve().parents[3]
@@ -14,6 +16,13 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_v1_prefix: str = "/api/v1"
     data_root: Path = DATA_ROOT
+    llm_enabled: bool = False
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-5.4"
+    openai_reasoning_effort: Literal["minimal", "low", "medium", "high"] = "low"
+    openai_text_verbosity: Literal["low", "medium", "high"] = "medium"
+    openai_timeout_seconds: float = 30.0
+    openai_max_output_tokens: int = 450
     meta_root: Path | None = None
     sessions_db_path: Path | None = None
     audit_db_path: Path | None = None
@@ -28,6 +37,41 @@ class Settings(BaseSettings):
             return path
         return (API_ROOT / path).resolve()
 
+    @field_validator("openai_api_key", mode="before")
+    @classmethod
+    def normalize_openai_api_key(cls, value: SecretStr | str | None) -> SecretStr | None:
+        if value is None:
+            return None
+        raw_value = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
+        normalized = raw_value.strip()
+        if not normalized:
+            return None
+        return SecretStr(normalized)
+
+    @field_validator("openai_model", mode="before")
+    @classmethod
+    def normalize_openai_model(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("openai_model must not be blank")
+        return normalized
+
+    @field_validator("openai_timeout_seconds")
+    @classmethod
+    def validate_openai_timeout_seconds(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("openai_timeout_seconds must be finite")
+        if value <= 0 or value > 300:
+            raise ValueError("openai_timeout_seconds must be between 0 and 300")
+        return value
+
+    @field_validator("openai_max_output_tokens")
+    @classmethod
+    def validate_openai_max_output_tokens(cls, value: int) -> int:
+        if value <= 0 or value > 4000:
+            raise ValueError("openai_max_output_tokens must be between 1 and 4000")
+        return value
+
     @model_validator(mode="after")
     def derive_storage_paths(self) -> "Settings":
         if self.meta_root is None:
@@ -36,6 +80,8 @@ class Settings(BaseSettings):
             self.sessions_db_path = self.meta_root / "sessions.db"
         if self.audit_db_path is None:
             self.audit_db_path = self.meta_root / "audit.db"
+        if self.llm_enabled and not self.openai_api_key:
+            raise ValueError("openai_api_key is required when llm_enabled=true")
         return self
 
     model_config = SettingsConfigDict(
