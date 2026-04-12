@@ -14,7 +14,7 @@ from knowloop_api.core.contracts import (
     validate_class_id,
     validate_course_id,
 )
-from knowloop_api.db.audit import create_audit_event
+from knowloop_api.db.audit import create_audit_event, list_audit_events
 from knowloop_api.services.candidates import SourceRef
 
 
@@ -32,6 +32,7 @@ class SessionRecord(BaseModel):
     retrieval_refs: list[dict[str, object]] = Field(default_factory=list)
     candidate_refs: list[str] = Field(default_factory=list)
     learning_note_refs: list[str] = Field(default_factory=list)
+    replay_intent: dict[str, object] | None = None
 
 
 class SessionNotFoundError(FileNotFoundError):
@@ -43,6 +44,9 @@ def save_session(
     session: SessionRecord,
     *,
     request_id: str | None = None,
+    idempotency_key: str | None = None,
+    details: dict[str, object] | None = None,
+    raise_on_existing: bool = False,
 ) -> SessionRecord:
     validate_actor_id(session.user_id, actor_role=session.role)
     validate_course_id(session.course_id)
@@ -64,7 +68,8 @@ def save_session(
                 source_refs_json,
                 retrieval_refs_json,
                 candidate_refs_json,
-                learning_note_refs_json
+                learning_note_refs_json,
+                replay_intent_json
             FROM sessions
             WHERE session_id = ?
             """,
@@ -72,53 +77,109 @@ def save_session(
         ).fetchone()
         if existing_row is not None:
             existing = _session_from_row(existing_row)
-            if existing != session:
+            if existing != session or raise_on_existing:
                 raise FileExistsError(f"session already exists: {session.session_id}")
+            _ensure_session_saved_audit(
+                settings,
+                session=session,
+                request_id=request_id,
+                idempotency_key=idempotency_key,
+                details=details,
+            )
             return existing
 
-        connection.execute(
-            """
-            INSERT INTO sessions (
-                session_id,
-                role,
-                user_id,
-                class_id,
-                course_id,
-                question,
-                answer,
-                created_at,
-                tags_json,
-                source_refs_json,
-                retrieval_refs_json,
-                candidate_refs_json,
-                learning_note_refs_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session.session_id,
-                session.role.value,
-                session.user_id,
-                session.class_id,
-                session.course_id,
-                session.question,
-                session.answer,
-                _serialize_timestamp(session.created_at),
-                json.dumps(session.tags, ensure_ascii=False),
-                json.dumps(
-                    [
-                        source_ref.model_dump(mode="json", exclude_none=True)
-                        for source_ref in session.source_refs
-                    ],
-                    ensure_ascii=False,
+        try:
+            connection.execute(
+                """
+                INSERT INTO sessions (
+                    session_id,
+                    role,
+                    user_id,
+                    class_id,
+                    course_id,
+                    question,
+                    answer,
+                    created_at,
+                    tags_json,
+                    source_refs_json,
+                    retrieval_refs_json,
+                    candidate_refs_json,
+                    learning_note_refs_json,
+                    replay_intent_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session.session_id,
+                    session.role.value,
+                    session.user_id,
+                    session.class_id,
+                    session.course_id,
+                    session.question,
+                    session.answer,
+                    _serialize_timestamp(session.created_at),
+                    json.dumps(session.tags, ensure_ascii=False),
+                    json.dumps(
+                        [
+                            source_ref.model_dump(mode="json", exclude_none=True)
+                            for source_ref in session.source_refs
+                        ],
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(session.retrieval_refs, ensure_ascii=False),
+                    json.dumps(session.candidate_refs, ensure_ascii=False),
+                    json.dumps(session.learning_note_refs, ensure_ascii=False),
+                    json.dumps(session.replay_intent, ensure_ascii=False),
                 ),
-                json.dumps(session.retrieval_refs, ensure_ascii=False),
-                json.dumps(session.candidate_refs, ensure_ascii=False),
-                json.dumps(session.learning_note_refs, ensure_ascii=False),
-            ),
-        )
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = get_session(settings, session.session_id)
+            if existing == session and not raise_on_existing:
+                _ensure_session_saved_audit(
+                    settings,
+                    session=session,
+                    request_id=request_id,
+                    idempotency_key=idempotency_key,
+                    details=details,
+                )
+                return existing
+            raise FileExistsError(f"session already exists: {session.session_id}") from exc
         connection.commit()
 
     _write_session_export(settings, session)
+    _ensure_session_saved_audit(
+        settings,
+        session=session,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        details=details,
+    )
+    return session
+
+
+def _ensure_session_saved_audit(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    request_id: str | None,
+    idempotency_key: str | None,
+    details: dict[str, object] | None,
+) -> None:
+    existing_events = list_audit_events(
+        settings,
+        entity_type="session",
+        entity_id=session.session_id,
+        action="session_saved",
+    )
+
+    if idempotency_key is not None:
+        if any(event.idempotency_key == idempotency_key for event in existing_events):
+            return
+    elif request_id is not None:
+        if any(event.request_id == request_id for event in existing_events):
+            return
+    elif existing_events:
+        return
+
     create_audit_event(
         settings,
         entity_type="session",
@@ -126,10 +187,11 @@ def save_session(
         action="session_saved",
         actor_role=session.role.value,
         actor_id=session.user_id,
+        details=details,
         request_id=request_id,
+        idempotency_key=idempotency_key,
         created_at=session.created_at,
     )
-    return session
 
 
 def get_session(settings: Settings, session_id: str) -> SessionRecord:
@@ -149,7 +211,8 @@ def get_session(settings: Settings, session_id: str) -> SessionRecord:
                 source_refs_json,
                 retrieval_refs_json,
                 candidate_refs_json,
-                learning_note_refs_json
+                learning_note_refs_json,
+                replay_intent_json
             FROM sessions
             WHERE session_id = ?
             """,
@@ -185,7 +248,8 @@ def list_recent_sessions(
                 source_refs_json,
                 retrieval_refs_json,
                 candidate_refs_json,
-                learning_note_refs_json
+                learning_note_refs_json,
+                replay_intent_json
             FROM sessions
             WHERE user_id = ?
               AND class_id = ?
@@ -230,7 +294,8 @@ def list_sessions_for_class(
                 source_refs_json,
                 retrieval_refs_json,
                 candidate_refs_json,
-                learning_note_refs_json
+                learning_note_refs_json,
+                replay_intent_json
             FROM sessions
             WHERE class_id = ?
               AND course_id = ?
@@ -272,6 +337,33 @@ def update_session_artifact_refs(
             (
                 json.dumps(updated_session.candidate_refs, ensure_ascii=False),
                 json.dumps(updated_session.learning_note_refs, ensure_ascii=False),
+                session_id,
+            ),
+        )
+        connection.commit()
+
+    _write_session_export(settings, updated_session)
+    return updated_session
+
+
+def update_session_replay_intent(
+    settings: Settings,
+    *,
+    session_id: str,
+    replay_intent: dict[str, object] | None,
+) -> SessionRecord:
+    session = get_session(settings, session_id)
+    updated_session = session.model_copy(update={"replay_intent": replay_intent})
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        connection.execute(
+            """
+            UPDATE sessions
+            SET replay_intent_json = ?
+            WHERE session_id = ?
+            """,
+            (
+                json.dumps(replay_intent, ensure_ascii=False),
                 session_id,
             ),
         )
@@ -328,6 +420,9 @@ def _session_from_row(row: tuple[object, ...]) -> SessionRecord:
         retrieval_refs=json.loads(str(row[10])),
         candidate_refs=json.loads(str(row[11])),
         learning_note_refs=json.loads(str(row[12])),
+        replay_intent=(
+            json.loads(str(row[13])) if row[13] is not None else None
+        ),
     )
 
 

@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -12,13 +15,23 @@ from pydantic import BaseModel, Field, field_validator
 from knowloop_api.api.context import RequestContext
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain, SourceType
-from knowloop_api.db.audit import create_audit_event
+from knowloop_api.db.audit import (
+    begin_mutation_request,
+    create_audit_event,
+    get_mutation_request,
+    list_audit_events,
+    mark_mutation_request_applied,
+    store_mutation_request_response_payload,
+    touch_mutation_request,
+)
 from knowloop_api.db.manifest import RawSourceRecord, list_source_records
 from knowloop_api.services.candidates import (
     CandidateItem,
     CandidateKind,
+    CandidateNotFoundError,
     CandidateStatus,
     SourceRef,
+    get_candidate,
     list_candidates,
     upsert_candidate_signal,
 )
@@ -37,6 +50,7 @@ from knowloop_api.services.sessions import (
     list_sessions_for_class,
     save_session,
     update_session_artifact_refs,
+    update_session_replay_intent,
 )
 from knowloop_api.services.sources import (
     SourceNotFoundError,
@@ -146,7 +160,7 @@ class QueryRequest(BaseModel):
                 continue
             normalized.append(candidate)
             seen.add(candidate)
-        return normalized
+        return sorted(normalized)
 
 
 class RetrievalRef(BaseModel):
@@ -173,6 +187,91 @@ class QueryResponse(BaseModel):
     created_at: datetime
 
 
+class LearningReplayProposal(BaseModel):
+    learning_note_id: str
+    student_id: str
+    course_id: str
+    class_id: str
+    concepts: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    flashcards: list[dict[str, str]] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
+    source_refs: list[SourceRef] = Field(default_factory=list)
+    session_refs: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    @classmethod
+    def from_learning_note(cls, note: LearningNote) -> "LearningReplayProposal":
+        return cls.model_validate(note.model_dump(mode="json", exclude_none=True))
+
+    def to_learning_note(self) -> LearningNote:
+        return LearningNote(
+            learning_note_id=self.learning_note_id,
+            student_id=self.student_id,
+            course_id=self.course_id,
+            class_id=self.class_id,
+            concepts=list(self.concepts),
+            gaps=list(self.gaps),
+            flashcards=[dict(item) for item in self.flashcards],
+            next_actions=list(self.next_actions),
+            source_refs=[SourceRef.model_validate(item) for item in self.source_refs],
+            session_refs=list(self.session_refs),
+            summary=self.summary,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+        )
+
+
+class CandidateReplayProposal(BaseModel):
+    candidate_id: str
+    kind: CandidateKind
+    status: CandidateStatus
+    title: str
+    summary: str
+    class_id: str
+    course_id: str
+    confidence: float = Field(ge=0, le=1)
+    tags: list[str] = Field(default_factory=list)
+    source_refs: list[SourceRef] = Field(min_length=1)
+    session_refs: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    related_page_id: str | None = None
+
+    @classmethod
+    def from_candidate_item(cls, candidate: CandidateItem) -> "CandidateReplayProposal":
+        return cls.model_validate(candidate.model_dump(mode="json", exclude_none=True))
+
+    def to_candidate_item(self) -> CandidateItem:
+        return CandidateItem(
+            candidate_id=self.candidate_id,
+            kind=self.kind,
+            status=self.status,
+            title=self.title,
+            summary=self.summary,
+            class_id=self.class_id,
+            course_id=self.course_id,
+            confidence=self.confidence,
+            tags=list(self.tags),
+            source_refs=[SourceRef.model_validate(item) for item in self.source_refs],
+            session_refs=list(self.session_refs),
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+            related_page_id=self.related_page_id,
+        )
+
+
+class QueryReplayIntent(BaseModel):
+    contract_version: Literal[1] = 1
+    answer_basis: list[str]
+    idempotency_key: str | None = None
+    learning_proposal: LearningReplayProposal | None = None
+    candidate_proposal: CandidateReplayProposal | None = None
+    writeback_plan: list[WritebackPlanItem] = Field(default_factory=list)
+
+
 class QueryStateError(ValueError):
     """Raised when the query contract cannot be fulfilled safely."""
 
@@ -189,6 +288,21 @@ class QueryReplayConflictError(QueryStateError):
     """Raised when an idempotent query mutation is replayed with a different payload."""
 
 
+class QueryStorageBusyError(QueryStateError):
+    """Raised when replay recovery cannot safely complete in the current request."""
+
+
+QUERY_MUTATION_ACTION = "respond"
+SESSION_WRITEBACK_EXPLANATION = "Stored the current question and answer in the session history."
+LEARNING_WRITEBACK_EXPLANATION = (
+    "Updated the student learning layer with concepts, gaps, and next actions."
+)
+CANDIDATE_WRITEBACK_EXPLANATION = "Captured a structured candidate for later review."
+QUERY_REPLAY_PENDING_GRACE_SECONDS = 1.0
+QUERY_REPLAY_POLL_INTERVAL_SECONDS = 0.05
+QUERY_REPLAY_HEARTBEAT_INTERVAL_SECONDS = 0.25
+
+
 class RawSourceHit(BaseModel):
     source: RawSourceRecord
     content: str
@@ -201,316 +315,677 @@ def respond_to_query(
     *,
     context: RequestContext,
 ) -> QueryResponse:
-    requested_at = datetime.now(UTC).replace(microsecond=0)
+    requested_at = datetime.now(UTC)
+    request_fingerprint = _build_query_request_fingerprint(context=context, request=request)
     session_id = _build_query_session_id(
         context=context,
-        request=request,
+        request_fingerprint=request_fingerprint,
         created_at=requested_at,
     )
+    mutation_request = _load_existing_query_mutation_request(
+        settings,
+        context=context,
+        session_id=session_id,
+        request_fingerprint=request_fingerprint,
+    )
+    if mutation_request is not None:
+        replayed_response = _load_replayed_query_response(
+            mutation_request,
+            settings=settings,
+            session_id=session_id,
+            request_id=context.request_id,
+            idempotency_key=context.idempotency_key,
+        )
+        if replayed_response is not None:
+            return replayed_response
     existing_session = _load_existing_query_session(settings, session_id=session_id)
     created_at = (
         existing_session.created_at
         if existing_session is not None
         else requested_at
     )
-    tokens = _tokenize(request.message)
-    recent_sessions = list_recent_sessions(
-        settings,
-        user_id=context.actor_id,
-        class_id=context.class_id,
-        course_id=context.course_id,
-        limit=5,
-    )
-    recent_sessions = [
-        session for session in recent_sessions if session.session_id != session_id
-    ]
-    session_matches = [
-        session for session in recent_sessions if _score_session(session, tokens=tokens) >= 2
-    ]
-    if context.role is ActorRole.STUDENT:
-        class_sessions = []
-    elif context.role in {ActorRole.INSTRUCTOR, ActorRole.VALIDATOR}:
-        class_sessions = list_sessions_for_class(
+    session_saved_audit = (
+        _get_session_saved_audit(
             settings,
-            class_id=context.class_id,
-            course_id=context.course_id,
-            role=ActorRole.STUDENT,
-            limit=100,
+            session_id=existing_session.session_id,
+            idempotency_key=context.idempotency_key,
         )
-    else:
-        class_sessions = list_sessions_for_class(
-            settings,
-            class_id=context.class_id,
-            course_id=context.course_id,
-            role=context.role,
-            limit=100,
-        )
-    wiki_matches = search_wiki_pages(
-        settings,
-        role=context.role,
-        course_id=context.course_id,
-        class_id=context.class_id,
-        requested_domain=context.domain,
-        message=request.message,
-        limit=5,
-    )
-    top_wiki_match = wiki_matches[0] if wiki_matches else None
-    raw_source_hits = _collect_raw_source_hits(
-        settings,
-        context=context,
-        request=request,
-        tokens=tokens,
-        recent_sessions=recent_sessions,
-        top_wiki_match=top_wiki_match,
-    )
-
-    if top_wiki_match is None and not request.allow_raw_source_fallback:
-        raise InsufficientVerifiedContextError(
-            "The current verified wiki does not cover this query, "
-            "and raw source fallback is disabled."
-        )
-    if top_wiki_match is None and request.allow_raw_source_fallback and not raw_source_hits:
-        raise InsufficientVerifiedContextError(
-            "Raw source fallback was requested, but no matching source material was found in scope."
-        )
-
-    existing_learning_note = (
-        get_learning_note(
-            settings,
-            student_id=context.actor_id,
-            course_id=context.course_id,
-            class_id=context.class_id,
-        )
-        if context.role is ActorRole.STUDENT
+        if existing_session is not None
         else None
     )
-    answer_learning_note = _resolve_answer_learning_note(
-        learning_note=existing_learning_note,
-        current_session_id=session_id,
+    recovered_learning_proposal, recovered_candidate_proposal = _recover_saved_writeback_intent(
+        existing_session,
+        session_saved_audit=session_saved_audit,
+        idempotency_key=context.idempotency_key,
     )
-    candidate_kind = _infer_candidate_kind(
-        context=context,
-        request=request,
-        top_wiki_match=top_wiki_match,
-        raw_source_hits=raw_source_hits,
-    )
-    answer_basis = _build_answer_basis(
-        context=context,
-        request=request,
-        session_matches=session_matches,
-        top_wiki_match=top_wiki_match,
-        raw_source_hits=raw_source_hits,
-        learning_note=answer_learning_note,
-        candidate_kind=candidate_kind,
-    )
-    answer = _build_answer(
-        settings,
-        request=request,
-        context=context,
-        top_wiki_match=top_wiki_match,
-        raw_source_hits=raw_source_hits,
-        answer_basis=answer_basis,
-        learning_note=answer_learning_note,
-    )
-    retrieval_refs = _build_retrieval_refs(
-        settings,
-        context=context,
-        session_matches=session_matches,
-        top_wiki_match=top_wiki_match,
-        raw_source_hits=raw_source_hits,
-        answer_basis=answer_basis,
-        learning_note=answer_learning_note,
-    )
+    recovered_writeback_items: dict[str, WritebackPlanItem] = {}
+    replay_recovery_writeback = False
 
-    learning_proposal = _build_learning_proposal(
-        settings,
-        context=context,
-        request=request,
-        top_wiki_match=top_wiki_match,
-        existing_learning_note=existing_learning_note,
-        session_id=session_id,
-        created_at=created_at,
-        answer_basis=answer_basis,
-    )
-    candidate_proposal = _build_candidate_proposal(
-        settings,
-        context=context,
-        request=request,
-        top_wiki_match=top_wiki_match,
-        raw_source_hits=raw_source_hits,
-        class_sessions=class_sessions,
-        session_matches=session_matches,
-        session_id=session_id,
-        created_at=created_at,
-        candidate_kind=candidate_kind,
-    )
-
-    session_record = SessionRecord(
-        session_id=session_id,
-        role=context.role,
-        user_id=context.actor_id,
-        class_id=context.class_id,
-        course_id=context.course_id,
-        question=request.message,
-        answer=answer,
-        created_at=created_at,
-        tags=_build_session_tags(candidate_kind, top_wiki_match),
-        source_refs=_collect_primary_source_refs(
+    if mutation_request is not None and existing_session is not None:
+        replayed_response = _wait_for_stored_query_response(
             settings,
+            session_id=existing_session.session_id,
+            request_id=context.request_id,
+            idempotency_key=context.idempotency_key,
+        )
+        if replayed_response is not None:
+            return replayed_response
+        replayed_response = _recover_query_response_from_existing_session(
+            settings,
+            session=existing_session,
+            idempotency_key=context.idempotency_key,
+        )
+        if _recovered_query_response_is_complete(
+            replayed_response,
+            session=existing_session,
+            learning_proposal=recovered_learning_proposal,
+            candidate_proposal=recovered_candidate_proposal,
+        ):
+            if not _replay_recovery_targets_are_frozen(
+                replayed_response,
+                learning_proposal=recovered_learning_proposal,
+                candidate_proposal=recovered_candidate_proposal,
+            ):
+                raise QueryStorageBusyError(
+                    "query replay recovery requires frozen write-back targets before retry"
+                )
+            existing_session = _attempt_replay_artifact_ref_repair(
+                settings,
+                session=existing_session,
+                response=replayed_response,
+                request_id=context.request_id,
+                idempotency_key=context.idempotency_key,
+            )
+            replayed_response = _recover_query_response_from_existing_session(
+                settings,
+                session=existing_session,
+                idempotency_key=context.idempotency_key,
+            )
+            if not _recovered_query_response_is_complete(
+                replayed_response,
+                session=existing_session,
+                learning_proposal=recovered_learning_proposal,
+                candidate_proposal=recovered_candidate_proposal,
+            ):
+                raise QueryStorageBusyError(
+                    "query replay recovery is still reconciling replay-owned audit state"
+                )
+            answer_basis = replayed_response.answer_basis
+            existing_session = _persist_query_replay_intent(
+                settings,
+                session=existing_session,
+                response=replayed_response,
+                answer_basis=answer_basis,
+                idempotency_key=context.idempotency_key,
+                learning_proposal=recovered_learning_proposal,
+                candidate_proposal=recovered_candidate_proposal,
+            )
+            response_payload = replayed_response.model_dump(mode="json", exclude_none=True)
+            mark_mutation_request_applied(
+                settings,
+                entity_type="query",
+                entity_id=session_id,
+                action=QUERY_MUTATION_ACTION,
+                idempotency_key=context.idempotency_key,
+                updated_at=created_at,
+                response_payload=response_payload,
+            )
+            return replayed_response
+        if not _replay_recovery_targets_are_frozen(
+            replayed_response,
+            learning_proposal=recovered_learning_proposal,
+            candidate_proposal=recovered_candidate_proposal,
+        ):
+            raise QueryStorageBusyError(
+                "query replay recovery requires frozen write-back targets before retry"
+            )
+        replay_recovery_writeback = True
+        answer = existing_session.answer
+        answer_basis = replayed_response.answer_basis
+        retrieval_refs = replayed_response.retrieval_refs
+        learning_proposal = recovered_learning_proposal
+        candidate_proposal = recovered_candidate_proposal
+        session_record = existing_session
+        recovered_writeback_items = {
+            item.kind: item for item in replayed_response.writeback_plan
+        }
+    else:
+        tokens = _tokenize(request.message)
+        recent_sessions = list_recent_sessions(
+            settings,
+            user_id=context.actor_id,
+            class_id=context.class_id,
+            course_id=context.course_id,
+            limit=5,
+        )
+        recent_sessions = [
+            session for session in recent_sessions if session.session_id != session_id
+        ]
+        session_matches = [
+            session for session in recent_sessions if _score_session(session, tokens=tokens) >= 2
+        ]
+        if context.role is ActorRole.STUDENT:
+            class_sessions = []
+        elif context.role in {ActorRole.INSTRUCTOR, ActorRole.VALIDATOR}:
+            class_sessions = list_sessions_for_class(
+                settings,
+                class_id=context.class_id,
+                course_id=context.course_id,
+                role=ActorRole.STUDENT,
+                limit=100,
+            )
+        else:
+            class_sessions = list_sessions_for_class(
+                settings,
+                class_id=context.class_id,
+                course_id=context.course_id,
+                role=context.role,
+                limit=100,
+            )
+        wiki_matches = search_wiki_pages(
+            settings,
+            role=context.role,
+            course_id=context.course_id,
+            class_id=context.class_id,
+            requested_domain=context.domain,
+            message=request.message,
+            limit=5,
+        )
+        top_wiki_match = wiki_matches[0] if wiki_matches else None
+        raw_source_hits = _collect_raw_source_hits(
+            settings,
+            context=context,
+            request=request,
+            tokens=tokens,
+            recent_sessions=recent_sessions,
+            top_wiki_match=top_wiki_match,
+        )
+
+        if top_wiki_match is None and not request.allow_raw_source_fallback:
+            raise InsufficientVerifiedContextError(
+                "The current verified wiki does not cover this query, "
+                "and raw source fallback is disabled."
+            )
+        if top_wiki_match is None and request.allow_raw_source_fallback and not raw_source_hits:
+            raise InsufficientVerifiedContextError(
+                "Raw source fallback was requested, "
+                "but no matching source material was found in scope."
+            )
+
+        existing_learning_note = (
+            get_learning_note(
+                settings,
+                student_id=context.actor_id,
+                course_id=context.course_id,
+                class_id=context.class_id,
+            )
+            if context.role is ActorRole.STUDENT
+            else None
+        )
+        answer_learning_note = _resolve_answer_learning_note(
+            learning_note=existing_learning_note,
+            current_session_id=session_id,
+            existing_session=existing_session,
+        )
+        candidate_kind = _infer_candidate_kind(
+            context=context,
+            request=request,
             top_wiki_match=top_wiki_match,
             raw_source_hits=raw_source_hits,
+        )
+        answer_basis = _build_answer_basis(
+            context=context,
+            request=request,
+            session_matches=session_matches,
+            top_wiki_match=top_wiki_match,
+            raw_source_hits=raw_source_hits,
+            learning_note=answer_learning_note,
             candidate_kind=candidate_kind,
-        ),
-        retrieval_refs=[item.model_dump(mode="json", exclude_none=True) for item in retrieval_refs],
-        candidate_refs=existing_session.candidate_refs if existing_session is not None else [],
-        learning_note_refs=(
-            existing_session.learning_note_refs if existing_session is not None else []
-        ),
-    )
-    if existing_session is not None and not _query_replay_matches(
-        existing_session, candidate_session=session_record
-    ):
-        raise QueryReplayConflictError(
-            "Idempotency-Key was reused for a different query payload within the same scope."
+        )
+        answer = _build_answer(
+            settings,
+            request=request,
+            context=context,
+            top_wiki_match=top_wiki_match,
+            raw_source_hits=raw_source_hits,
+            answer_basis=answer_basis,
+            learning_note=answer_learning_note,
+        )
+        retrieval_refs = _build_retrieval_refs(
+            settings,
+            context=context,
+            session_matches=session_matches,
+            top_wiki_match=top_wiki_match,
+            raw_source_hits=raw_source_hits,
+            answer_basis=answer_basis,
+            learning_note=answer_learning_note,
         )
 
-    try:
-        save_session(settings, session_record, request_id=context.request_id)
-    except FileExistsError as exc:
-        raise QueryReplayConflictError(
-            "The query mutation token was reused for a different payload within the same scope."
-        ) from exc
-
-    writeback_plan = [
-        WritebackPlanItem(
-            kind="session",
-            action="save",
-            status="registered",
-            target_id=session_record.session_id,
-            explanation="Stored the current question and answer in the session history.",
+        learning_proposal = _build_learning_proposal(
+            settings,
+            context=context,
+            request=request,
+            top_wiki_match=top_wiki_match,
+            existing_learning_note=existing_learning_note,
+            session_id=session_id,
+            created_at=created_at,
+            answer_basis=answer_basis,
         )
-    ]
+        candidate_proposal = _build_candidate_proposal(
+            settings,
+            context=context,
+            request=request,
+            top_wiki_match=top_wiki_match,
+            raw_source_hits=raw_source_hits,
+            class_sessions=class_sessions,
+            session_matches=session_matches,
+            session_id=session_id,
+            created_at=created_at,
+            candidate_kind=candidate_kind,
+        )
 
-    should_replay_learning = (
-        existing_session is not None and bool(existing_session.learning_note_refs)
-    )
-    if learning_proposal is not None:
-        learning_status = "updated"
-        stored_learning_note_id: str | None = None
-        if should_replay_learning:
-            stored_learning_note_id = existing_session.learning_note_refs[0]
-        else:
-            try:
-                stored_learning_note = upsert_learning_note(
-                    settings,
-                    learning_proposal,
-                    actor_id="system-query-engine",
-                    request_id=context.request_id,
-                    notes="Generated from query/respond learning write-back.",
-                )
-                stored_learning_note_id = stored_learning_note.learning_note_id
-            except Exception as exc:
-                learning_status = "failed"
-                _record_writeback_failure(
-                    settings,
-                    entity_type="learning_note",
-                    entity_id=learning_proposal.learning_note_id,
-                    action="learning_writeback_failed",
-                    request_id=context.request_id,
-                    notes=str(exc),
-                    created_at=created_at,
-                )
-        writeback_plan.append(
-            WritebackPlanItem(
-                kind="learning_note",
-                action="update",
-                status=learning_status,
-                target_id=learning_proposal.learning_note_id,
-                explanation=(
-                    "Updated the student learning layer with concepts, "
-                    "gaps, and next actions."
-                ),
+        session_record = SessionRecord(
+            session_id=session_id,
+            role=context.role,
+            user_id=context.actor_id,
+            class_id=context.class_id,
+            course_id=context.course_id,
+            question=request.message,
+            answer=answer,
+            created_at=created_at,
+            tags=_build_session_tags(candidate_kind, top_wiki_match),
+            source_refs=_collect_primary_source_refs(
+                settings,
+                top_wiki_match=top_wiki_match,
+                raw_source_hits=raw_source_hits,
+                candidate_kind=candidate_kind,
+            ),
+            retrieval_refs=[
+                item.model_dump(mode="json", exclude_none=True) for item in retrieval_refs
+            ],
+            candidate_refs=[],
+            learning_note_refs=[],
+            replay_intent=_build_query_session_audit_details(
+                answer_basis=answer_basis,
+                idempotency_key=context.idempotency_key,
+                learning_proposal=learning_proposal,
+                candidate_proposal=candidate_proposal,
+            ),
+        )
+
+        if mutation_request is None:
+            mutation_request = _begin_query_mutation_request(
+                settings,
+                context=context,
+                session_id=session_id,
+                request_fingerprint=request_fingerprint,
+                requested_at=requested_at,
             )
-        )
-    else:
-        stored_learning_note_id = None
-
-    should_replay_candidate = existing_session is not None and bool(existing_session.candidate_refs)
-    if candidate_proposal is not None:
-        candidate_status = candidate_proposal.status.value
-        candidate_action = "create"
-        stored_candidate_id: str | None = None
-        if should_replay_candidate:
-            stored_candidate_id = existing_session.candidate_refs[0]
-            candidate_action = "update"
-            candidate_status = "updated"
-        else:
-            try:
-                stored_candidate, candidate_action = upsert_candidate_signal(
-                    settings,
-                    candidate_proposal,
-                    actor_role=ActorRole.SYSTEM,
-                    actor_id="system-query-engine",
+            if mutation_request is not None:
+                replayed_response = _load_replayed_query_response(
+                    mutation_request,
+                    settings=settings,
+                    session_id=session_id,
                     request_id=context.request_id,
                     idempotency_key=context.idempotency_key,
-                    notes="Generated from query/respond candidate write-back.",
                 )
-                stored_candidate_id = stored_candidate.candidate_id
-                candidate_status = (
-                    stored_candidate.status.value if candidate_action == "create" else "updated"
-                )
-            except Exception as exc:
-                candidate_status = "failed"
-                _record_writeback_failure(
-                    settings,
-                    entity_type="candidate",
-                    entity_id=_candidate_failure_entity_id(settings, candidate_proposal),
-                    action="candidate_writeback_failed",
-                    request_id=context.request_id,
-                    notes=str(exc),
-                    created_at=created_at,
-                )
-        writeback_plan.append(
-            WritebackPlanItem(
-                kind="candidate",
-                action=candidate_action,
-                status=candidate_status,
-                target_id=stored_candidate_id or candidate_proposal.candidate_id,
-                explanation="Captured a structured candidate for later review.",
-            )
-        )
-    else:
-        stored_candidate_id = None
+                if replayed_response is not None:
+                    return replayed_response
 
-    if stored_candidate_id is not None or stored_learning_note_id is not None:
         try:
-            update_session_artifact_refs(
+            save_session(
+                settings,
+                session_record,
+                request_id=context.request_id,
+                idempotency_key=context.idempotency_key,
+                details=_build_query_session_audit_details(
+                    answer_basis=answer_basis,
+                    idempotency_key=context.idempotency_key,
+                    learning_proposal=learning_proposal,
+                    candidate_proposal=candidate_proposal,
+                ),
+                raise_on_existing=True,
+            )
+            if mutation_request is not None:
+                _touch_query_mutation_request(
+                    settings,
+                    session_id=session_record.session_id,
+                    idempotency_key=context.idempotency_key,
+                )
+        except FileExistsError as exc:
+            concurrent_session = _load_existing_query_session(
                 settings,
                 session_id=session_record.session_id,
-                candidate_refs=[stored_candidate_id] if stored_candidate_id is not None else [],
-                learning_note_refs=(
-                    [stored_learning_note_id] if stored_learning_note_id is not None else []
-                ),
             )
-        except Exception as exc:
-            _record_writeback_failure(
+            if mutation_request is not None and concurrent_session is not None:
+                replayed_response = _wait_for_stored_query_response(
+                    settings,
+                    session_id=session_record.session_id,
+                    request_id=context.request_id,
+                    idempotency_key=context.idempotency_key,
+                )
+                if replayed_response is not None:
+                    return replayed_response
+                concurrent_session_saved_audit = _get_session_saved_audit(
+                    settings,
+                    session_id=concurrent_session.session_id,
+                    idempotency_key=context.idempotency_key,
+                )
+                concurrent_learning_proposal, concurrent_candidate_proposal = (
+                    _recover_saved_writeback_intent(
+                        concurrent_session,
+                        session_saved_audit=concurrent_session_saved_audit,
+                        idempotency_key=context.idempotency_key,
+                    )
+                )
+                concurrent_replayed_response = _recover_query_response_from_existing_session(
+                    settings,
+                    session=concurrent_session,
+                    idempotency_key=context.idempotency_key,
+                )
+                if _recovered_query_response_is_complete(
+                    concurrent_replayed_response,
+                    session=concurrent_session,
+                    learning_proposal=concurrent_learning_proposal,
+                    candidate_proposal=concurrent_candidate_proposal,
+                ):
+                    if not _replay_recovery_targets_are_frozen(
+                        concurrent_replayed_response,
+                        learning_proposal=concurrent_learning_proposal,
+                        candidate_proposal=concurrent_candidate_proposal,
+                    ):
+                        raise QueryStorageBusyError(
+                            "query replay recovery requires frozen write-back targets before retry"
+                        ) from exc
+                    concurrent_session = _attempt_replay_artifact_ref_repair(
+                        settings,
+                        session=concurrent_session,
+                        response=concurrent_replayed_response,
+                        request_id=context.request_id,
+                        idempotency_key=context.idempotency_key,
+                    )
+                    concurrent_replayed_response = _recover_query_response_from_existing_session(
+                        settings,
+                        session=concurrent_session,
+                        idempotency_key=context.idempotency_key,
+                    )
+                    if not _recovered_query_response_is_complete(
+                        concurrent_replayed_response,
+                        session=concurrent_session,
+                        learning_proposal=concurrent_learning_proposal,
+                        candidate_proposal=concurrent_candidate_proposal,
+                    ):
+                        raise QueryStorageBusyError(
+                            "query replay recovery is still reconciling replay-owned audit state"
+                        ) from exc
+                    concurrent_session = _persist_query_replay_intent(
+                        settings,
+                        session=concurrent_session,
+                        response=concurrent_replayed_response,
+                        answer_basis=concurrent_replayed_response.answer_basis,
+                        idempotency_key=context.idempotency_key,
+                        learning_proposal=concurrent_learning_proposal,
+                        candidate_proposal=concurrent_candidate_proposal,
+                    )
+                    response_payload = concurrent_replayed_response.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                    mark_mutation_request_applied(
+                        settings,
+                        entity_type="query",
+                        entity_id=concurrent_session.session_id,
+                        action=QUERY_MUTATION_ACTION,
+                        idempotency_key=context.idempotency_key,
+                        updated_at=concurrent_session.created_at,
+                        response_payload=response_payload,
+                    )
+                    return concurrent_replayed_response
+                if not _replay_recovery_targets_are_frozen(
+                    concurrent_replayed_response,
+                    learning_proposal=concurrent_learning_proposal,
+                    candidate_proposal=concurrent_candidate_proposal,
+                ):
+                    raise QueryStorageBusyError(
+                        "query replay recovery requires frozen write-back targets before retry"
+                    ) from exc
+                session_record = concurrent_session
+                created_at = concurrent_session.created_at
+                answer = concurrent_session.answer
+                answer_basis = concurrent_replayed_response.answer_basis
+                retrieval_refs = [
+                    RetrievalRef.model_validate(item) for item in concurrent_session.retrieval_refs
+                ]
+                if concurrent_learning_proposal is not None:
+                    learning_proposal = concurrent_learning_proposal
+                if concurrent_candidate_proposal is not None:
+                    candidate_proposal = concurrent_candidate_proposal
+                recovered_writeback_items = {
+                    item.kind: item for item in concurrent_replayed_response.writeback_plan
+                }
+                replay_recovery_writeback = True
+            else:
+                raise QueryStorageBusyError(
+                    "query replay recovery is still reconciling prior storage work"
+                ) from exc
+    with _mutation_request_heartbeat(
+        settings,
+        session_id=session_record.session_id,
+        idempotency_key=context.idempotency_key,
+    ):
+        writeback_plan = [
+            WritebackPlanItem(
+                kind="session",
+                action="save",
+                status="registered",
+                target_id=session_record.session_id,
+                explanation=SESSION_WRITEBACK_EXPLANATION,
+            )
+        ]
+
+        if learning_proposal is not None:
+            existing_learning_item = recovered_writeback_items.get("learning_note")
+            if existing_learning_item is not None and existing_learning_item.status != "failed":
+                stored_learning_note_id = existing_learning_item.target_id
+                writeback_plan.append(existing_learning_item)
+            else:
+                learning_status = "updated"
+                stored_learning_note_id = None
+                try:
+                    stored_learning_note = upsert_learning_note(
+                        settings,
+                        learning_proposal,
+                        actor_id="system-query-engine",
+                        request_id=context.request_id,
+                        idempotency_key=context.idempotency_key,
+                        notes="Generated from query/respond learning write-back.",
+                    )
+                    stored_learning_note_id = stored_learning_note.learning_note_id
+                except Exception as exc:
+                    learning_status = "failed"
+                    _record_writeback_failure(
+                        settings,
+                        entity_type="learning_note",
+                        entity_id=learning_proposal.learning_note_id,
+                        action="learning_writeback_failed",
+                        request_id=context.request_id,
+                        idempotency_key=context.idempotency_key,
+                        notes=str(exc),
+                        details={
+                            "kind": "learning_note",
+                            "action": "update",
+                            "status": "failed",
+                            "target_id": learning_proposal.learning_note_id,
+                            "explanation": LEARNING_WRITEBACK_EXPLANATION,
+                        },
+                        created_at=created_at,
+                    )
+                writeback_plan.append(
+                    WritebackPlanItem(
+                        kind="learning_note",
+                        action="update",
+                        status=learning_status,
+                        target_id=learning_proposal.learning_note_id,
+                        explanation=LEARNING_WRITEBACK_EXPLANATION,
+                    )
+                )
+                _touch_query_mutation_request(
+                    settings,
+                    session_id=session_record.session_id,
+                    idempotency_key=context.idempotency_key,
+                )
+        else:
+            stored_learning_note_id = None
+
+        if candidate_proposal is not None:
+            existing_candidate_item = recovered_writeback_items.get("candidate")
+            if existing_candidate_item is not None and existing_candidate_item.status != "failed":
+                stored_candidate_id = existing_candidate_item.target_id
+                writeback_plan.append(existing_candidate_item)
+            else:
+                candidate_status = candidate_proposal.status.value
+                candidate_action = "create"
+                stored_candidate_id = None
+                try:
+                    stored_candidate, candidate_action = upsert_candidate_signal(
+                        settings,
+                        candidate_proposal,
+                        actor_role=ActorRole.SYSTEM,
+                        actor_id="system-query-engine",
+                        request_id=context.request_id,
+                        idempotency_key=context.idempotency_key,
+                        notes="Generated from query/respond candidate write-back.",
+                        allow_match_by_metadata=not replay_recovery_writeback,
+                    )
+                    stored_candidate_id = stored_candidate.candidate_id
+                    candidate_status = (
+                        stored_candidate.status.value
+                        if candidate_action == "create"
+                        else "updated"
+                    )
+                except Exception as exc:
+                    candidate_status = "failed"
+                    _record_writeback_failure(
+                        settings,
+                        entity_type="candidate",
+                        entity_id=_candidate_failure_entity_id(settings, candidate_proposal),
+                        action="candidate_writeback_failed",
+                        request_id=context.request_id,
+                        idempotency_key=context.idempotency_key,
+                        notes=str(exc),
+                        details={
+                            "kind": "candidate",
+                            "action": candidate_action,
+                            "status": "failed",
+                            "target_id": stored_candidate_id or candidate_proposal.candidate_id,
+                            "explanation": CANDIDATE_WRITEBACK_EXPLANATION,
+                        },
+                        created_at=created_at,
+                    )
+                writeback_plan.append(
+                    WritebackPlanItem(
+                        kind="candidate",
+                        action=candidate_action,
+                        status=candidate_status,
+                        target_id=stored_candidate_id or candidate_proposal.candidate_id,
+                        explanation=CANDIDATE_WRITEBACK_EXPLANATION,
+                    )
+                )
+                _touch_query_mutation_request(
+                    settings,
+                    session_id=session_record.session_id,
+                    idempotency_key=context.idempotency_key,
+                )
+        else:
+            stored_candidate_id = None
+
+        if stored_candidate_id is not None or stored_learning_note_id is not None:
+            try:
+                update_session_artifact_refs(
+                    settings,
+                    session_id=session_record.session_id,
+                    candidate_refs=(
+                        [stored_candidate_id] if stored_candidate_id is not None else []
+                    ),
+                    learning_note_refs=(
+                        [stored_learning_note_id] if stored_learning_note_id is not None else []
+                    ),
+                )
+            except Exception as exc:
+                _record_writeback_failure(
+                    settings,
+                    entity_type="session",
+                    entity_id=session_record.session_id,
+                    action="session_artifact_link_failed",
+                    request_id=context.request_id,
+                    idempotency_key=context.idempotency_key,
+                    notes=str(exc),
+                    details={
+                        "kind": "session",
+                        "action": "link_artifacts",
+                        "status": "failed",
+                        "candidate_refs": [stored_candidate_id]
+                        if stored_candidate_id is not None
+                        else [],
+                        "learning_note_refs": [stored_learning_note_id]
+                        if stored_learning_note_id is not None
+                        else [],
+                    },
+                    created_at=created_at,
+                )
+            finally:
+                session_record = get_session(settings, session_record.session_id)
+            _touch_query_mutation_request(
                 settings,
-                entity_type="session",
-                entity_id=session_record.session_id,
-                action="session_artifact_link_failed",
-                request_id=context.request_id,
-                notes=str(exc),
-                created_at=created_at,
+                session_id=session_record.session_id,
+                idempotency_key=context.idempotency_key,
             )
 
-    return QueryResponse(
-        answer=answer,
-        answer_basis=answer_basis,
-        retrieval_refs=retrieval_refs,
-        writeback_plan=writeback_plan,
-        session_id=session_record.session_id,
-        created_at=created_at,
-    )
+        response = QueryResponse(
+            answer=answer,
+            answer_basis=answer_basis,
+            retrieval_refs=retrieval_refs,
+            writeback_plan=writeback_plan,
+            session_id=session_record.session_id,
+            created_at=created_at,
+        )
+        session_record = _persist_query_replay_intent(
+            settings,
+            session=session_record,
+            response=response,
+            answer_basis=answer_basis,
+            idempotency_key=context.idempotency_key,
+            learning_proposal=learning_proposal,
+            candidate_proposal=candidate_proposal,
+        )
+        if mutation_request is not None:
+            response_payload = response.model_dump(mode="json", exclude_none=True)
+            if _recovered_query_response_is_complete(
+                response,
+                session=session_record,
+                learning_proposal=learning_proposal,
+                candidate_proposal=candidate_proposal,
+            ):
+                mark_mutation_request_applied(
+                    settings,
+                    entity_type="query",
+                    entity_id=session_id,
+                    action=QUERY_MUTATION_ACTION,
+                    idempotency_key=context.idempotency_key,
+                    updated_at=created_at,
+                    response_payload=response_payload,
+                )
+            else:
+                store_mutation_request_response_payload(
+                    settings,
+                    entity_type="query",
+                    entity_id=session_id,
+                    action=QUERY_MUTATION_ACTION,
+                    idempotency_key=context.idempotency_key,
+                    updated_at=created_at,
+                    response_payload=response_payload,
+                )
+    return response
 
 
 def build_candidate_id(
@@ -527,13 +1002,24 @@ def build_candidate_id(
 def _build_query_session_id(
     *,
     context: RequestContext,
-    request: QueryRequest,
+    request_fingerprint: str,
     created_at: datetime,
 ) -> str:
-    request_fingerprint = _build_query_request_fingerprint(context=context, request=request)
     if context.idempotency_key is not None:
+        scope_digest = hashlib.sha1(
+            json.dumps(
+                {
+                    "course_id": context.course_id,
+                    "class_id": context.class_id,
+                    "domain": context.domain.value if context.domain is not None else None,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()[:10]
         mutation_digest = hashlib.sha1(context.idempotency_key.encode("utf-8")).hexdigest()[:10]
-        return f"ses-{context.role.value}-{context.actor_id}-{context.class_id}-{mutation_digest}"
+        return f"ses-{context.role.value}-{context.actor_id}-{scope_digest}-{mutation_digest}"
 
     replay_digest = hashlib.sha1(
         f"{created_at.isoformat()}:{request_fingerprint}:{uuid.uuid4().hex}".encode("utf-8")
@@ -572,6 +1058,943 @@ def _build_query_request_fingerprint(
     ).hexdigest()
 
 
+def _begin_query_mutation_request(
+    settings: Settings,
+    *,
+    context: RequestContext,
+    session_id: str,
+    request_fingerprint: str,
+    requested_at: datetime,
+):
+    if context.idempotency_key is None:
+        return None
+    mutation_request = begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=QUERY_MUTATION_ACTION,
+        idempotency_key=context.idempotency_key,
+        actor_role=context.role.value,
+        actor_id=context.actor_id,
+        request_fingerprint=request_fingerprint,
+        created_at=requested_at,
+    )
+    if mutation_request.request_fingerprint != request_fingerprint:
+        raise QueryReplayConflictError(
+            "Idempotency-Key was reused for a different query payload within the same scope."
+        )
+    return mutation_request
+
+
+def _touch_query_mutation_request(
+    settings: Settings,
+    *,
+    session_id: str,
+    idempotency_key: str | None,
+) -> None:
+    if idempotency_key is None:
+        return
+    touch_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=QUERY_MUTATION_ACTION,
+        idempotency_key=idempotency_key,
+        updated_at=datetime.now(UTC),
+    )
+
+
+def _load_existing_query_mutation_request(
+    settings: Settings,
+    *,
+    context: RequestContext,
+    session_id: str,
+    request_fingerprint: str,
+):
+    if context.idempotency_key is None:
+        return None
+    mutation_request = get_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=QUERY_MUTATION_ACTION,
+        idempotency_key=context.idempotency_key,
+    )
+    if mutation_request is None:
+        return None
+    if mutation_request.request_fingerprint != request_fingerprint:
+        raise QueryReplayConflictError(
+            "Idempotency-Key was reused for a different query payload within the same scope."
+        )
+    return mutation_request
+
+
+def _load_replayed_query_response(
+    mutation_request,
+    *,
+    settings: Settings,
+    session_id: str,
+    request_id: str,
+    idempotency_key: str | None,
+) -> QueryResponse | None:
+    payload = mutation_request.response_payload
+    if not isinstance(payload, dict):
+        return None
+    replayed_response = QueryResponse.model_validate(payload)
+    existing_session = _load_existing_query_session(settings, session_id=session_id)
+    if existing_session is None:
+        return replayed_response
+    learning_proposal = None
+    candidate_proposal = None
+    if mutation_request.status != "applied":
+        session_saved_audit = _get_session_saved_audit(
+            settings,
+            session_id=existing_session.session_id,
+            idempotency_key=idempotency_key,
+        )
+        learning_proposal, candidate_proposal = _recover_saved_writeback_intent(
+            existing_session,
+            session_saved_audit=session_saved_audit,
+            idempotency_key=idempotency_key,
+        )
+        if not _replay_recovery_targets_are_frozen(
+            replayed_response,
+            learning_proposal=learning_proposal,
+            candidate_proposal=candidate_proposal,
+        ):
+            return None
+    existing_session = _attempt_replay_artifact_ref_repair(
+        settings,
+        session=existing_session,
+        response=replayed_response,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+    )
+    if mutation_request.status != "applied":
+        if _recovered_query_response_is_complete(
+            replayed_response,
+            session=existing_session,
+            learning_proposal=learning_proposal,
+            candidate_proposal=candidate_proposal,
+        ):
+            mark_mutation_request_applied(
+                settings,
+                entity_type="query",
+                entity_id=session_id,
+                action=QUERY_MUTATION_ACTION,
+                idempotency_key=idempotency_key,
+                updated_at=existing_session.created_at,
+                response_payload=payload,
+            )
+    return replayed_response
+
+
+def _wait_for_stored_query_response(
+    settings: Settings,
+    *,
+    session_id: str,
+    request_id: str,
+    idempotency_key: str,
+    poll_interval_seconds: float = QUERY_REPLAY_POLL_INTERVAL_SECONDS,
+    stale_after_seconds: float = QUERY_REPLAY_PENDING_GRACE_SECONDS,
+) -> QueryResponse | None:
+    while True:
+        mutation_request = get_mutation_request(
+            settings,
+            entity_type="query",
+            entity_id=session_id,
+            action=QUERY_MUTATION_ACTION,
+            idempotency_key=idempotency_key,
+        )
+        if mutation_request is None:
+            return None
+        replayed_response = _load_replayed_query_response(
+            mutation_request,
+            settings=settings,
+            session_id=session_id,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        if replayed_response is not None:
+            return replayed_response
+        request_age_seconds = (
+            datetime.now(UTC) - mutation_request.updated_at
+        ).total_seconds()
+        if request_age_seconds >= stale_after_seconds:
+            return None
+        time.sleep(poll_interval_seconds)
+
+
+@contextmanager
+def _mutation_request_heartbeat(
+    settings: Settings,
+    *,
+    session_id: str,
+    idempotency_key: str | None,
+):
+    if idempotency_key is None:
+        yield
+        return
+
+    stop_event = threading.Event()
+
+    def pulse() -> None:
+        while not stop_event.wait(QUERY_REPLAY_HEARTBEAT_INTERVAL_SECONDS):
+            _touch_query_mutation_request(
+                settings,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+            )
+
+    _touch_query_mutation_request(
+        settings,
+        session_id=session_id,
+        idempotency_key=idempotency_key,
+    )
+    thread = threading.Thread(target=pulse, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join(timeout=QUERY_REPLAY_HEARTBEAT_INTERVAL_SECONDS)
+        _touch_query_mutation_request(
+            settings,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+
+
+def _build_query_session_audit_details(
+    *,
+    answer_basis: list[str],
+    idempotency_key: str | None,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+    writeback_plan: list[WritebackPlanItem] | None = None,
+) -> dict[str, object]:
+    payload = QueryReplayIntent(
+        answer_basis=answer_basis,
+        idempotency_key=idempotency_key,
+        learning_proposal=(
+            LearningReplayProposal.from_learning_note(learning_proposal)
+            if learning_proposal is not None
+            else None
+        ),
+        candidate_proposal=(
+            CandidateReplayProposal.from_candidate_item(candidate_proposal)
+            if candidate_proposal is not None
+            else None
+        ),
+        writeback_plan=writeback_plan or [],
+    ).model_dump(mode="json", exclude_none=True)
+    payload["idempotency_key"] = idempotency_key
+    return payload
+
+
+def _persist_query_replay_intent(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    response: QueryResponse,
+    answer_basis: list[str],
+    idempotency_key: str | None,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+) -> SessionRecord:
+    frozen_learning_proposal = _freeze_learning_replay_target(
+        learning_proposal,
+        writeback_plan=response.writeback_plan,
+    )
+    frozen_candidate_proposal = _freeze_candidate_replay_target(
+        candidate_proposal,
+        writeback_plan=response.writeback_plan,
+    )
+    replay_intent = _build_query_session_audit_details(
+        answer_basis=answer_basis,
+        idempotency_key=idempotency_key,
+        learning_proposal=frozen_learning_proposal,
+        candidate_proposal=frozen_candidate_proposal,
+        writeback_plan=response.writeback_plan,
+    )
+    return update_session_replay_intent(
+        settings,
+        session_id=session.session_id,
+        replay_intent=replay_intent,
+    )
+
+
+def _freeze_learning_replay_target(
+    learning_proposal: LearningNote | None,
+    *,
+    writeback_plan: list[WritebackPlanItem],
+) -> LearningNote | None:
+    if learning_proposal is None:
+        return None
+    for item in writeback_plan:
+        if item.kind == "learning_note" and item.status != "failed" and item.target_id.strip():
+            return learning_proposal.model_copy(update={"learning_note_id": item.target_id})
+    return learning_proposal
+
+
+def _freeze_candidate_replay_target(
+    candidate_proposal: CandidateItem | None,
+    *,
+    writeback_plan: list[WritebackPlanItem],
+) -> CandidateItem | None:
+    if candidate_proposal is None:
+        return None
+    for item in writeback_plan:
+        if item.kind == "candidate" and item.status != "failed" and item.target_id.strip():
+            return candidate_proposal.model_copy(update={"candidate_id": item.target_id})
+    return candidate_proposal
+
+
+def _recover_saved_writeback_intent(
+    session: SessionRecord | None,
+    *,
+    session_saved_audit,
+    idempotency_key: str | None = None,
+) -> tuple[LearningNote | None, CandidateItem | None]:
+    replay_intent = None
+    sources: list[dict[str, object]] = []
+    if session is not None and isinstance(session.replay_intent, dict):
+        sources.append(session.replay_intent)
+    if session_saved_audit is not None and isinstance(session_saved_audit.details, dict):
+        sources.append(session_saved_audit.details)
+
+    for details in sources:
+        replay_intent = _parse_query_replay_intent(details)
+        if replay_intent is not None and _replay_intent_matches_idempotency_key(
+            replay_intent,
+            idempotency_key=idempotency_key,
+        ):
+            break
+    if replay_intent is None:
+        return None, None
+    learning_proposal = (
+        replay_intent.learning_proposal.to_learning_note()
+        if replay_intent.learning_proposal is not None
+        else None
+    )
+    candidate_proposal = (
+        replay_intent.candidate_proposal.to_candidate_item()
+        if replay_intent.candidate_proposal is not None
+        else None
+    )
+    return learning_proposal, candidate_proposal
+
+
+def _recover_query_response_from_existing_session(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    idempotency_key: str | None = None,
+) -> QueryResponse:
+    session_saved_audit = _get_session_saved_audit(
+        settings,
+        session_id=session.session_id,
+        idempotency_key=idempotency_key,
+    )
+    replay_intent = _recover_query_replay_intent(
+        session=session,
+        session_saved_audit=session_saved_audit,
+        idempotency_key=idempotency_key,
+    )
+    request_audits = _list_replay_audits(
+        settings,
+        replay_intent=replay_intent,
+        session_id=session.session_id,
+        session_saved_audit=session_saved_audit,
+    )
+    learning_proposal, candidate_proposal = _recover_saved_writeback_intent(
+        session,
+        session_saved_audit=session_saved_audit,
+        idempotency_key=idempotency_key,
+    )
+    retrieval_refs = [RetrievalRef.model_validate(item) for item in session.retrieval_refs]
+    writeback_plan = _recover_writeback_plan(
+        settings,
+        session=session,
+        replay_intent=replay_intent,
+        request_audits=request_audits,
+        session_saved_audit=session_saved_audit,
+        learning_proposal=learning_proposal,
+        candidate_proposal=candidate_proposal,
+    )
+    return QueryResponse(
+        answer=session.answer,
+        answer_basis=_recover_answer_basis(
+            session=session,
+            replay_intent=replay_intent,
+            retrieval_refs=retrieval_refs,
+            session_saved_audit=session_saved_audit,
+        ),
+        retrieval_refs=retrieval_refs,
+        writeback_plan=writeback_plan,
+        session_id=session.session_id,
+        created_at=session.created_at,
+    )
+
+
+def _recovered_query_response_is_complete(
+    response: QueryResponse,
+    *,
+    session: SessionRecord,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+) -> bool:
+    expected_kinds = ["session"]
+    if learning_proposal is not None:
+        expected_kinds.append("learning_note")
+    if candidate_proposal is not None:
+        expected_kinds.append("candidate")
+    if [item.kind for item in response.writeback_plan] != expected_kinds:
+        return False
+    for item in response.writeback_plan:
+        if item.kind == "session":
+            continue
+        if item.status in {"failed", "pending", "in_progress", "queued", "registered"}:
+            return False
+        if not item.target_id.strip():
+            return False
+    if not _response_artifact_refs_converged(session, response=response):
+        return False
+    return True
+
+
+def _replay_recovery_targets_are_frozen(
+    response: QueryResponse,
+    *,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+) -> bool:
+    required_kinds = {
+        item.kind
+        for item in response.writeback_plan
+        if item.kind in {"learning_note", "candidate"}
+    }
+    if "learning_note" in required_kinds and learning_proposal is None:
+        return False
+    if "candidate" in required_kinds and candidate_proposal is None:
+        return False
+    expected_targets = _expected_replay_targets(
+        learning_proposal=learning_proposal,
+        candidate_proposal=candidate_proposal,
+    )
+    for item in response.writeback_plan:
+        if item.kind == "session":
+            continue
+        expected_target_id = expected_targets.get(item.kind)
+        if expected_target_id is None:
+            continue
+        if item.target_id != expected_target_id:
+            return False
+    return True
+
+
+def _expected_replay_targets(
+    *,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    if learning_proposal is not None:
+        targets["learning_note"] = learning_proposal.learning_note_id
+    if candidate_proposal is not None:
+        targets["candidate"] = candidate_proposal.candidate_id
+    return targets
+
+
+def _response_artifact_refs_converged(
+    session: SessionRecord,
+    *,
+    response: QueryResponse,
+) -> bool:
+    expected_candidate_refs = [
+        item.target_id
+        for item in response.writeback_plan
+        if item.kind == "candidate" and item.status not in {"failed", "pending", "in_progress"}
+    ]
+    expected_learning_note_refs = [
+        item.target_id
+        for item in response.writeback_plan
+        if item.kind == "learning_note" and item.status not in {"failed", "pending", "in_progress"}
+    ]
+    return all(
+        candidate_ref in session.candidate_refs for candidate_ref in expected_candidate_refs
+    ) and all(
+        learning_note_ref in session.learning_note_refs
+        for learning_note_ref in expected_learning_note_refs
+    )
+
+
+def _repair_replayed_session_artifact_refs(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    response: QueryResponse,
+) -> SessionRecord:
+    candidate_refs = [
+        item.target_id
+        for item in response.writeback_plan
+        if item.kind == "candidate" and item.status != "failed"
+    ]
+    learning_note_refs = [
+        item.target_id
+        for item in response.writeback_plan
+        if item.kind == "learning_note" and item.status != "failed"
+    ]
+    missing_candidate_refs = [
+        candidate_ref
+        for candidate_ref in candidate_refs
+        if candidate_ref not in session.candidate_refs
+    ]
+    missing_learning_note_refs = [
+        learning_note_ref
+        for learning_note_ref in learning_note_refs
+        if learning_note_ref not in session.learning_note_refs
+    ]
+    if not missing_candidate_refs and not missing_learning_note_refs:
+        return session
+    return update_session_artifact_refs(
+        settings,
+        session_id=session.session_id,
+        candidate_refs=missing_candidate_refs,
+        learning_note_refs=missing_learning_note_refs,
+    )
+
+
+def _attempt_replay_artifact_ref_repair(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    response: QueryResponse,
+    request_id: str,
+    idempotency_key: str | None,
+) -> SessionRecord:
+    try:
+        return _repair_replayed_session_artifact_refs(
+            settings,
+            session=session,
+            response=response,
+        )
+    except Exception as exc:
+        candidate_refs = [
+            item.target_id
+            for item in response.writeback_plan
+            if item.kind == "candidate" and item.status != "failed"
+        ]
+        learning_note_refs = [
+            item.target_id
+            for item in response.writeback_plan
+            if item.kind == "learning_note" and item.status != "failed"
+        ]
+        _record_writeback_failure(
+            settings,
+            entity_type="session",
+            entity_id=session.session_id,
+            action="session_artifact_link_failed",
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            notes=str(exc),
+            details={
+                "kind": "session",
+                "action": "link_artifacts",
+                "status": "failed",
+                "candidate_refs": candidate_refs,
+                "learning_note_refs": learning_note_refs,
+            },
+            created_at=datetime.now(UTC),
+        )
+        return session
+
+
+def _get_session_saved_audit(
+    settings: Settings,
+    *,
+    session_id: str,
+    idempotency_key: str | None = None,
+):
+    session_events = list_audit_events(
+        settings,
+        entity_type="session",
+        entity_id=session_id,
+        action="session_saved",
+    )
+    if not session_events:
+        return None
+    if idempotency_key is not None:
+        for event in session_events:
+            if event.idempotency_key == idempotency_key:
+                return event
+        return None
+    return session_events[0]
+
+
+def _list_replay_audits(
+    settings: Settings,
+    *,
+    replay_intent: QueryReplayIntent | None,
+    session_id: str,
+    session_saved_audit,
+):
+    if replay_intent is not None and replay_intent.idempotency_key is not None:
+        request_audits = list_audit_events(settings, idempotency_key=replay_intent.idempotency_key)
+        return [
+            event for event in request_audits if _audit_matches_frozen_replay_targets(
+                event,
+                session_id=session_id,
+                replay_intent=replay_intent,
+            )
+        ]
+    return []
+
+
+def _audit_matches_frozen_replay_targets(
+    event,
+    *,
+    session_id: str,
+    replay_intent: QueryReplayIntent,
+) -> bool:
+    if event.entity_type == "session":
+        return event.entity_id == session_id
+
+    learning_target_id = (
+        replay_intent.learning_proposal.learning_note_id
+        if replay_intent.learning_proposal is not None
+        else None
+    )
+    if event.entity_type == "learning_note" and learning_target_id is not None:
+        return event.entity_id == learning_target_id
+
+    candidate_target_id = (
+        replay_intent.candidate_proposal.candidate_id
+        if replay_intent.candidate_proposal is not None
+        else None
+    )
+    if event.entity_type == "candidate" and candidate_target_id is not None:
+        if event.entity_id == candidate_target_id:
+            return True
+        if isinstance(event.details, dict):
+            return event.details.get("proposed_candidate_id") == candidate_target_id
+
+    return False
+
+
+def _recover_answer_basis(
+    *,
+    session: SessionRecord,
+    replay_intent: QueryReplayIntent | None,
+    retrieval_refs: list[RetrievalRef],
+    session_saved_audit,
+) -> list[str]:
+    if replay_intent is not None:
+        return _normalize_answer_basis(replay_intent.answer_basis)
+    if session_saved_audit is not None and isinstance(session_saved_audit.details, dict):
+        saved_replay_intent = _parse_query_replay_intent(session_saved_audit.details)
+        if saved_replay_intent is not None:
+            return _normalize_answer_basis(saved_replay_intent.answer_basis)
+    derived = _derive_answer_basis_from_retrieval_refs(retrieval_refs)
+    if not derived and session.source_refs:
+        return ["raw_source_fallback"]
+    return derived
+
+
+def _normalize_answer_basis(answer_basis: list[str]) -> list[str]:
+    valid_order = (
+        "formal_wiki",
+        "session_context",
+        "learning_context",
+        "raw_source_fallback",
+    )
+    normalized: list[str] = []
+    for basis in valid_order:
+        if basis in answer_basis and basis not in normalized:
+            normalized.append(basis)
+    return normalized
+
+
+def _recover_query_replay_intent(
+    *,
+    session: SessionRecord,
+    session_saved_audit,
+    idempotency_key: str | None = None,
+) -> QueryReplayIntent | None:
+    if isinstance(session.replay_intent, dict):
+        replay_intent = _parse_query_replay_intent(session.replay_intent)
+        if replay_intent is not None and _replay_intent_matches_idempotency_key(
+            replay_intent,
+            idempotency_key=idempotency_key,
+        ):
+            return replay_intent
+    if session_saved_audit is not None and isinstance(session_saved_audit.details, dict):
+        replay_intent = _parse_query_replay_intent(session_saved_audit.details)
+        if replay_intent is not None and _replay_intent_matches_idempotency_key(
+            replay_intent,
+            idempotency_key=idempotency_key,
+        ):
+            return replay_intent
+    return None
+
+
+def _replay_intent_matches_idempotency_key(
+    replay_intent: QueryReplayIntent,
+    *,
+    idempotency_key: str | None,
+) -> bool:
+    if idempotency_key is None:
+        return True
+    return replay_intent.idempotency_key == idempotency_key
+
+
+def _parse_query_replay_intent(details: dict[str, object]) -> QueryReplayIntent | None:
+    try:
+        return QueryReplayIntent.model_validate(details)
+    except Exception:
+        pass
+
+    legacy_details = dict(details)
+    if isinstance(legacy_details.get("learning_proposal"), dict):
+        try:
+            legacy_details["learning_proposal"] = LearningReplayProposal.from_learning_note(
+                LearningNote.model_validate(legacy_details["learning_proposal"])
+            ).model_dump(mode="json", exclude_none=True)
+        except Exception:
+            legacy_details["learning_proposal"] = None
+    if isinstance(legacy_details.get("candidate_proposal"), dict):
+        try:
+            legacy_details["candidate_proposal"] = CandidateReplayProposal.from_candidate_item(
+                CandidateItem.model_validate(legacy_details["candidate_proposal"])
+            ).model_dump(mode="json", exclude_none=True)
+        except Exception:
+            legacy_details["candidate_proposal"] = None
+
+    try:
+        return QueryReplayIntent.model_validate(legacy_details)
+    except Exception:
+        return None
+
+
+def _recover_writeback_plan(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    replay_intent: QueryReplayIntent | None,
+    request_audits: list,
+    session_saved_audit,
+    learning_proposal: LearningNote | None,
+    candidate_proposal: CandidateItem | None,
+) -> list[WritebackPlanItem]:
+    if replay_intent is not None and replay_intent.writeback_plan:
+        return [WritebackPlanItem.model_validate(item) for item in replay_intent.writeback_plan]
+
+    writeback_plan = [
+        WritebackPlanItem(
+            kind="session",
+            action="save",
+            status="registered",
+            target_id=session.session_id,
+            explanation=SESSION_WRITEBACK_EXPLANATION,
+        )
+    ]
+    learning_item = _recover_learning_writeback_item(
+        session=session,
+        request_audits=request_audits,
+        learning_proposal=learning_proposal,
+    )
+    if learning_item is not None:
+        writeback_plan.append(learning_item)
+    candidate_item = _recover_candidate_writeback_item(
+        settings,
+        session=session,
+        request_audits=request_audits,
+        candidate_proposal=candidate_proposal,
+    )
+    if candidate_item is not None:
+        writeback_plan.append(candidate_item)
+    return writeback_plan
+
+
+def _recover_learning_writeback_item(
+    *,
+    session: SessionRecord,
+    request_audits: list,
+    learning_proposal: LearningNote | None = None,
+):
+    if session.learning_note_refs:
+        return WritebackPlanItem(
+            kind="learning_note",
+            action="update",
+            status="updated",
+            target_id=session.learning_note_refs[0],
+            explanation=LEARNING_WRITEBACK_EXPLANATION,
+        )
+    success_event = _find_request_audit(
+        request_audits,
+        entity_type="learning_note",
+        actions=("learning_generated",),
+        entity_id=(
+            learning_proposal.learning_note_id if learning_proposal is not None else None
+        ),
+    )
+    if success_event is not None:
+        return WritebackPlanItem(
+            kind="learning_note",
+            action="update",
+            status="updated",
+            target_id=success_event.entity_id,
+            explanation=LEARNING_WRITEBACK_EXPLANATION,
+        )
+    failure_event = _find_request_audit(
+        request_audits,
+        entity_type="learning_note",
+        actions=("learning_writeback_failed",),
+        target_id=(
+            learning_proposal.learning_note_id if learning_proposal is not None else None
+        ),
+    )
+    if failure_event is not None:
+        return _writeback_item_from_failure_event(
+            failure_event,
+            default_kind="learning_note",
+            default_action="update",
+            default_explanation=LEARNING_WRITEBACK_EXPLANATION,
+        )
+    return None
+
+
+def _recover_candidate_writeback_item(
+    settings: Settings,
+    *,
+    session: SessionRecord,
+    request_audits: list,
+    candidate_proposal: CandidateItem | None,
+):
+    created_event = _find_request_audit(
+        request_audits,
+        entity_type="candidate",
+        actions=("candidate_created",),
+        entity_id=(candidate_proposal.candidate_id if candidate_proposal is not None else None),
+    )
+    if created_event is not None:
+        return WritebackPlanItem(
+            kind="candidate",
+            action="create",
+            status=created_event.to_status or CandidateStatus.OPEN.value,
+            target_id=created_event.entity_id,
+            explanation=CANDIDATE_WRITEBACK_EXPLANATION,
+        )
+
+    updated_event = _find_request_audit(
+        request_audits,
+        entity_type="candidate",
+        actions=("candidate_signal_upserted",),
+        detail_filters=(
+            {"proposed_candidate_id": candidate_proposal.candidate_id}
+            if candidate_proposal is not None
+            else None
+        ),
+    )
+    if updated_event is not None:
+        return WritebackPlanItem(
+            kind="candidate",
+            action="update",
+            status="updated",
+            target_id=updated_event.entity_id,
+            explanation=CANDIDATE_WRITEBACK_EXPLANATION,
+        )
+
+    if session.candidate_refs:
+        candidate_id = session.candidate_refs[0]
+        candidate_action = "update"
+        candidate_status = "updated"
+        try:
+            candidate = get_candidate(settings, candidate_id)
+        except CandidateNotFoundError:
+            candidate = None
+        if candidate is not None and candidate.created_at == session.created_at:
+            candidate_action = "create"
+            candidate_status = (
+                candidate_proposal.status.value
+                if candidate_proposal is not None
+                else CandidateStatus.OPEN.value
+            )
+        return WritebackPlanItem(
+            kind="candidate",
+            action=candidate_action,
+            status=candidate_status,
+            target_id=candidate_id,
+            explanation=CANDIDATE_WRITEBACK_EXPLANATION,
+        )
+
+    failure_event = _find_request_audit(
+        request_audits,
+        entity_type="candidate",
+        actions=("candidate_writeback_failed",),
+        target_id=(candidate_proposal.candidate_id if candidate_proposal is not None else None),
+    )
+    if failure_event is not None:
+        return _writeback_item_from_failure_event(
+            failure_event,
+            default_kind="candidate",
+            default_action="create",
+            default_explanation=CANDIDATE_WRITEBACK_EXPLANATION,
+        )
+    return None
+
+
+def _find_request_audit(
+    request_audits: list,
+    *,
+    entity_type: str,
+    actions: tuple[str, ...],
+    entity_id: str | None = None,
+    target_id: str | None = None,
+    detail_filters: dict[str, str] | None = None,
+):
+    for audit_event in request_audits:
+        if audit_event.entity_type != entity_type:
+            continue
+        if audit_event.action not in actions:
+            continue
+        if entity_id is not None and audit_event.entity_id != entity_id:
+            continue
+        if target_id is not None:
+            details = audit_event.details if isinstance(audit_event.details, dict) else {}
+            audit_target_id = details.get("target_id", audit_event.entity_id)
+            if audit_target_id != target_id:
+                continue
+        if detail_filters:
+            details = audit_event.details if isinstance(audit_event.details, dict) else {}
+            if any(details.get(key) != value for key, value in detail_filters.items()):
+                continue
+        return audit_event
+    return None
+
+
+def _writeback_item_from_failure_event(
+    audit_event,
+    *,
+    default_kind: str,
+    default_action: str,
+    default_explanation: str,
+) -> WritebackPlanItem:
+    details = audit_event.details if isinstance(audit_event.details, dict) else {}
+    kind = details.get("kind", default_kind)
+    action = details.get("action", default_action)
+    status = details.get("status", "failed")
+    target_id = details.get("target_id", audit_event.entity_id)
+    explanation = details.get("explanation", default_explanation)
+    return WritebackPlanItem(
+        kind=str(kind),
+        action=str(action),
+        status=str(status),
+        target_id=str(target_id),
+        explanation=str(explanation),
+    )
+
+
 def _load_existing_query_session(
     settings: Settings,
     *,
@@ -583,18 +2006,20 @@ def _load_existing_query_session(
         return None
 
 
-def _query_replay_matches(
-    existing_session: SessionRecord,
-    *,
-    candidate_session: SessionRecord,
-) -> bool:
-    return (
-        existing_session.model_dump(mode="json", exclude={"candidate_refs", "learning_note_refs"})
-        == candidate_session.model_dump(
-            mode="json",
-            exclude={"candidate_refs", "learning_note_refs"},
-        )
-    )
+def _derive_answer_basis_from_retrieval_refs(
+    retrieval_refs: list[RetrievalRef],
+) -> list[str]:
+    basis: list[str] = []
+    for ref in retrieval_refs:
+        if ref.entity_type == "wiki_page" and "formal_wiki" not in basis:
+            basis.append("formal_wiki")
+        elif ref.entity_type == "session" and "session_context" not in basis:
+            basis.append("session_context")
+        elif ref.entity_type == "learning_note" and "learning_context" not in basis:
+            basis.append("learning_context")
+        elif ref.entity_type == "raw_source" and "raw_source_fallback" not in basis:
+            basis.append("raw_source_fallback")
+    return basis
 
 
 def _build_answer_basis(
@@ -868,6 +2293,20 @@ def _build_learning_proposal(
         if existing_learning_note is not None
         else build_learning_note_id(context.actor_id, context.course_id, context.class_id)
     )
+    source_refs = _collect_primary_source_refs(
+        settings,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=[],
+        candidate_kind=None,
+    )
+    if existing_learning_note is not None:
+        concepts = _merge_unique_strings(existing_learning_note.concepts, concepts)
+        gaps = _merge_unique_strings(existing_learning_note.gaps, gaps)
+        next_actions = _merge_unique_strings(existing_learning_note.next_actions, next_actions)
+        source_refs = _merge_source_refs(existing_learning_note.source_refs, source_refs)
+        session_refs = _merge_unique_strings(existing_learning_note.session_refs, [session_id])
+    else:
+        session_refs = [session_id]
     return LearningNote(
         learning_note_id=learning_note_id,
         student_id=context.actor_id,
@@ -877,13 +2316,8 @@ def _build_learning_proposal(
         concepts=concepts,
         gaps=gaps,
         next_actions=next_actions,
-        source_refs=_collect_primary_source_refs(
-            settings,
-            top_wiki_match=top_wiki_match,
-            raw_source_hits=[],
-            candidate_kind=None,
-        ),
-        session_refs=[session_id],
+        source_refs=source_refs,
+        session_refs=session_refs,
         summary="Focus on the concept boundary highlighted by the current question.",
         created_at=existing_learning_note.created_at
         if existing_learning_note is not None
@@ -948,6 +2382,29 @@ def _build_candidate_proposal(
         updated_at=created_at,
         related_page_id=related_page_id,
     )
+
+
+def _merge_unique_strings(base: list[str], extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in [*base, *extra]:
+        if item in seen:
+            continue
+        seen.add(item)
+        merged.append(item)
+    return merged
+
+
+def _merge_source_refs(base: list[SourceRef], extra: list[SourceRef]) -> list[SourceRef]:
+    merged: list[SourceRef] = []
+    seen: set[tuple[str, SourceType, str | None]] = set()
+    for source_ref in [*base, *extra]:
+        key = (source_ref.source_id, source_ref.source_type, source_ref.chunk_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(source_ref)
+    return merged
 
 
 def _collect_raw_source_hits(
@@ -1046,10 +2503,19 @@ def _resolve_answer_learning_note(
     *,
     learning_note: LearningNote | None,
     current_session_id: str,
+    existing_session: SessionRecord | None,
 ) -> LearningNote | None:
     if learning_note is None:
         return None
     if current_session_id in learning_note.session_refs:
+        if (
+            existing_session is not None
+            and learning_note.learning_note_id in existing_session.learning_note_refs
+            and any(
+                session_ref != current_session_id for session_ref in learning_note.session_refs
+            )
+        ):
+            return learning_note
         return None
     return learning_note
 
@@ -1320,7 +2786,9 @@ def _record_writeback_failure(
     entity_id: str,
     action: str,
     request_id: str,
+    idempotency_key: str | None,
     notes: str,
+    details: dict[str, object] | None = None,
     created_at: datetime,
 ) -> None:
     create_audit_event(
@@ -1331,7 +2799,9 @@ def _record_writeback_failure(
         actor_role=ActorRole.SYSTEM.value,
         actor_id="system-query-engine",
         notes=notes,
+        details=details,
         request_id=request_id,
+        idempotency_key=idempotency_key,
         created_at=created_at,
     )
 
