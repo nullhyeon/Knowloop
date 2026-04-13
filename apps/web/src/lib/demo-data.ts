@@ -133,9 +133,38 @@ export type LearningGap = {
   severity: "watch" | "focus" | "stable";
 };
 
+export type LearningConfusionSignal = {
+  signalId: string;
+  title: string;
+  summary: string;
+  frequency: string;
+  stateLabel: string;
+  href: string;
+};
+
+export type LearningNoteEntry = {
+  noteId: string;
+  title: string;
+  summary: string;
+  linkedSessionId: string;
+  linkedSessionTitle: string;
+  updatedAt: string;
+  focusLabel: string;
+  nextActionLabel: string;
+  nextActionHref: string;
+};
+
 export type NextAction = {
   title: string;
   description: string;
+  href: string;
+};
+
+export type LearningWikiLink = {
+  itemId: string;
+  title: string;
+  summary: string;
+  reason: string;
   href: string;
 };
 
@@ -638,6 +667,50 @@ export const learningGaps: LearningGap[] = [
   },
 ];
 
+export const learningConfusionSignals: LearningConfusionSignal[] = [
+  {
+    signalId: "signal-chain-rule-structure",
+    title: "식을 보기 전에 구조를 먼저 읽는 단계가 자주 빠집니다.",
+    summary: "연쇄법칙과 곱의 미분법을 계산 순서로만 구분하려는 패턴이 최근 세션에서 반복되고 있습니다.",
+    frequency: "최근 3세션 반복",
+    stateLabel: "지금 재설명 필요",
+    href: "/ask",
+  },
+  {
+    signalId: "signal-source-exception",
+    title: "예외 조건은 기억하지만 공식 위키와 연결되지 않았습니다.",
+    summary: "강의 source의 주석 조건은 떠올리지만, 공식 위키의 개념 페이지와 함께 읽지 않아 설명이 흔들리는 구간입니다.",
+    frequency: "source fallback 1회",
+    stateLabel: "위키 연결 필요",
+    href: "/wiki",
+  },
+];
+
+export const learningNoteEntries: LearningNoteEntry[] = [
+  {
+    noteId: "note-chain-rule-checkpoint",
+    title: "연쇄법칙 판단 체크포인트",
+    summary: "함수가 다른 함수 안에 들어 있는지를 먼저 보고, 그다음 바깥 함수와 안쪽 함수의 변화율을 연결하는 순서를 다시 정리했습니다.",
+    linkedSessionId: "ses-20260408-114000",
+    linkedSessionTitle: "연쇄법칙과 곱의 미분법이 헷갈리는 이유",
+    updatedAt: "방금 전",
+    focusLabel: "개념 판단 기준",
+    nextActionLabel: "Ask에서 같은 질문 다시 풀어보기",
+    nextActionHref: "/ask",
+  },
+  {
+    noteId: "note-product-rule-structure",
+    title: "곱 구조와 합성 구조를 빠르게 구분하는 법",
+    summary: "곱의 미분법은 두 함수가 나란히 곱해진 경우를 먼저 찾고, 연쇄법칙은 함수 안쪽 구조를 먼저 확인하는 흐름으로 비교했습니다.",
+    linkedSessionId: "ses-20260407-133000",
+    linkedSessionTitle: "합성 함수와 바깥 함수의 순서를 어떻게 보나요?",
+    updatedAt: "어제",
+    focusLabel: "오개념 교정",
+    nextActionLabel: "관련 위키 문서 다시 읽기",
+    nextActionHref: "/wiki",
+  },
+];
+
 export const nextActions: NextAction[] = [
   {
     title: "위키의 연쇄법칙 페이지 다시 읽기",
@@ -653,6 +726,23 @@ export const nextActions: NextAction[] = [
     title: "직전 질문 세션 다시 보기",
     description: "비슷한 질문을 어떻게 표현했는지 확인해 오개념 패턴을 줄입니다.",
     href: "/ask",
+  },
+];
+
+export const learningWikiLinks: LearningWikiLink[] = [
+  {
+    itemId: "learning-wiki-chain-rule",
+    title: "연쇄법칙 핵심 정리",
+    summary: "학생 질문에서 가장 자주 다시 열어볼 필요가 있는 공식 개념 페이지입니다.",
+    reason: "지금 confusion signal과 직접 연결된 위키",
+    href: "/wiki",
+  },
+  {
+    itemId: "learning-wiki-product-rule",
+    title: "곱의 미분법 빠른 판단 규칙",
+    summary: "연쇄법칙과 함께 비교해서 읽어야 혼동이 줄어드는 quick reference 페이지입니다.",
+    reason: "비교 학습용",
+    href: "/wiki",
   },
 ];
 
