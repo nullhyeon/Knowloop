@@ -198,7 +198,7 @@ If no action is needed, keep moving to the next planned slice automatically.
 ### Gemini Pro critic does not complete
 
 - wait and retry first
-- if it still does not complete in a reasonable window, continue through `.\scripts\run-critic-pass.ps1`
+- if it still does not complete in a reasonable window, continue through `.\scripts\run-codex-critic.ps1`
 - do not resend the same wide scope; narrow the review package first
 - do not downgrade the critic role to a lower-quality model
 
@@ -209,6 +209,12 @@ If no action is needed, keep moving to the next planned slice automatically.
 - only keep repeating the same role on single-file packages
 - do not substitute a manual builder self-check for the missing role
 - record timeout history honestly after the role eventually completes
+
+### Unexpected `500` responses need traceability
+
+- every `/api/v1/*` attempt receives a server-owned `X-Request-Id`
+- unexpected `500` failures should leave an internal trace that operators can look up by that request ID
+- when debugging a production-like failure, start with the returned `X-Request-Id`, then inspect the matching server logs or audit trail
 
 ### Readiness fails
 

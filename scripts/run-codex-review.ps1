@@ -1,5 +1,5 @@
 param(
-    [int]$MaxAttempts = 999999,
+    [int]$MaxAttempts = 1,
     [int]$TimeoutSeconds = 180,
     [int]$RetryDelaySeconds = 15,
     [string]$ScopeName = "current-slice",
@@ -26,31 +26,65 @@ function Invoke-CodexReviewerAttempt {
         [int]$TimeoutSeconds
     )
 
-    $job = Start-Job -ScriptBlock {
-        param($RepoRoot, $Prompt)
-        $ErrorActionPreference = "Stop"
-        $env:Path += ";" + [Environment]::GetFolderPath('UserProfile') + "\AppData\Roaming\npm"
-        Set-Location $RepoRoot
-        codex exec -m gpt-5.4 -c 'model_reasoning_effort="xhigh"' -s read-only $Prompt
-        if ($LASTEXITCODE -ne 0) {
-            throw "codex exited with code $LASTEXITCODE"
-        }
-    } -ArgumentList $RepoRoot, $Prompt
+    $promptPath = [System.IO.Path]::GetTempFileName()
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $resultPath = [System.IO.Path]::GetTempFileName()
 
     try {
-        if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
-            throw "timeout"
+        Set-Content -LiteralPath $promptPath -Value $Prompt -Encoding utf8
+        $escapedRepoRoot = $RepoRoot.Replace("'", "''")
+        $escapedPromptPath = $promptPath.Replace("'", "''")
+        $escapedResultPath = $resultPath.Replace("'", "''")
+        $command = @"
+`$ErrorActionPreference = 'Stop'
+`$env:Path += ';' + [Environment]::GetFolderPath('UserProfile') + '\AppData\Roaming\npm'
+Set-Location '$escapedRepoRoot'
+`$prompt = Get-Content -LiteralPath '$escapedPromptPath' -Raw
+`$prompt | codex exec -m gpt-5.4 -c 'model_reasoning_effort="low"' -s read-only -o '$escapedResultPath' -
+exit `$LASTEXITCODE
+"@
+        $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
+        $process = Start-Process `
+            -FilePath "powershell.exe" `
+            -ArgumentList @("-NoProfile", "-EncodedCommand", $encodedCommand) `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -PassThru `
+            -WindowStyle Hidden
+
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+            }
+            catch {
+                try {
+                    $process.Kill()
+                    $process.WaitForExit()
+                }
+                catch {
+                }
+            }
+            return $false
         }
-        Receive-Job $job -Wait -AutoRemoveJob
-        return $true
+
+        $stdout = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+            Write-Output $stdout.TrimEnd()
+        }
+        if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+            Write-Output $stderr.TrimEnd()
+        }
+        $result = Get-Content -LiteralPath $resultPath -Raw -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($result)) {
+            Write-Output $result.TrimEnd()
+        }
+
+        return $process.ExitCode -eq 0
     }
-    catch {
-        if ($job.State -eq "Running") {
-            Stop-Job $job | Out-Null
-        }
-        Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
-        Remove-Job $job -Force -ErrorAction SilentlyContinue | Out-Null
-        return $false
+    finally {
+        Remove-Item -LiteralPath $promptPath, $stdoutPath, $stderrPath, $resultPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -58,13 +92,14 @@ function Invoke-CodexReviewerPackages {
     param(
         [string[]]$ScopedFiles,
         [int]$CurrentMaxFilesPerPackage,
-        [int]$CurrentMaxDiffLines
+        [int]$CurrentMaxDiffLines,
+        [string]$CurrentScopeName
     )
 
     $packages = New-ReviewPackages `
         -RepoRoot $repoRoot `
         -Role reviewer `
-        -ScopeName $ScopeName `
+        -ScopeName $CurrentScopeName `
         -Focus $Focus `
         -Files $ScopedFiles `
         -ContractDocs $ContractDocs `
@@ -72,6 +107,9 @@ function Invoke-CodexReviewerPackages {
         -MaxDiffLines $CurrentMaxDiffLines
 
     foreach ($package in $packages) {
+        $packageCanNarrow = ($package.Files.Count -gt 1) -or (
+            ($package.Displays | Where-Object { $_ -match '\(chunk \d+/\d+\)$' }).Count -gt 0
+        )
         $packagePrompt = @(
             $basePrompt
             ""
@@ -83,7 +121,12 @@ function Invoke-CodexReviewerPackages {
             "Return findings first. If there are no material findings, say so explicitly."
         ) -join "`n"
 
-        $attemptBudget = if ($package.Files.Count -gt 1) { 1 } else { $MaxAttempts }
+        $attemptBudget = if ($packageCanNarrow) {
+            1
+        }
+        else {
+            $MaxAttempts
+        }
         $completed = $false
 
         for ($attempt = 1; $attempt -le $attemptBudget; $attempt++) {
@@ -103,12 +146,17 @@ function Invoke-CodexReviewerPackages {
             continue
         }
 
-        if ($package.Files.Count -gt 1) {
-            Write-Host "Codex Reviewer timed out on a multi-file package. Narrowing scope and retrying..."
+        if ($packageCanNarrow) {
+            Write-Host "Codex Reviewer timed out on a wide package. Narrowing scope and retrying..."
+            $nextMaxDiffLines = [Math]::Max(120, [int][Math]::Floor($CurrentMaxDiffLines / 2))
+            if ($nextMaxDiffLines -ge $CurrentMaxDiffLines) {
+                throw "Codex Reviewer cannot narrow package '$($package.Path)' any further after timing out."
+            }
             Invoke-CodexReviewerPackages `
                 -ScopedFiles $package.Files `
                 -CurrentMaxFilesPerPackage 1 `
-                -CurrentMaxDiffLines ([Math]::Max(120, [int][Math]::Floor($CurrentMaxDiffLines / 2)))
+                -CurrentMaxDiffLines $nextMaxDiffLines `
+                -CurrentScopeName ("{0}-narrow-{1}" -f $CurrentScopeName, $package.Index)
             continue
         }
 
@@ -122,7 +170,8 @@ try {
     Invoke-CodexReviewerPackages `
         -ScopedFiles $scopedFiles `
         -CurrentMaxFilesPerPackage $MaxFilesPerPackage `
-        -CurrentMaxDiffLines $MaxDiffLines
+        -CurrentMaxDiffLines $MaxDiffLines `
+        -CurrentScopeName $ScopeName
 }
 finally {
     Pop-Location

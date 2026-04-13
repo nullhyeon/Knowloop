@@ -160,12 +160,13 @@ Add these when relevant:
 1. `Codex Builder` reads the task and implements the next slice.
 2. `Codex Builder` runs tests, lint, and `git diff --check` before any review pass.
 3. `Codex Builder` builds a narrow `review package` for the active slice.
-4. `Gemini Pro Critic` challenges the plan or the change set using that package.
-5. If `Gemini Pro Critic` is blocked or times out, run the pinned critic chain: `Gemini Pro -> Codex Critic -> Codex Critic ...` using the same package until a critic pass completes.
-6. If a package times out, narrow the package before retrying. Do not keep resending the same large scope.
-7. `Codex Builder` integrates the valid critique.
-8. `Codex Reviewer` performs final code review and test-gap review against a reviewer package, retrying until a reviewer pass completes.
-9. Update `tasks/todo.md` and any affected docs.
+4. `Gemini Pro Critic` or `Codex Critic` challenges the plan or the change set using that package.
+5. Prefer real Codex subagents for `Critic` and `Reviewer` work when operating inside Codex. Use the local scripts as a fallback for standalone CLI runs or when a human wants to reproduce the same review package flow outside the thread.
+6. If `Gemini Pro Critic` is blocked or times out, continue the pinned critic chain as `Gemini Pro -> Codex Critic -> Codex Critic ...` using the same package until a critic pass completes.
+7. If a package times out, narrow the package before retrying. Do not keep resending the same large scope.
+8. `Codex Builder` integrates the valid critique.
+9. `Codex Reviewer` performs final code review and test-gap review against a reviewer package, retrying until a reviewer pass completes.
+10. Update `tasks/todo.md` and any affected docs.
 
 ## Review Package Policy
 
@@ -192,8 +193,9 @@ Package rules:
 Timeout does not count as role completion.
 
 - Never replace a timed-out critic or reviewer pass with a manual builder self-check.
-- For critic passes, use `.\scripts\run-critic-pass.ps1`.
-- For reviewer passes, use `.\scripts\run-codex-review.ps1`.
+- In Codex, prefer subagents for critic and reviewer work.
+- For standalone script-driven critic passes, use `.\scripts\run-gemini-critic.ps1` first and then `.\scripts\run-codex-critic.ps1` if Gemini cannot complete.
+- For standalone script-driven reviewer passes, use `.\scripts\run-codex-review.ps1`.
 - If a role times out on a multi-file package, narrow the package before retrying.
 - If a role times out on a single-file package, keep retrying that role until a real response completes or the human explicitly interrupts the run.
 - Report timeout history honestly in the final task report, but only after a critic or reviewer response has actually completed.

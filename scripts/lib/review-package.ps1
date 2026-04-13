@@ -8,13 +8,27 @@ function ConvertTo-ReviewRelativePath {
         throw "Review path must not be blank."
     }
 
-    if ([System.IO.Path]::IsPathRooted($Path)) {
-        $resolved = (Resolve-Path -LiteralPath $Path).Path
-        $relative = [System.IO.Path]::GetRelativePath($RepoRoot, $resolved)
-        return $relative.Replace("/", "\")
+    $repoFullPath = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+    $resolvedFullPath = if ([System.IO.Path]::IsPathRooted($Path)) {
+        [System.IO.Path]::GetFullPath($Path)
+    }
+    else {
+        [System.IO.Path]::GetFullPath((Join-Path $repoFullPath $Path))
     }
 
-    return $Path.Replace("/", "\")
+    if (
+        $resolvedFullPath -ne $repoFullPath -and
+        -not $resolvedFullPath.StartsWith($repoFullPath + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw "Review path '$Path' resolves outside the repository root."
+    }
+
+    if ($resolvedFullPath -eq $repoFullPath) {
+        throw "Review path '$Path' resolves to the repository root, not a file."
+    }
+
+    $relative = $resolvedFullPath.Substring($repoFullPath.Length + 1)
+    return $relative.Replace("\", "/")
 }
 
 function Get-ReviewScopedFiles {
@@ -29,7 +43,7 @@ function Get-ReviewScopedFiles {
             Where-Object {
                 $_ -and
                 $_ -notmatch '^\.tmp-' -and
-                $_ -notmatch '^\.tmp-review-packages\\' -and
+                $_ -notmatch '^\.tmp-review-packages[\\/]' -and
                 $_ -ne 'diff.txt'
             } |
             Select-Object -Unique
@@ -58,7 +72,7 @@ function Get-ReviewScopedFiles {
         Where-Object {
             $_ -and
             $_ -notmatch '^\.tmp-' -and
-            $_ -notmatch '^\.tmp-review-packages\\' -and
+            $_ -notmatch '^\.tmp-review-packages[\\/]' -and
             $_ -ne 'diff.txt'
         } |
         Select-Object -Unique
@@ -78,8 +92,11 @@ function Test-ReviewTrackedFile {
 
     Push-Location $RepoRoot
     try {
-        & git ls-files --error-unmatch -- $RelativePath 1>$null 2>$null
-        return $LASTEXITCODE -eq 0
+        $tracked = @(& git ls-files -- $RelativePath 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            return $false
+        }
+        return ($tracked | Where-Object { $_ -eq $RelativePath }).Count -gt 0
     }
     finally {
         Pop-Location
@@ -95,7 +112,7 @@ function Get-ReviewPatch {
     if (Test-ReviewTrackedFile -RepoRoot $RepoRoot -RelativePath $RelativePath) {
         Push-Location $RepoRoot
         try {
-            $patch = @(& git diff --unified=3 --no-ext-diff -- $RelativePath)
+            $patch = @(& git -c core.safecrlf=false diff --unified=3 --no-ext-diff HEAD -- $RelativePath 2>$null)
             if ($LASTEXITCODE -ne 0) {
                 throw "git diff failed for review file '$RelativePath'."
             }
@@ -135,6 +152,139 @@ function Get-ReviewPatchLineCount {
     return ($patch -split "`r?`n").Count
 }
 
+function Get-ReviewPatchUnits {
+    param(
+        [string]$RepoRoot,
+        [string]$RelativePath,
+        [int]$MaxPatchLines = 300
+    )
+
+    $patch = Get-ReviewPatch -RepoRoot $RepoRoot -RelativePath $RelativePath
+    if ([string]::IsNullOrWhiteSpace($patch)) {
+        return @()
+    }
+
+    $lines = $patch -split "`r?`n"
+    if ($lines.Count -le $MaxPatchLines) {
+        return @(
+            [PSCustomObject]@{
+                File       = $RelativePath
+                Display    = $RelativePath
+                Patch      = $patch
+                LineCount  = $lines.Count
+                SplitCount = 1
+            }
+        )
+    }
+
+    $firstHunkIndex = -1
+    for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
+        if ($lines[$lineIndex] -like '@@*') {
+            $firstHunkIndex = $lineIndex
+            break
+        }
+    }
+
+    $headerLines = if ($firstHunkIndex -gt 0) {
+        @($lines[0..($firstHunkIndex - 1)])
+    }
+    else {
+        @()
+    }
+
+    if ($firstHunkIndex -lt 0) {
+        return @(
+            [PSCustomObject]@{
+                File       = $RelativePath
+                Display    = $RelativePath
+                Patch      = $patch
+                LineCount  = $lines.Count
+                SplitCount = 1
+            }
+        )
+    }
+
+    $hunks = [System.Collections.Generic.List[object]]::new()
+    $currentHunk = [System.Collections.Generic.List[string]]::new()
+    for ($lineIndex = $firstHunkIndex; $lineIndex -lt $lines.Count; $lineIndex++) {
+        $line = $lines[$lineIndex]
+        if ($line -like '@@*' -and $currentHunk.Count -gt 0) {
+            $hunks.Add(@($currentHunk.ToArray()))
+            $currentHunk.Clear()
+        }
+        $currentHunk.Add($line)
+    }
+    if ($currentHunk.Count -gt 0) {
+        $hunks.Add(@($currentHunk.ToArray()))
+    }
+
+    $chunks = [System.Collections.Generic.List[object]]::new()
+    $currentChunk = [System.Collections.Generic.List[string]]::new()
+    $currentLineCount = $headerLines.Count
+    $maxChunkBodyLines = [Math]::Max(1, $MaxPatchLines - $headerLines.Count)
+
+    foreach ($hunk in $hunks) {
+        $hunkLines = @($hunk)
+        $wouldOverflow = $currentChunk.Count -gt 0 -and (($currentLineCount + $hunkLines.Count) -gt $MaxPatchLines)
+
+        if ($wouldOverflow) {
+            $chunks.Add(@($currentChunk.ToArray()))
+            $currentChunk.Clear()
+            $currentLineCount = $headerLines.Count
+        }
+
+        if (($headerLines.Count + $hunkLines.Count) -gt $MaxPatchLines -and $currentChunk.Count -eq 0) {
+            $hunkHeader = $hunkLines[0]
+            $hunkBody = if ($hunkLines.Count -gt 1) { @($hunkLines[1..($hunkLines.Count - 1)]) } else { @() }
+            if ($hunkBody.Count -eq 0) {
+                $chunks.Add(@($hunkHeader))
+                $currentLineCount = $headerLines.Count
+                continue
+            }
+
+            $maxBodyLinesPerSplit = [Math]::Max(1, $maxChunkBodyLines - 1)
+            for ($bodyIndex = 0; $bodyIndex -lt $hunkBody.Count; $bodyIndex += $maxBodyLinesPerSplit) {
+                $endIndex = [Math]::Min($bodyIndex + $maxBodyLinesPerSplit - 1, $hunkBody.Count - 1)
+                $bodySlice = @($hunkBody[$bodyIndex..$endIndex])
+                $chunks.Add(@($hunkHeader) + $bodySlice)
+            }
+            $currentLineCount = $headerLines.Count
+            continue
+        }
+
+        foreach ($line in $hunkLines) {
+            $currentChunk.Add($line)
+        }
+        $currentLineCount = $headerLines.Count + $currentChunk.Count
+    }
+
+    if ($currentChunk.Count -gt 0) {
+        $chunks.Add(@($currentChunk.ToArray()))
+    }
+
+    $splitCount = $chunks.Count
+    $units = [System.Collections.Generic.List[object]]::new()
+    for ($chunkIndex = 0; $chunkIndex -lt $chunks.Count; $chunkIndex++) {
+        $chunkLines = @($chunks[$chunkIndex])
+        $display = if ($splitCount -gt 1) {
+            "{0} (chunk {1}/{2})" -f $RelativePath, ($chunkIndex + 1), $splitCount
+        }
+        else {
+            $RelativePath
+        }
+        $unitPatch = @($headerLines + $chunkLines) -join "`n"
+        $units.Add([PSCustomObject]@{
+                File       = $RelativePath
+                Display    = $display
+                Patch      = $unitPatch
+                LineCount  = ($headerLines.Count + $chunkLines.Count)
+                SplitCount = $splitCount
+            })
+    }
+
+    return @($units)
+}
+
 function Resolve-ReviewContractDocs {
     param(
         [string[]]$Files,
@@ -171,10 +321,6 @@ function Resolve-ReviewContractDocs {
             'docs\architecture\api-contracts.md'
         )
     }
-    if ($joined -match 'docs\\') {
-        $docCandidates += ($Files | Where-Object { $_ -like 'docs\*' })
-    }
-
     foreach ($candidate in $docCandidates | Select-Object -Unique) {
         if (-not $docs.Contains($candidate)) {
             $docs.Add($candidate)
@@ -184,22 +330,47 @@ function Resolve-ReviewContractDocs {
     return @($docs)
 }
 
-function Split-ReviewFileGroups {
+function Get-ReviewPatchUnitsForFiles {
     param(
         [string]$RepoRoot,
         [string[]]$Files,
+        [int]$MaxDiffLines = 300
+    )
+
+    $units = [System.Collections.Generic.List[object]]::new()
+    foreach ($file in $Files) {
+        foreach ($unit in (Get-ReviewPatchUnits -RepoRoot $RepoRoot -RelativePath $file -MaxPatchLines $MaxDiffLines)) {
+            $units.Add($unit)
+        }
+    }
+
+    return @($units)
+}
+
+function Split-ReviewUnitGroups {
+    param(
+        [object[]]$Units,
         [int]$MaxFilesPerPackage = 3,
         [int]$MaxDiffLines = 300
     )
 
     $groups = [System.Collections.Generic.List[object]]::new()
-    $currentGroup = [System.Collections.Generic.List[string]]::new()
+    $currentGroup = [System.Collections.Generic.List[object]]::new()
     $currentDiffLines = 0
 
-    foreach ($file in $Files) {
-        $lineCount = Get-ReviewPatchLineCount -RepoRoot $RepoRoot -RelativePath $file
+    foreach ($unit in $Units) {
+        if ($unit.SplitCount -gt 1) {
+            if ($currentGroup.Count -gt 0) {
+                $groups.Add(@($currentGroup.ToArray()))
+                $currentGroup.Clear()
+                $currentDiffLines = 0
+            }
+            $groups.Add(@($unit))
+            continue
+        }
+
         $wouldOverflowFiles = $currentGroup.Count -ge $MaxFilesPerPackage
-        $wouldOverflowLines = $currentGroup.Count -gt 0 -and (($currentDiffLines + $lineCount) -gt $MaxDiffLines)
+        $wouldOverflowLines = $currentGroup.Count -gt 0 -and (($currentDiffLines + $unit.LineCount) -gt $MaxDiffLines)
 
         if ($currentGroup.Count -gt 0 -and ($wouldOverflowFiles -or $wouldOverflowLines)) {
             $groups.Add(@($currentGroup.ToArray()))
@@ -207,8 +378,8 @@ function Split-ReviewFileGroups {
             $currentDiffLines = 0
         }
 
-        $currentGroup.Add($file)
-        $currentDiffLines += $lineCount
+        $currentGroup.Add($unit)
+        $currentDiffLines += $unit.LineCount
     }
 
     if ($currentGroup.Count -gt 0) {
@@ -232,9 +403,15 @@ function New-ReviewPackages {
     )
 
     $scopedFiles = Get-ReviewScopedFiles -RepoRoot $RepoRoot -Files $Files
-    $groups = Split-ReviewFileGroups `
+    $units = Get-ReviewPatchUnitsForFiles `
         -RepoRoot $RepoRoot `
         -Files $scopedFiles `
+        -MaxDiffLines $MaxDiffLines
+    if ($units.Count -eq 0) {
+        throw "No changed diff units found for the requested review scope."
+    }
+    $groups = Split-ReviewUnitGroups `
+        -Units $units `
         -MaxFilesPerPackage $MaxFilesPerPackage `
         -MaxDiffLines $MaxDiffLines
 
@@ -255,11 +432,13 @@ function New-ReviewPackages {
     $packageCount = $groups.Count
     for ($index = 0; $index -lt $packageCount; $index++) {
         $group = @($groups[$index])
-        $contracts = Resolve-ReviewContractDocs -Files $group -ExplicitContractDocs $ContractDocs
-        $diffStats = if ($group.Count -gt 0) {
+        $groupFiles = @($group | ForEach-Object { $_.File } | Select-Object -Unique)
+        $hasSplitUnits = ($group | Where-Object { $_.Display -match '\(chunk \d+/\d+\)$' }).Count -gt 0
+        $contracts = Resolve-ReviewContractDocs -Files $groupFiles -ExplicitContractDocs $ContractDocs
+        $diffStats = if ($groupFiles.Count -gt 0) {
             Push-Location $RepoRoot
             try {
-                @(& git diff --stat -- @($group)) -join "`n"
+                @(& git -c core.safecrlf=false diff --stat HEAD -- @($groupFiles) 2>$null) -join "`n"
             }
             finally {
                 Pop-Location
@@ -269,8 +448,8 @@ function New-ReviewPackages {
             ""
         }
 
-        $patches = foreach ($file in $group) {
-            Get-ReviewPatch -RepoRoot $RepoRoot -RelativePath $file
+        $patches = foreach ($unit in $group) {
+            $unit.Patch
         }
 
         $objective = if ([string]::IsNullOrWhiteSpace($Focus)) {
@@ -303,8 +482,8 @@ function New-ReviewPackages {
             "## Files Under Review"
         )
 
-        foreach ($file in $group) {
-            $packageBody += "- $file"
+        foreach ($unit in $group) {
+            $packageBody += "- $($unit.Display)"
         }
 
         $packageBody += @(
@@ -341,8 +520,11 @@ function New-ReviewPackages {
 
         $packages.Add([PSCustomObject]@{
                 Path         = $packagePath
-                Files        = $group
+                Files        = $groupFiles
+                Displays     = @($group | ForEach-Object { $_.Display })
                 ContractDocs = $contracts
+                HasSplitUnits = $hasSplitUnits
+                Narrowable   = ($groupFiles.Count -gt 1 -or $hasSplitUnits)
                 Index        = $index + 1
                 Total        = $packageCount
             })

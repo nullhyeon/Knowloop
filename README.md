@@ -99,17 +99,21 @@ Run the Codex Critic fallback on local changes:
 .\scripts\run-codex-critic.ps1
 ```
 
-Run the full critic retry chain on local changes:
-
-```powershell
-.\scripts\run-critic-pass.ps1
-```
-
 Run Gemini Pro Critic as a one-shot pass:
 
 ```powershell
 .\scripts\run-gemini-critic.ps1
 ```
+
+If Gemini cannot complete the critic pass, continue with Codex Critic on the same narrowed review package:
+
+```powershell
+.\scripts\run-codex-critic.ps1
+```
+
+Inside the Codex desktop thread, the preferred path is to use Codex subagents
+for `Critic` and `Reviewer` roles and keep these scripts as reproducible
+fallbacks for standalone or human-driven runs.
 
 Reconnect Codex if ever needed:
 

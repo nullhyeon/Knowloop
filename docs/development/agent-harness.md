@@ -16,6 +16,11 @@ Script naming:
 - `start-*.ps1` opens an interactive agent session
 - `run-*.ps1` executes a focused one-shot pass against the current worktree
 
+Inside Codex itself, prefer spawning or reusing Codex subagents for `Critic`
+and `Reviewer` work. Keep the local scripts as reproducible fallbacks for
+standalone CLI runs, human-operated checks, or environments outside the Codex
+thread.
+
 ## Canonical Instruction Files
 
 - Primary: `AGENTS.md`
@@ -58,7 +63,7 @@ Then use `.agents/prompts/gemini-critic.md`.
 
 This role is `pro-only`. If `pro` is busy, wait and retry. Do not downgrade the model.
 
-Fast path:
+Standalone fast path:
 
 ```powershell
 .\scripts\run-gemini-critic.ps1
@@ -69,7 +74,7 @@ Fast path:
 Use when `Gemini Pro Critic` cannot complete the critic pass in a reasonable
 time or when the Gemini CLI is temporarily unavailable.
 
-Fast path:
+Standalone fast path:
 
 ```powershell
 .\scripts\run-codex-critic.ps1
@@ -84,13 +89,15 @@ Prompt path:
 
 This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 It should stay focused on architecture critique rather than patch-level review.
-Use `.\scripts\run-critic-pass.ps1` when you want the full pinned critic chain instead of a single critic tool invocation.
+Within Codex, prefer a spawned or reused subagent carrying the critic prompt and the
+current review package. Use `.\scripts\run-codex-critic.ps1` only when you need the
+same package flow outside the thread.
 
 ### Codex Reviewer
 
 Use for a final code-focused review and test-gap check.
 
-Fast path:
+Standalone fast path:
 
 ```powershell
 .\scripts\run-codex-review.ps1
@@ -110,12 +117,13 @@ This role is pinned to `gpt-5.4` with `xhigh` reasoning effort.
 1. Codex Builder implements the next planned slice.
 2. Codex Builder runs tests, lint, and `git diff --check`.
 3. Codex Builder creates a small `review package` for the active slice.
-4. Gemini Pro Critic challenges the design, boundaries, and risks using that package.
-5. If Gemini Pro Critic times out, use `.\scripts\run-critic-pass.ps1` so the critic chain continues as `Gemini Pro -> Codex Critic -> Codex Critic ...` against the same package scope.
-6. If a package times out, narrow the package instead of resending the same large scope.
-7. Codex Builder integrates valid critique.
-8. Codex Reviewer performs final diff review against a reviewer package and retries until completion.
-9. Update `tasks/todo.md` and relevant docs.
+4. Gemini Pro Critic or Codex Critic challenges the design, boundaries, and risks using that package.
+5. Inside Codex, prefer subagents for both `Critic` and `Reviewer` passes.
+6. If Gemini Pro Critic times out, continue the critic chain as `Gemini Pro -> Codex Critic -> Codex Critic ...` against the same narrowed package scope.
+7. If a package times out, narrow the package instead of resending the same large scope.
+8. Codex Builder integrates valid critique.
+9. Codex Reviewer performs final diff review against a reviewer package and retries until completion.
+10. Update `tasks/todo.md` and relevant docs.
 
 ## Review Packages
 

@@ -57,13 +57,14 @@ function Invoke-GeminiCriticPackages {
     param(
         [string[]]$ScopedFiles,
         [int]$CurrentMaxFilesPerPackage,
-        [int]$CurrentMaxDiffLines
+        [int]$CurrentMaxDiffLines,
+        [string]$CurrentScopeName
     )
 
     $packages = New-ReviewPackages `
         -RepoRoot $repoRoot `
         -Role critic `
-        -ScopeName $ScopeName `
+        -ScopeName $CurrentScopeName `
         -Focus $Focus `
         -Files $ScopedFiles `
         -ContractDocs $ContractDocs `
@@ -71,6 +72,9 @@ function Invoke-GeminiCriticPackages {
         -MaxDiffLines $CurrentMaxDiffLines
 
     foreach ($package in $packages) {
+        $packageCanNarrow = ($package.Files.Count -gt 1) -or (
+            ($package.Displays | Where-Object { $_ -match '\(chunk \d+/\d+\)$' }).Count -gt 0
+        )
         $packagePrompt = @(
             $basePrompt
             ""
@@ -82,7 +86,12 @@ function Invoke-GeminiCriticPackages {
             "Return findings first. If there are no material findings, say so explicitly."
         ) -join "`n"
 
-        $attemptBudget = if ($package.Files.Count -gt 1) { 1 } else { $MaxAttempts }
+        $attemptBudget = if ($packageCanNarrow) {
+            1
+        }
+        else {
+            $MaxAttempts
+        }
         $completed = $false
 
         for ($attempt = 1; $attempt -le $attemptBudget; $attempt++) {
@@ -102,12 +111,17 @@ function Invoke-GeminiCriticPackages {
             continue
         }
 
-        if ($package.Files.Count -gt 1) {
-            Write-Host "Gemini Pro Critic timed out on a multi-file package. Narrowing scope and retrying..."
+        if ($packageCanNarrow) {
+            Write-Host "Gemini Pro Critic timed out on a wide package. Narrowing scope and retrying..."
+            $nextMaxDiffLines = [Math]::Max(120, [int][Math]::Floor($CurrentMaxDiffLines / 2))
+            if ($nextMaxDiffLines -ge $CurrentMaxDiffLines) {
+                throw "Gemini Pro Critic cannot narrow package '$($package.Path)' any further after timing out."
+            }
             Invoke-GeminiCriticPackages `
                 -ScopedFiles $package.Files `
                 -CurrentMaxFilesPerPackage 1 `
-                -CurrentMaxDiffLines ([Math]::Max(120, [int][Math]::Floor($CurrentMaxDiffLines / 2)))
+                -CurrentMaxDiffLines $nextMaxDiffLines `
+                -CurrentScopeName ("{0}-narrow-{1}" -f $CurrentScopeName, $package.Index)
             continue
         }
 
@@ -121,7 +135,8 @@ try {
     Invoke-GeminiCriticPackages `
         -ScopedFiles $scopedFiles `
         -CurrentMaxFilesPerPackage $MaxFilesPerPackage `
-        -CurrentMaxDiffLines $MaxDiffLines
+        -CurrentMaxDiffLines $MaxDiffLines `
+        -CurrentScopeName $ScopeName
 }
 finally {
     Pop-Location
