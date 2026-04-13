@@ -144,9 +144,12 @@ export type WikiPagePreview = {
   title: string;
   summary: string;
   section: string;
+  scopeLabel: string;
+  stateLabel: string;
   updatedAt: string;
   sourceRefs: string[];
   candidateRefs: string[];
+  relatedPageIds: string[];
   body: string[];
 };
 
@@ -588,9 +591,12 @@ export const wikiPages: WikiPagePreview[] = [
     title: "연쇄법칙 핵심 정리",
     summary: "합성 함수 구조를 먼저 식별하고 안쪽 함수의 변화율까지 함께 보는 규칙을 설명합니다.",
     section: "공식 개념",
+    scopeLabel: "미적분 I · A반 · Academic",
+    stateLabel: "Synced",
     updatedAt: "오늘 오전 10:24",
     sourceRefs: ["lecture-note-week-03-chain-rule.md", "student-chain-rule-confusion.json"],
     candidateRefs: ["cand-chain-rule-misconception"],
+    relatedPageIds: ["page-product-rule", "page-homework-faq"],
     body: [
       "연쇄법칙은 함수 안에 다른 함수가 들어 있는 합성 구조에서 사용한다.",
       "먼저 바깥 함수의 변화율을 구하고, 그다음 안쪽 함수의 변화율을 곱한다.",
@@ -602,9 +608,12 @@ export const wikiPages: WikiPagePreview[] = [
     title: "과제 제출 FAQ",
     summary: "제출 마감, 수정 가능 범위, 자주 묻는 운영 질문을 공식 답변으로 정리합니다.",
     section: "운영 FAQ",
+    scopeLabel: "미적분 I · A반 · Operations",
+    stateLabel: "Synced",
     updatedAt: "어제 오후 6:40",
     sourceRefs: ["announcement-homework-policy.md"],
     candidateRefs: ["cand-homework-faq"],
+    relatedPageIds: ["page-chain-rule-guide"],
     body: [
       "과제는 마감 전까지 여러 번 수정 제출할 수 있다.",
       "마감 이후에는 운영자 승인 없이는 재제출이 불가능하다.",
@@ -616,9 +625,12 @@ export const wikiPages: WikiPagePreview[] = [
     title: "곱의 미분법 빠른 판단 규칙",
     summary: "두 함수가 나란히 곱해진 구조를 빠르게 구분하는 판단 체크리스트입니다.",
     section: "빠른 참고",
+    scopeLabel: "미적분 I · A반 · Academic",
+    stateLabel: "Needs Review",
     updatedAt: "2일 전",
     sourceRefs: ["lecture-note-product-rule.md"],
     candidateRefs: [],
+    relatedPageIds: ["page-chain-rule-guide"],
     body: [
       "식 안에 함수 두 개가 곱해져 있으면 곱의 미분법을 먼저 의심한다.",
       "한쪽만 미분하고 다른 쪽을 유지하는 두 항의 합 구조를 기억한다.",
@@ -682,4 +694,14 @@ export function withProfile(href: string, profileId: string): string {
 export function getRecentContextsForProfile(profileId?: string | null): RecentContext[] {
   const profile = getProfileById(profileId);
   return recentContexts.filter((context) => context.profileId === profile.profileId);
+}
+
+export function getWikiPageById(pageId?: string | null): WikiPagePreview {
+  return wikiPages.find((page) => page.pageId === pageId) ?? wikiPages[0];
+}
+
+export function getRelatedWikiPages(page: WikiPagePreview): WikiPagePreview[] {
+  return page.relatedPageIds
+    .map((pageId) => wikiPages.find((candidate) => candidate.pageId === pageId))
+    .filter((candidate): candidate is WikiPagePreview => Boolean(candidate));
 }
