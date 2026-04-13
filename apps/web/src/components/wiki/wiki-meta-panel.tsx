@@ -1,24 +1,25 @@
-﻿import type { WikiPagePreview } from "@/lib/demo-data";
-import { getRelatedWikiPages } from "@/lib/demo-data";
+﻿import type { WikiBrowserDetail, WikiBrowserListItem } from "@/lib/wiki-browser";
 
 function StateBadge({ stateLabel }: { stateLabel: string }) {
   const className =
-    stateLabel === "Synced"
-      ? "bg-[var(--success-soft)] text-[var(--success)]"
-      : "bg-[var(--warning-soft)] text-[var(--warning)]";
+    stateLabel === "Candidate linked"
+      ? "bg-[var(--warning-soft)] text-[var(--warning)]"
+      : stateLabel === "Source traced"
+        ? "bg-[var(--success-soft)] text-[var(--success)]"
+        : "bg-[var(--surface-muted)] text-[var(--muted)]";
 
   return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${className}`}>{stateLabel}</span>;
 }
 
 export function WikiMetaPanel({
   page,
+  relatedPages,
   onSelectPage,
 }: {
-  page: WikiPagePreview;
+  page: WikiBrowserDetail;
+  relatedPages: WikiBrowserListItem[];
   onSelectPage: (pageId: string) => void;
 }) {
-  const relatedPages = getRelatedWikiPages(page);
-
   return (
     <div className="scrollbar-thin flex-1 overflow-y-auto px-4 py-4">
       <div className="space-y-3">
@@ -26,7 +27,7 @@ export function WikiMetaPanel({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-[var(--foreground)]">문서 상태</p>
-              <p className="mt-2 text-sm leading-6 text-[var(--body)]">현재 위키에 반영된 상태와 마지막 갱신 시점을 한눈에 보여줍니다.</p>
+              <p className="mt-2 text-sm leading-6 text-[var(--body)]">현재 위키에 반영된 연결 상태와 마지막 갱신 시점을 한눈에 보여줍니다.</p>
             </div>
             <StateBadge stateLabel={page.stateLabel} />
           </div>
@@ -46,14 +47,20 @@ export function WikiMetaPanel({
           <p className="text-sm font-semibold text-[var(--foreground)]">Source refs</p>
           <p className="mt-2 text-sm leading-6 text-[var(--body)]">이 문서를 뒷받침하는 raw source와 근거 자료입니다.</p>
           <div className="mt-4 flex flex-wrap gap-2">
-            {page.sourceRefs.map((ref) => (
-              <span
-                key={ref}
-                className="rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--body)]"
-              >
-                {ref}
+            {page.sourceRefs.length ? (
+              page.sourceRefs.map((ref) => (
+                <span
+                  key={ref}
+                  className="rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--body)]"
+                >
+                  {ref}
+                </span>
+              ))
+            ) : (
+              <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">
+                아직 연결된 source 없음
               </span>
-            ))}
+            )}
           </div>
         </article>
 
@@ -82,22 +89,28 @@ export function WikiMetaPanel({
           <p className="text-sm font-semibold text-[var(--foreground)]">Related pages</p>
           <p className="mt-2 text-sm leading-6 text-[var(--body)]">같은 개념 흐름이나 운영 규칙에서 함께 읽으면 좋은 공식 문서들입니다.</p>
           <div className="mt-4 space-y-3">
-            {relatedPages.map((relatedPage) => (
-              <button
-                key={relatedPage.pageId}
-                type="button"
-                onClick={() => onSelectPage(relatedPage.pageId)}
-                className="block rounded-[18px] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3 transition hover:border-[var(--border-strong)]"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-[var(--foreground)]">{relatedPage.title}</p>
-                  <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">
-                    {relatedPage.section}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-[var(--body)]">{relatedPage.summary}</p>
-              </button>
-            ))}
+            {relatedPages.length ? (
+              relatedPages.map((relatedPage) => (
+                <button
+                  key={relatedPage.pageId}
+                  type="button"
+                  onClick={() => onSelectPage(relatedPage.pageId)}
+                  className="block w-full rounded-[18px] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3 text-left transition hover:border-[var(--border-strong)]"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-[var(--foreground)]">{relatedPage.title}</p>
+                    <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">
+                      {relatedPage.section}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-[var(--body)]">{relatedPage.summary}</p>
+                </button>
+              ))
+            ) : (
+              <div className="rounded-[18px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-3 py-4 text-sm leading-6 text-[var(--body)]">
+                현재 문서와 같은 맥락에서 함께 읽을 관련 페이지가 아직 충분히 축적되지 않았습니다.
+              </div>
+            )}
           </div>
         </article>
       </div>
