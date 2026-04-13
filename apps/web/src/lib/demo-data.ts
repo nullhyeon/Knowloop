@@ -153,12 +153,56 @@ export type WikiPagePreview = {
   body: string[];
 };
 
+export type ReviewPatchLine = {
+  lineId: string;
+  kind: "context" | "addition" | "removal";
+  text: string;
+};
+
+export type ReviewAuditEntry = {
+  entryId: string;
+  label: string;
+  actor: string;
+  createdAt: string;
+  summary: string;
+};
+
+export type ReviewAction = {
+  action: "approve" | "merge" | "drop" | "resume-sync";
+  label: string;
+  hint: string;
+  tone: "primary" | "secondary" | "danger" | "warning";
+};
+
+export type ReviewCandidate = {
+  candidateId: string;
+  title: string;
+  kind: "Misconception" | "FAQ" | "Concept Patch";
+  lifecycleState: "Open" | "Pending" | "Promoted" | "Needs Recovery";
+  confidence: string;
+  confidenceLabel: string;
+  summary: string;
+  queueNote: string;
+  targetPage: string;
+  targetPageId: string;
+  scopeLabel: string;
+  updatedAt: string;
+  sourceRefs: string[];
+  sessionRefs: string[];
+  evidenceNote: string;
+  auditEntries: ReviewAuditEntry[];
+  patchPreviewTitle: string;
+  patchPreviewSummary: string;
+  patchLines: ReviewPatchLine[];
+  availableActions: ReviewAction[];
+};
+
 export const navigationItems: NavigationItem[] = [
   { label: "Workspace", href: "/workspace", roles: ["student", "instructor", "operator", "validator"], implemented: true },
   { label: "Ask", href: "/ask", roles: ["student", "instructor"], implemented: true },
   { label: "Learning", href: "/learning", roles: ["student"], implemented: true },
   { label: "Wiki", href: "/wiki", roles: ["student", "instructor", "validator"], implemented: true },
-  { label: "Review", href: "/review", roles: ["instructor", "operator", "validator"], implemented: false },
+  { label: "Review", href: "/review", roles: ["instructor", "operator", "validator"], implemented: true },
   { label: "Insights", href: "/insights", roles: ["instructor"], implemented: false },
   { label: "Sources", href: "/sources", roles: ["instructor", "operator"], implemented: false },
   { label: "Maintenance", href: "/maintenance", roles: ["operator", "validator"], implemented: false },
@@ -639,6 +683,219 @@ export const wikiPages: WikiPagePreview[] = [
   },
 ];
 
+export const reviewCandidates: ReviewCandidate[] = [
+  {
+    candidateId: "cand-chain-rule-misconception",
+    title: "연쇄법칙 오개념 보강 후보",
+    kind: "Misconception",
+    lifecycleState: "Open",
+    confidence: "0.84",
+    confidenceLabel: "높음",
+    summary: "학생들이 연쇄법칙과 곱의 미분법을 식의 구조보다 계산 순서로만 구분하는 패턴을 정리한 후보입니다.",
+    queueNote: "이번 주 반복 질문 3회 이상",
+    targetPage: "연쇄법칙 핵심 정리",
+    targetPageId: "page-chain-rule-guide",
+    scopeLabel: "미적분 I · A반 · Academic",
+    updatedAt: "오늘 오전 11:12",
+    sourceRefs: ["lecture-note-week-03-chain-rule.md", "student-chain-rule-confusion.json"],
+    sessionRefs: ["ses-20260408-114000", "ses-20260407-133000"],
+    evidenceNote: "학생 세션에서 같은 오개념이 반복되어, 공식 개념 설명에 판단 규칙을 추가할 가치가 높은 후보입니다.",
+    auditEntries: [
+      {
+        entryId: "audit-cand-chain-open",
+        label: "candidate_opened",
+        actor: "system",
+        createdAt: "오늘 오전 10:58",
+        summary: "반복 질문 패턴을 기반으로 새 candidate가 생성되었습니다.",
+      },
+      {
+        entryId: "audit-cand-chain-scoped",
+        label: "class_pattern_detected",
+        actor: "강사 박준호",
+        createdAt: "오늘 오전 11:03",
+        summary: "A반에서 같은 표현이 세 번 이상 반복되어 review 우선순위가 높아졌습니다.",
+      },
+    ],
+    patchPreviewTitle: "연쇄법칙 핵심 정리 patch preview",
+    patchPreviewSummary: "판단 기준 문장을 추가해 학생이 식의 구조를 먼저 보도록 유도하는 수정안입니다.",
+    patchLines: [
+      {
+        lineId: "cand-chain-context-1",
+        kind: "context",
+        text: "연쇄법칙은 함수 안에 다른 함수가 들어 있는 합성 구조에서 사용한다.",
+      },
+      {
+        lineId: "cand-chain-add-1",
+        kind: "addition",
+        text: "학생 설명에서는 먼저 식을 보고 함수가 다른 함수 안에 들어 있는지 확인하게 하면 곱의 미분법과의 혼동을 줄일 수 있다.",
+      },
+      {
+        lineId: "cand-chain-context-2",
+        kind: "context",
+        text: "먼저 바깥 함수의 변화율을 구하고, 그다음 안쪽 함수의 변화율을 곱한다.",
+      },
+    ],
+    availableActions: [
+      {
+        action: "approve",
+        label: "Approve",
+        hint: "이 candidate를 공식 위키 승격 후보로 확정합니다.",
+        tone: "primary",
+      },
+      {
+        action: "merge",
+        label: "Merge",
+        hint: "기존 후보나 페이지에 병합해 중복을 줄입니다.",
+        tone: "secondary",
+      },
+      {
+        action: "drop",
+        label: "Drop",
+        hint: "근거가 부족하거나 중복이면 후보를 종료합니다.",
+        tone: "danger",
+      },
+    ],
+  },
+  {
+    candidateId: "cand-homework-faq",
+    title: "과제 제출 FAQ 보강 후보",
+    kind: "FAQ",
+    lifecycleState: "Pending",
+    confidence: "0.89",
+    confidenceLabel: "매우 높음",
+    summary: "운영 FAQ에 마감 이후 재제출 조건을 더 명확히 쓰자는 후보입니다.",
+    queueNote: "운영 질문 빈도 상위 1위",
+    targetPage: "과제 제출 FAQ",
+    targetPageId: "page-homework-faq",
+    scopeLabel: "미적분 I · A반 · Operations",
+    updatedAt: "어제 오후 6:52",
+    sourceRefs: ["announcement-homework-policy.md"],
+    sessionRefs: ["ses-20260407-ops-001"],
+    evidenceNote: "운영 문의가 같은 문장으로 반복되어 FAQ에 추가하면 답변 일관성과 처리 속도를 함께 높일 수 있습니다.",
+    auditEntries: [
+      {
+        entryId: "audit-cand-homework-open",
+        label: "candidate_opened",
+        actor: "system",
+        createdAt: "어제 오후 6:10",
+        summary: "운영 문의 반복 패턴에서 FAQ candidate가 생성되었습니다.",
+      },
+      {
+        entryId: "audit-cand-homework-ready",
+        label: "patch_preview_ready",
+        actor: "운영자 이도윤",
+        createdAt: "어제 오후 6:41",
+        summary: "공식 FAQ에 바로 반영 가능한 patch preview가 생성되었습니다.",
+      },
+    ],
+    patchPreviewTitle: "과제 제출 FAQ patch preview",
+    patchPreviewSummary: "마감 이후 재제출 조건과 승인 주체를 FAQ에 명확히 적는 운영 보강안입니다.",
+    patchLines: [
+      {
+        lineId: "cand-homework-context-1",
+        kind: "context",
+        text: "과제는 마감 전까지 여러 번 수정 제출할 수 있다.",
+      },
+      {
+        lineId: "cand-homework-removal-1",
+        kind: "removal",
+        text: "마감 이후에는 재제출이 어렵다.",
+      },
+      {
+        lineId: "cand-homework-add-1",
+        kind: "addition",
+        text: "마감 이후 재제출은 운영자 승인 후에만 가능하며, 강사 요청만으로는 즉시 반영되지 않는다.",
+      },
+    ],
+    availableActions: [
+      {
+        action: "approve",
+        label: "Approve",
+        hint: "운영 FAQ 보강안으로 확정합니다.",
+        tone: "primary",
+      },
+      {
+        action: "merge",
+        label: "Merge",
+        hint: "기존 운영 후보와 통합해 하나의 FAQ 흐름으로 정리합니다.",
+        tone: "secondary",
+      },
+      {
+        action: "drop",
+        label: "Drop",
+        hint: "이미 FAQ에 반영된 내용이면 종료합니다.",
+        tone: "danger",
+      },
+    ],
+  },
+  {
+    candidateId: "cand-product-rule-sync-recovery",
+    title: "곱의 미분법 동기화 복구 후보",
+    kind: "Concept Patch",
+    lifecycleState: "Needs Recovery",
+    confidence: "0.76",
+    confidenceLabel: "보통",
+    summary: "승격은 완료됐지만 wiki sync가 중간에 끊겨 복구가 필요한 후보입니다.",
+    queueNote: "resume-sync 필요",
+    targetPage: "곱의 미분법 빠른 판단 규칙",
+    targetPageId: "page-product-rule",
+    scopeLabel: "미적분 I · A반 · Academic",
+    updatedAt: "2일 전",
+    sourceRefs: ["lecture-note-product-rule.md"],
+    sessionRefs: ["ses-20260406-090000"],
+    evidenceNote: "승격과 patch preview는 이미 정리됐지만, wiki sync가 끊겨 validator가 resume 흐름으로 마무리해야 하는 상태입니다.",
+    auditEntries: [
+      {
+        entryId: "audit-product-promoted",
+        label: "candidate_promoted",
+        actor: "검토자 한서윤",
+        createdAt: "2일 전 오후 3:08",
+        summary: "candidate가 공식 위키 반영 대상으로 승격되었습니다.",
+      },
+      {
+        entryId: "audit-product-sync-pending",
+        label: "candidate_wiki_sync_pending",
+        actor: "system",
+        createdAt: "2일 전 오후 3:08",
+        summary: "wiki patch 적용 직전 상태에서 동기화가 pending으로 남았습니다.",
+      },
+    ],
+    patchPreviewTitle: "곱의 미분법 quick guide patch preview",
+    patchPreviewSummary: "설명 자체는 승인되었고, 남은 일은 wiki에 안전하게 sync를 마무리하는 것입니다.",
+    patchLines: [
+      {
+        lineId: "cand-product-context-1",
+        kind: "context",
+        text: "식 안에 함수 두 개가 곱해져 있으면 곱의 미분법을 먼저 의심한다.",
+      },
+      {
+        lineId: "cand-product-add-1",
+        kind: "addition",
+        text: "학생 설명에서는 '둘이 나란히 곱해진 구조인지 먼저 본다'는 한 줄 판단 문장을 함께 제시한다.",
+      },
+      {
+        lineId: "cand-product-context-2",
+        kind: "context",
+        text: "연쇄법칙과 함께 등장할 때는 안쪽 구조를 먼저 구분한 뒤 규칙을 조합한다.",
+      },
+    ],
+    availableActions: [
+      {
+        action: "resume-sync",
+        label: "Resume sync",
+        hint: "멈춘 wiki sync를 다시 이어서 공식 문서 반영을 완료합니다.",
+        tone: "warning",
+      },
+      {
+        action: "drop",
+        label: "Drop",
+        hint: "복구가 맞지 않다고 판단되면 승격 흐름을 종료합니다.",
+        tone: "danger",
+      },
+    ],
+  },
+];
+
 export function getProfileById(profileId?: string | null): KnowloopProfile {
   return demoProfiles.find((profile) => profile.profileId === profileId) ?? demoProfiles[0];
 }
@@ -704,4 +961,37 @@ export function getRelatedWikiPages(page: WikiPagePreview): WikiPagePreview[] {
   return page.relatedPageIds
     .map((pageId) => wikiPages.find((candidate) => candidate.pageId === pageId))
     .filter((candidate): candidate is WikiPagePreview => Boolean(candidate));
+}
+
+export function getReviewCandidates(profileId?: string | null): ReviewCandidate[] {
+  const profile = getProfileById(profileId);
+
+  switch (profile.role) {
+    case "operator":
+      return reviewCandidates.filter((candidate) => candidate.scopeLabel.includes("Operations"));
+    case "validator":
+      return reviewCandidates;
+    case "instructor":
+      return reviewCandidates.filter((candidate) => !candidate.scopeLabel.includes("Operations"));
+    default:
+      return [];
+  }
+}
+
+export function getReviewActionsForProfile(
+  profileId: string | null | undefined,
+  candidate: ReviewCandidate,
+): ReviewAction[] {
+  const profile = getProfileById(profileId);
+
+  switch (profile.role) {
+    case "operator":
+      return [];
+    case "validator":
+      return candidate.availableActions;
+    case "instructor":
+      return candidate.scopeLabel.includes("Operations") ? [] : candidate.availableActions;
+    default:
+      return [];
+  }
 }
