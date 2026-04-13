@@ -120,8 +120,8 @@ Badges are central to the product.
 - `Source`
 - `Session`
 - `Candidate`
-- `Wiki`
-- `Learning`
+- `Wiki Page`
+- `Learning Note`
 
 #### Lifecycle / State
 
@@ -400,11 +400,11 @@ Rules:
 
 Examples:
 
-- `검색`
-- `위키 페이지`
-- `근거 보기`
-- `승인 대기`
-- `오류 수정`
+- `Search`
+- `Wiki Page`
+- `View Evidence`
+- `Pending Review`
+- `Fix Error`
 
 ---
 

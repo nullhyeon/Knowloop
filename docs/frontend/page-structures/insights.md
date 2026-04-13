@@ -12,7 +12,7 @@ Provide instructors with aggregate, actionable insight into repeated confusion a
 
 Help the instructor answer:
 
-`지금 어떤 주제를 다시 가르쳐야 하고, 어떤 후보를 먼저 검토해야 하는가?`
+`What should I reteach next, and which candidate should I review first?`
 
 ## Layout
 

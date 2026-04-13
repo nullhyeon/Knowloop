@@ -15,7 +15,7 @@ Knowloop is a role-aware knowledge operations console for Korean education teams
 It is not a single chat surface.
 The frontend must make the full workflow visible:
 
-`질문 -> 축적 -> 검토 -> 승격 -> 탐색`
+`question -> accumulate -> review -> promote -> explore`
 
 Primary value by role:
 

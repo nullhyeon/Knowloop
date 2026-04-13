@@ -12,7 +12,7 @@ Expose the student's learning continuity: recent confusion, learning notes, and 
 
 Answer:
 
-`내가 무엇을 아직 이해하지 못했고, 지금 다시 보면 무엇이 좋아지는가?`
+`What do I still not understand, and what should I revisit now?`
 
 ## Layout
 

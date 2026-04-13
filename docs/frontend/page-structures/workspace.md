@@ -16,7 +16,7 @@ This page establishes the current working context and makes the product feel lik
 
 Help the user answer one question immediately:
 
-`지금 나는 어떤 역할로, 어떤 수업/반 맥락에 들어가야 하는가?`
+`What role and course/class context should I enter right now?`
 
 ## Layout
 

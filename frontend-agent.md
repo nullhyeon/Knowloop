@@ -147,15 +147,15 @@ When acting as Reviewer, check:
 
 Good:
 
-- `검색`
-- `근거 보기`
-- `승인 대기`
-- `최근 세션`
+- `Search`
+- `View Evidence`
+- `Pending Review`
+- `Recent Sessions`
 
 Bad:
 
-- `지금 바로 시작하기 위한 온보딩 플로우`
-- `데이터 인사이트를 위한 하이레벨 인터랙티브 뷰`
+- `Launch onboarding flow for immediate start`
+- `High-level interactive view for data insights`
 
 ---
 

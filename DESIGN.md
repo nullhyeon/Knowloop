@@ -151,8 +151,8 @@ Examples:
 - `Source`
 - `Session`
 - `Candidate`
-- `Wiki`
-- `Learning`
+- `Wiki Page`
+- `Learning Note`
 - `Open`
 - `Pending`
 - `Promoted`
@@ -289,11 +289,11 @@ English is fine when it is already standard in Korean tech products:
 
 Good example:
 
-- `지금 이 반에서 가장 많이 막히는 개념을 확인합니다.`
+- `Review the concepts students in this class struggle with most.`
 
 Bad example:
 
-- `재밌는 학습 카드가 오늘도 여러분을 기다리고 있어요!`
+- `Fun learning cards are waiting for you today!`
 
 ---
 
