@@ -139,6 +139,33 @@ export type NextAction = {
   href: string;
 };
 
+export type InsightSummaryCard = {
+  label: string;
+  value: string;
+  hint: string;
+  tone: "neutral" | "review" | "warning" | "success";
+};
+
+export type InsightPattern = {
+  patternId: string;
+  title: string;
+  summary: string;
+  signal: string;
+  stateLabel: string;
+  actionLabel: string;
+  href: string;
+};
+
+export type InsightPriorityAction = {
+  actionId: string;
+  title: string;
+  summary: string;
+  owner: string;
+  nextSurface: string;
+  href: string;
+  tone: "review" | "primary" | "warning";
+};
+
 export type WikiPagePreview = {
   pageId: string;
   title: string;
@@ -203,7 +230,7 @@ export const navigationItems: NavigationItem[] = [
   { label: "Learning", href: "/learning", roles: ["student"], implemented: true },
   { label: "Wiki", href: "/wiki", roles: ["student", "instructor", "validator"], implemented: true },
   { label: "Review", href: "/review", roles: ["instructor", "operator", "validator"], implemented: true },
-  { label: "Insights", href: "/insights", roles: ["instructor"], implemented: false },
+  { label: "Insights", href: "/insights", roles: ["instructor"], implemented: true },
   { label: "Sources", href: "/sources", roles: ["instructor", "operator"], implemented: false },
   { label: "Maintenance", href: "/maintenance", roles: ["operator", "validator"], implemented: false },
 ];
@@ -626,6 +653,93 @@ export const nextActions: NextAction[] = [
     title: "직전 질문 세션 다시 보기",
     description: "비슷한 질문을 어떻게 표현했는지 확인해 오개념 패턴을 줄입니다.",
     href: "/ask",
+  },
+];
+
+export const insightSummaryCards: InsightSummaryCard[] = [
+  {
+    label: "이번 주 반복 질문",
+    value: "18건",
+    hint: "연쇄법칙과 곱의 미분법 구간에 질문이 몰려 있습니다.",
+    tone: "neutral",
+  },
+  {
+    label: "우선 review 후보",
+    value: "3건",
+    hint: "바로 공식 지식 보강 여부를 판단해야 하는 candidate 수입니다.",
+    tone: "review",
+  },
+  {
+    label: "다음 수업 재설명 필요",
+    value: "2개 주제",
+    hint: "한 번 더 설명하면 confusion을 크게 줄일 수 있는 주제입니다.",
+    tone: "warning",
+  },
+  {
+    label: "최근 반영된 wiki",
+    value: "1건",
+    hint: "이미 승격된 지식이 있어 다음 수업 자료로 바로 재사용할 수 있습니다.",
+    tone: "success",
+  },
+];
+
+export const insightPatterns: InsightPattern[] = [
+  {
+    patternId: "pattern-chain-rule",
+    title: "연쇄법칙과 곱의 미분법을 구조보다 계산 순서로 구분함",
+    summary: "학생들이 식의 형태를 먼저 보지 않고, 무조건 미분을 시작해서 규칙을 섞는 경향이 반복됩니다.",
+    signal: "A반 질문 6건 · candidate 1건 생성",
+    stateLabel: "Needs reteach",
+    actionLabel: "연쇄법칙 위키와 review 후보 같이 보기",
+    href: "/review",
+  },
+  {
+    patternId: "pattern-homework-policy",
+    title: "과제 제출 마감 이후 재제출 규칙을 강사 답변과 FAQ에서 다르게 기억함",
+    summary: "운영 FAQ는 있으나, 실제 수업 중 전달 문장과 FAQ 표현이 미세하게 달라 운영 문의가 계속 반복됩니다.",
+    signal: "운영 문의 4건 · FAQ candidate 1건",
+    stateLabel: "Review first",
+    actionLabel: "운영 FAQ patch preview 열기",
+    href: "/review",
+  },
+  {
+    patternId: "pattern-product-rule",
+    title: "곱의 미분법 quick guide는 존재하지만 최근 질문 표현을 아직 반영하지 못함",
+    summary: "공식 위키가 있으나 최신 설명 패턴이 sync 중단 상태로 남아 있어 validator 확인이 필요합니다.",
+    signal: "sync pending 1건",
+    stateLabel: "Needs recovery",
+    actionLabel: "복구 필요한 candidate 보기",
+    href: "/review",
+  },
+];
+
+export const insightPriorityActions: InsightPriorityAction[] = [
+  {
+    actionId: "action-reteach-chain-rule",
+    title: "다음 수업 도입 5분을 연쇄법칙 판단 규칙 재설명에 사용",
+    summary: "식을 보기 전에 구조를 먼저 읽는 한 문장을 수업 첫머리에 넣으면 confusion을 줄일 가능성이 큽니다.",
+    owner: "강사 박준호",
+    nextSurface: "Ask + Wiki",
+    href: "/wiki",
+    tone: "primary",
+  },
+  {
+    actionId: "action-review-homework-faq",
+    title: "과제 제출 FAQ candidate를 먼저 approve 여부 판단",
+    summary: "운영 질문 빈도가 높아, FAQ patch를 확정하면 답변 일관성과 처리 시간을 동시에 개선할 수 있습니다.",
+    owner: "운영자/검토자 협업",
+    nextSurface: "Review",
+    href: "/review",
+    tone: "review",
+  },
+  {
+    actionId: "action-resume-product-sync",
+    title: "곱의 미분법 sync pending 후보를 resume-sync로 마감",
+    summary: "승격은 끝났지만 wiki sync가 끊긴 상태라, 복구를 마쳐야 강사용 공식 지식이 최신 상태로 유지됩니다.",
+    owner: "검토자 한서윤",
+    nextSurface: "Review",
+    href: "/review",
+    tone: "warning",
   },
 ];
 
