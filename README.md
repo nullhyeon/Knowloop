@@ -1,152 +1,292 @@
 # Knowloop
 
-Knowloop is a backend-first workspace for an education-focused memory OS:
+> 질문이 쌓일수록 더 정리되는 수업 지식 운영 시스템
 
-- `raw -> candidate -> formal wiki -> learning -> maintenance`
-- backend foundation first, frontend after the data and agent workflow are stable
-- Codex and Gemini share the same workspace rules and skill library
-- the working loop is `Codex Builder -> Gemini Pro Critic -> Codex Critic retry chain if needed -> Codex Reviewer`
+Knowloop는 교육 현장의 질문, 강의 자료, 후보 지식을 함께 운영하는 `LLM-Wiki` 기반 Edu Memory OS입니다.
+단순히 답변만 하는 챗봇이 아니라, 질문을 세션으로 축적하고, 학습 노트와 후보 지식을 만들고, 검토를 거쳐 공식 위키를 갱신합니다.
 
-## Current Stack
+---
 
-- Python 3.12
-- FastAPI
-- SQLite / FTS5 (planned MVP storage)
-- Markdown knowledge layers under `data/`
-- `uv` for environment and task execution
-- `pytest` and `ruff`
-- `agent-skills` installed locally under `.agents/`
+## 해결하는 문제
 
-## Documentation
+교육 현장에서는 같은 문제가 반복됩니다.
 
-- `docs/README.md`
-- `docs/product/product-overview.md`
-- `docs/product/mvp-scope.md`
-- `docs/product/pre-implementation-planning-checklist.md`
-- `docs/architecture/system-architecture.md`
-- `docs/architecture/data-contracts.md`
-- `docs/architecture/query-writeback-policy.md`
-- `docs/architecture/api-contracts.md`
-- `docs/architecture/promotion-policy.md`
-- `docs/architecture/system-diagrams.md`
-- `docs/product/role-permissions.md`
-- `docs/product/evaluation-plan.md`
-- `docs/product/fixture-catalog.md`
-- `docs/product/demo-script.md`
-- `docs/product/mvp-patterns.md`
-- `docs/development/agent-harness.md`
-- `docs/development/backend-runbook.md`
+- 학생은 AI에게 질문하고 답을 받지만, 그 내용이 다음 학습으로 잘 이어지지 않습니다.
+- 교강사는 같은 질문을 여러 번 다시 설명하지만, 그 흐름이 공식 지식으로 정리되지 않습니다.
+- 운영 정보와 수업 정보가 분리돼 있어, 공지와 FAQ도 계속 다시 만들어야 합니다.
 
-## Model Policy
+Knowloop는 이 문제를 `질문 -> 축적 -> 검토 -> 승격 -> 탐색` 흐름으로 해결합니다.
 
-- `Codex Builder`: `gpt-5.4` + `xhigh`
-- `Codex Reviewer`: `gpt-5.4` + `xhigh`
-- `Gemini Pro Critic`: `pro` only
-- `Codex Critic`: `gpt-5.4` + `xhigh` fallback when Gemini cannot complete the critic pass
+---
 
-If Gemini Pro is at capacity or cannot complete a substantive pass, continue through the pinned critic retry chain. Do not downgrade the critic role to a lower-quality model and do not substitute manual builder self-review for missing critic or reviewer passes.
+## 핵심 경험
 
-## Environment
+### 1. Ask
+- 학생은 현재 수업 맥락에서 질문합니다.
+- 답변만 보이는 것이 아니라, 근거, 참조 위키, write-back 결과가 함께 보입니다.
 
-The API reads local settings from `apps/api/.env`.
+### 2. Learning
+- 질문은 학습 노트, gap tracker, next actions로 이어집니다.
+- 학생은 "무엇을 다시 봐야 하는지"를 바로 확인할 수 있습니다.
 
-Safe defaults are documented in `apps/api/.env.example`.
+### 3. Review
+- 불확실한 내용은 바로 공식 지식이 되지 않습니다.
+- candidate를 만들고, 교강사나 검토자가 patch preview를 본 뒤 approve / merge / drop 합니다.
 
-## Quick Start
+### 4. Wiki
+- 검토를 통과한 내용만 공식 위키로 승격됩니다.
+- 공식 위키는 source refs, candidate refs, updated_at을 함께 보여주는 maintained knowledge layer입니다.
+
+### 5. Insights
+- 교강사는 반복 질문, 오개념 패턴, 우선순위 액션을 한 화면에서 봅니다.
+- 단순 차트보다 "다음 수업에서 무엇을 해야 하는가"가 먼저 보이도록 설계했습니다.
+
+---
+
+## 주요 사용자
+
+### 학생
+- Ask에서 질문
+- Learning에서 confusion, gaps, next actions 확인
+- Wiki에서 공식 개념 문서 탐색
+
+### 교강사
+- Insights에서 반복 질문과 오개념 패턴 확인
+- Review에서 candidate 검토
+- Wiki와 Sources에서 공식 지식과 근거 추적
+
+### 보조 역할
+- `operator`: 운영 자료와 operations domain 관리
+- `validator`: candidate 검토와 maintenance 확인
+
+MVP의 중심 경험은 `학생`과 `교강사`에 맞춰 설계되어 있습니다.
+
+---
+
+## 핵심 기능
+
+| 기능 | 설명 |
+| --- | --- |
+| Context bootstrap | role / course / class / domain 맥락을 기준으로 같은 제품 안에서 다른 사용자 경험을 제공합니다. |
+| Query + evidence | 답변과 함께 answer basis, retrieval refs, runtime 상태, write-back 결과를 보여줍니다. |
+| Learning layer | learning note, gaps, next actions, related wiki를 학생 개인 흐름으로 제공합니다. |
+| Candidate workflow | 불확실한 지식은 candidate로 저장하고 review를 거쳐 formal wiki로 승격합니다. |
+| Wiki browser | 공식 지식을 탐색하고 source refs, candidate refs, scope를 함께 확인할 수 있습니다. |
+| Instructor insights | 반복 confusion 패턴, 우선 review 액션, 수업 개입 포인트를 보여줍니다. |
+| Source registry | 자료 등록, scope 관리, linked wiki / candidate traceability를 지원합니다. |
+| Maintenance console | stale candidate, orphan refs, report status를 운영 관점에서 확인합니다. |
+
+---
+
+## AI 활용 전략
+
+Knowloop는 `결정론적 로직`과 `생성형 AI`를 분리합니다.
+
+### 1. 결정론적 레이어
+- session 저장
+- candidate lifecycle
+- review state transition
+- audit trail
+- maintenance report
+
+이 레이어는 재현성과 회복성을 위해 deterministic하게 유지합니다.
+
+### 2. 생성형 레이어
+- grounded answer rewrite
+- 학습 노트/후보 지식 생성 보조
+- 위키 중심 답변 보정
+
+현재 런타임은 OpenAI 기반 optional adapter를 사용합니다.
+
+핵심 원칙:
+- 공식 지식은 wiki 우선
+- raw source는 fallback
+- 검토되지 않은 내용은 formal wiki로 직접 쓰지 않음
+- AI 출력은 candidate / review / audit 흐름 안에서만 승격
+
+---
+
+## 현재 구현 상태
+
+### 프론트
+- `/` 첫 시작 화면
+- `/workspace`
+- `/ask`
+- `/learning`
+- `/wiki`
+- `/review`
+- `/insights`
+- `/sources`
+- `/maintenance`
+
+### 백엔드
+- `context`
+- `query`
+- `learning`
+- `review`
+- `sessions`
+- `sources`
+- `wiki`
+- `instructor insights`
+- `maintenance`
+
+### 실제 API 연결 완료 surface
+- `/workspace`
+- `/ask`
+- `/learning`
+- `/wiki`
+- `/review`
+- `/sources`
+- `/maintenance`
+- `/insights`
+
+즉 현재 데모는 mock 화면이 아니라, 실제 API와 demo seed 데이터 위에서 동작하는 MVP 상태입니다.
+
+---
+
+## 데모 시작 방법
+
+첫 시작 화면(`/`)에서 바로 두 가지 샘플 동선을 체험할 수 있습니다.
+
+- `학생용 샘플 데이터로 시작`
+- `교강사용 샘플 데이터로 시작`
+
+샘플 프로필:
+- `student-minji`
+- `instructor-calculus-team`
+
+학생 동선:
+- `/ask`
+- `/learning`
+- `/wiki`
+
+교강사 동선:
+- `/insights`
+- `/review`
+- `/wiki`
+
+---
+
+## 기술 스택
+
+| 영역 | 기술 |
+| --- | --- |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS v4 |
+| Backend | FastAPI, Python 3.12 |
+| Runtime AI | OpenAI API (`gpt-5.4`) |
+| Storage | SQLite + Markdown/files under `data/` |
+| Knowledge layers | raw / session / candidate / wiki / learning / maintenance |
+| Validation | pytest, ruff, ESLint, Next build |
+| Tooling | `uv`, PowerShell scripts |
+
+---
+
+## 저장 구조
+
+Knowloop는 현재 backend-first MVP로, 파일 기반 지식 저장과 SQLite 기반 메타 저장을 함께 사용합니다.
+
+- raw sources: `data/raw`
+- sessions: `data/sessions`, `data/meta/sessions.db`
+- candidates: `data/candidate`
+- wiki: `data/wiki`
+- learning: `data/learning`
+- audit / manifest / maintenance: `data/meta`
+
+배포용 데모 데이터는 별도 data root로 주입할 수 있습니다.
+
+예:
+- `data/demo-runtime`
+
+---
+
+## 빠른 시작
+
+### 1. 의존성 설치
 
 ```powershell
-cd C:\Users\wowjd\Desktop\Knowloop
+cd Knowloop
 .\scripts\bootstrap.ps1
+```
+
+### 2. 백엔드 실행
+
+```powershell
+cd Knowloop
 .\scripts\dev-api.ps1
 ```
 
-In another terminal:
+### 3. 프론트 실행
 
 ```powershell
-cd C:\Users\wowjd\Desktop\Knowloop
+cd Knowloop\apps\web
+npm install
+npm run dev
+```
+
+### 4. 검증
+
+```powershell
+cd Knowloop
 .\scripts\test-api.ps1
 .\scripts\lint-api.ps1
 .\scripts\smoke-api.ps1
 ```
 
-Optional live provider smoke when `apps/api/.env` enables the OpenAI runtime:
+프론트 검증:
 
 ```powershell
-cd C:\Users\wowjd\Desktop\Knowloop
-.\scripts\live-llm-smoke.ps1
+cd Knowloop\apps\web
+npm run lint
+npm run build
 ```
 
-## Agent Sessions
+---
 
-Script naming:
+## 데모 데이터 주입
 
-- `start-*.ps1` opens an interactive agent session
-- `run-*.ps1` runs a focused one-shot pass for critique or review
+배포용 또는 로컬 데모용으로 sample runtime 데이터를 별도 data root에 주입할 수 있습니다.
 
-Check auth state:
+예:
 
 ```powershell
-.\scripts\check-agent-auth.ps1
+cd Knowloop
+.\scripts\seed-demo-data.ps1 -DataRoot .\data\demo-runtime -AllowReset
 ```
 
-Start the builder:
+주의:
+- demo seed는 파괴적 reset을 수행하므로, `demo`, `sample`, `sandbox`가 포함된 분리된 data root를 사용해야 합니다.
+- 실제 실행 환경에서는 `KNOWLOOP_DATA_ROOT`를 해당 demo root로 맞춰야 샘플 데이터가 반영됩니다.
 
-```powershell
-.\scripts\start-codex-builder.ps1
-```
+---
 
-Run a final Codex review on local changes:
+## 문서
 
-```powershell
-.\scripts\run-codex-review.ps1
-```
+핵심 문서:
 
-Run the Codex Critic fallback on local changes:
+- [`docs/README.md`](docs/README.md)
+- [`docs/product/product-overview.md`](docs/product/product-overview.md)
+- [`docs/product/mvp-scope.md`](docs/product/mvp-scope.md)
+- [`docs/product/role-permissions.md`](docs/product/role-permissions.md)
+- [`docs/architecture/api-contracts.md`](docs/architecture/api-contracts.md)
+- [`docs/architecture/data-contracts.md`](docs/architecture/data-contracts.md)
+- [`docs/development/backend-runbook.md`](docs/development/backend-runbook.md)
+- [`DESIGN.md`](DESIGN.md)
+- [`SITE.md`](SITE.md)
 
-```powershell
-.\scripts\run-codex-critic.ps1
-```
+---
 
-Run Gemini Pro Critic as a one-shot pass:
+## 작업 방식
 
-```powershell
-.\scripts\run-gemini-critic.ps1
-```
+Knowloop는 AI를 단순 자동완성이 아니라 협업 구조로 사용합니다.
 
-If Gemini cannot complete the critic pass, continue with Codex Critic on the same narrowed review package:
+- `Codex Builder`: 구현
+- `Codex Critic`: 정보 구조와 경계 점검
+- `Codex Reviewer`: 코드와 동작 검토
 
-```powershell
-.\scripts\run-codex-critic.ps1
-```
+프론트와 백엔드 모두 작은 슬라이스 단위로 구현하고, 테스트 가능한 상태로 닫는 방식을 기본 원칙으로 삼습니다.
 
-Inside the Codex desktop thread, the preferred path is to use Codex subagents
-for `Critic` and `Reviewer` roles and keep these scripts as reproducible
-fallbacks for standalone or human-driven runs.
+---
 
-Reconnect Codex if ever needed:
+## 한 줄 요약
 
-```powershell
-.\scripts\connect-codex.ps1
-```
-
-Start Gemini Pro Critic:
-
-```powershell
-.\scripts\start-gemini-critic.ps1
-```
-
-Reconnect Gemini if ever needed:
-
-```powershell
-.\scripts\connect-gemini.ps1
-```
-
-## Agent Workflow
-
-1. Read `AGENTS.md`.
-2. Use `SPEC.md` as the implementation source of truth.
-3. Use `tasks/plan.md` and `tasks/todo.md` as living execution artifacts.
-4. Load the relevant skill from `.agents/skills/` before working.
-5. Prefer the 3-role loop for non-trivial changes.
-
-More detail lives in `docs/development/agent-harness.md`.
+Knowloop는 `학생 질문을 사라지지 않는 지식으로 바꾸고, 교강사가 그것을 검토해 공식 위키로 운영하는 교육용 LLM-Wiki 시스템`입니다.
