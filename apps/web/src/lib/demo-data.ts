@@ -65,6 +65,62 @@ export type AskSurface = {
   rightPanelDescription: string;
 };
 
+export type AnswerBasisSummary = {
+  title: string;
+  summary: string;
+  confidence: string;
+  emphasis: string;
+  stateLabel: string;
+};
+
+export type EvidenceItem = {
+  itemId: string;
+  objectType: "Wiki Page" | "Source" | "Session";
+  title: string;
+  summary: string;
+  excerpt: string;
+  meta: string;
+  tone: "grounded" | "supporting" | "fallback";
+};
+
+export type RuntimeDetail = {
+  label: string;
+  value: string;
+};
+
+export type LearningUpdate = {
+  title: string;
+  status: string;
+  summary: string;
+  highlights: string[];
+  nextActionLabel: string;
+  nextActionHref: string;
+};
+
+export type CandidateOutcome = {
+  title: string;
+  status: string;
+  summary: string;
+  targetPage: string;
+  confidence: string;
+  nextStep: string;
+};
+
+export type WritebackStep = {
+  objectType: "Session" | "Learning Note" | "Candidate";
+  state: string;
+  description: string;
+};
+
+export type AskPanelData = {
+  answerBasis: AnswerBasisSummary;
+  evidenceItems: EvidenceItem[];
+  runtimeDetails: RuntimeDetail[];
+  learningUpdate: LearningUpdate;
+  candidateOutcome: CandidateOutcome;
+  writebackTrail: WritebackStep[];
+};
+
 export type LearningSummaryCard = {
   label: string;
   value: string;
@@ -230,7 +286,7 @@ const askSurfaceByProfile: Record<string, AskSurface> = {
     answerSummary:
       "연쇄법칙은 함수 안에 다른 함수가 들어 있을 때 바깥 함수와 안쪽 함수의 변화율을 연결해서 봅니다. 반면 곱의 미분법은 서로 곱해진 두 함수가 각각 얼마나 변하는지를 따로 계산한 뒤 합쳐서 봅니다.",
     answerDetail:
-      "이 흐름은 formal wiki의 개념 설명과 민지의 직전 세션을 함께 사용해 정리된 답변입니다. 다음 슬라이스에서는 오른쪽 패널에서 근거와 write-back 결과를 더 자세하게 펼칩니다.",
+      "이 답변은 formal wiki의 개념 설명, 민지의 직전 세션, 그리고 강의 source의 예외 조건을 함께 참고해 정리된 grounded answer입니다.",
     promptExamples: [
       "연쇄법칙이 적용되는 식과 곱의 미분법이 적용되는 식을 각각 예시로 보여주세요.",
       "과제 제출 FAQ에서 학생들이 자주 틀리는 규칙을 같이 정리해 주세요.",
@@ -250,7 +306,7 @@ const askSurfaceByProfile: Record<string, AskSurface> = {
     answerSummary:
       "학생에게는 먼저 식의 구조를 보라고 안내하면 좋습니다. 함수가 다른 함수 안에 들어가면 연쇄법칙, 함수 둘이 나란히 곱해져 있으면 곱의 미분법이라는 판단 규칙을 먼저 제시하는 방식입니다.",
     answerDetail:
-      "이 응답은 학생용 답변을 그대로 복제하지 않고, 수업 전달용으로 다시 정리된 형태입니다. 이후 candidate 생성 여부와 공식 위키 반영 가능성을 검토하게 됩니다.",
+      "이 응답은 학생용 답변을 그대로 복제하지 않고, 수업 전달용으로 다시 정리된 형태입니다. 오른쪽 패널에서는 어떤 근거를 썼는지와 review로 이어질 후보 상태를 함께 확인합니다.",
     promptExamples: [
       "학생들이 자주 하는 오개념을 짧은 피드백 문장으로 바꿔주세요.",
       "다음 수업 도입에서 바로 말할 수 있는 3문장 요약을 만들어주세요.",
@@ -298,6 +354,173 @@ export const writebackResults: WritebackResult[] = [
     description: "반복되는 오개념 패턴이 candidate로 생성되어 review 흐름으로 이어집니다.",
   },
 ];
+
+const askPanelDataByProfile: Record<string, AskPanelData> = {
+  "student-minji": {
+    answerBasis: {
+      title: "Answer basis",
+      summary:
+        "공식 위키의 개념 설명을 우선 사용하고, 직전 세션과 강의 source의 예외 조건을 보조 근거로 연결했습니다.",
+      confidence: "높음",
+      emphasis: "개념 설명과 시험 판단 기준을 함께 제공하는 grounded answer",
+      stateLabel: "Wiki grounded",
+    },
+    evidenceItems: [
+      {
+        itemId: "evidence-wiki-chain-rule",
+        objectType: "Wiki Page",
+        title: "연쇄법칙 핵심 정리",
+        summary: "공식 개념 설명과 빠른 판단 기준을 제공한 1차 근거입니다.",
+        excerpt: "합성 함수 구조를 먼저 식별하고, 안쪽 함수의 변화율까지 함께 보는 규칙을 기준으로 답변을 정리합니다.",
+        meta: "formal wiki · 오늘 오전 10:24 갱신",
+        tone: "grounded",
+      },
+      {
+        itemId: "evidence-source-lecture-note",
+        objectType: "Source",
+        title: "3주차 강의 노트 주석",
+        summary: "예외 조건과 시험에서 헷갈리는 패턴을 보조 설명으로 연결했습니다.",
+        excerpt: "학생들이 연쇄법칙과 곱의 미분법을 동시에 적용해야 하는 식에서 구조 판단을 먼저 놓치는 경우가 많다는 주석이 포함되어 있습니다.",
+        meta: "lecture note source · 첨부 자료",
+        tone: "supporting",
+      },
+      {
+        itemId: "evidence-session-minji",
+        objectType: "Session",
+        title: "직전 질문 이력",
+        summary: "민지가 어떤 표현에서 막혔는지 반영해 설명의 밀도와 단어 선택을 맞췄습니다.",
+        excerpt: "직전 세션에서도 '식의 구조를 먼저 본다'는 안내가 도움이 되었기 때문에 같은 프레이밍을 유지했습니다.",
+        meta: "student session · 방금 전",
+        tone: "supporting",
+      },
+    ],
+    runtimeDetails: [
+      { label: "Mode", value: "Teaching mode" },
+      { label: "Runtime", value: "LLM rewrite" },
+      { label: "Fallback", value: "Wiki grounded" },
+      { label: "Write-back", value: "Session + Learning Note + Candidate" },
+    ],
+    learningUpdate: {
+      title: "Learning Note update",
+      status: "updated",
+      summary: "민지의 개인 학습 노트에 연쇄법칙과 곱의 미분법을 구분하는 체크포인트가 추가됩니다.",
+      highlights: [
+        "식을 보기 전에 함수가 안에 들어 있는지 먼저 확인하기",
+        "곱 구조라면 두 항의 변화율을 따로 계산하는 규칙 다시 보기",
+        "다음 복습 때 위키 페이지와 예제 식을 함께 다시 읽기",
+      ],
+      nextActionLabel: "Learning에서 복습 흐름 보기",
+      nextActionHref: "/learning",
+    },
+    candidateOutcome: {
+      title: "Candidate result",
+      status: "open",
+      summary: "학생들이 반복해서 헷갈리는 설명 패턴이 후보 지식으로 열렸습니다.",
+      targetPage: "연쇄법칙 핵심 정리",
+      confidence: "0.84",
+      nextStep: "강사 또는 검토자가 review에서 FAQ/오개념 보강 여부를 판단합니다.",
+    },
+    writebackTrail: [
+      {
+        objectType: "Session",
+        state: "registered",
+        description: "이번 질문과 답변이 현재 수업 맥락의 새 세션으로 저장됩니다.",
+      },
+      {
+        objectType: "Learning Note",
+        state: "updated",
+        description: "학습 노트에 다음 복습 포인트와 체크리스트가 추가됩니다.",
+      },
+      {
+        objectType: "Candidate",
+        state: "open",
+        description: "반복 오개념 후보가 review inbox로 이어질 수 있게 생성됩니다.",
+      },
+    ],
+  },
+  "instructor-park": {
+    answerBasis: {
+      title: "Answer basis",
+      summary:
+        "공식 위키와 반복 질문 세션을 묶어 강사용 설명 초안을 만들고, source에서 확인한 시험 표현을 덧붙였습니다.",
+      confidence: "높음",
+      emphasis: "학생 설명용 답변을 수업 전달용 문장으로 다시 정리한 grounded draft",
+      stateLabel: "Review ready",
+    },
+    evidenceItems: [
+      {
+        itemId: "evidence-wiki-chain-rule-instructor",
+        objectType: "Wiki Page",
+        title: "연쇄법칙 핵심 정리",
+        summary: "학생용 개념 설명을 강사용 안내 문장으로 재구성하는 기준 문서입니다.",
+        excerpt: "공식 위키의 정의를 짧은 수업 도입 문장으로 바꾸면 학생들이 구조 판단을 먼저 하게 도울 수 있습니다.",
+        meta: "formal wiki · 수업 설명 기준",
+        tone: "grounded",
+      },
+      {
+        itemId: "evidence-source-class-note",
+        objectType: "Source",
+        title: "수업 메모와 과제 FAQ source",
+        summary: "실제 수업에서 많이 틀린 표현과 과제 전달 방식이 함께 기록된 source입니다.",
+        excerpt: "학생들이 '둘 다 미분하면 되는 거 아닌가요?'라고 묻는 빈도가 높아, 판단 규칙을 먼저 주는 방식이 효과적이었습니다.",
+        meta: "instructor source · 수업 메모",
+        tone: "supporting",
+      },
+      {
+        itemId: "evidence-session-class-pattern",
+        objectType: "Session",
+        title: "반복 질문 패턴",
+        summary: "같은 반 학생들의 질문 패턴을 모아 candidate 생성 근거로 사용했습니다.",
+        excerpt: "유사 질문이 세 번 이상 반복되어 FAQ 또는 오개념 정리로 승격할 가치가 있는 패턴으로 보입니다.",
+        meta: "class session aggregate · A반",
+        tone: "supporting",
+      },
+    ],
+    runtimeDetails: [
+      { label: "Mode", value: "Instructor briefing" },
+      { label: "Runtime", value: "LLM rewrite" },
+      { label: "Grounding", value: "Wiki + session pattern" },
+      { label: "Write-back", value: "Session + Candidate" },
+    ],
+    learningUpdate: {
+      title: "Learning Note signal",
+      status: "tracked",
+      summary: "학생 개인 학습 노트를 직접 수정하지 않고, 반복 질문 패턴을 강사용 메모와 review 근거로 남깁니다.",
+      highlights: [
+        "학생 설명용 3문장 버전 생성",
+        "다음 수업에서 강조할 판단 기준 메모",
+        "복습 과제로 연결할 예제 식 후보 정리",
+      ],
+      nextActionLabel: "Learning 흐름 참고하기",
+      nextActionHref: "/learning",
+    },
+    candidateOutcome: {
+      title: "Candidate result",
+      status: "pending review",
+      summary: "반복 질문 패턴이 수업용 FAQ 또는 오개념 보강 후보로 생성됩니다.",
+      targetPage: "연쇄법칙 핵심 정리",
+      confidence: "0.89",
+      nextStep: "Review에서 patch preview를 확인하고 approve 또는 merge 여부를 결정합니다.",
+    },
+    writebackTrail: [
+      {
+        objectType: "Session",
+        state: "registered",
+        description: "강사용 질의와 답변 초안이 수업 운영 세션으로 남습니다.",
+      },
+      {
+        objectType: "Learning Note",
+        state: "tracked",
+        description: "학생 개인 노트 대신 강사용 복습 포인트와 다음 수업 메모가 유지됩니다.",
+      },
+      {
+        objectType: "Candidate",
+        state: "pending",
+        description: "반복 질문 패턴이 공식 지식 보강 후보로 review 흐름에 연결됩니다.",
+      },
+    ],
+  },
+};
 
 export const responseModes = [
   { label: "개념 설명 중심", value: "teaching" },
@@ -443,6 +666,11 @@ export function getNavigationForRole(role: KnowloopRole): NavigationItem[] {
 export function getAskSurface(profileId?: string | null): AskSurface {
   const profile = getProfileById(profileId);
   return askSurfaceByProfile[profile.profileId] ?? askSurfaceByProfile[defaultProfileId];
+}
+
+export function getAskPanelData(profileId?: string | null): AskPanelData {
+  const profile = getProfileById(profileId);
+  return askPanelDataByProfile[profile.profileId] ?? askPanelDataByProfile[defaultProfileId];
 }
 
 export function withProfile(href: string, profileId: string): string {

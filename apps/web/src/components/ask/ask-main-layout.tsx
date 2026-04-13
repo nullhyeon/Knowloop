@@ -5,18 +5,17 @@ import { useSearchParams } from "next/navigation";
 
 import {
   askTopics,
+  getAskPanelData,
   getAskSurface,
   getDomainLabel,
   getProfileById,
   getRoleLabel,
   recentSessions,
   responseModes,
-  retrievalRefs,
-  runtimeSummary,
-  writebackResults,
   type AskSurface,
 } from "@/lib/demo-data";
 
+import { AskEvidencePanel } from "@/components/ask/ask-evidence-panel";
 import { ScopeHeader } from "@/components/console/scope-header";
 
 function SessionStateBadge({
@@ -155,6 +154,7 @@ export function AskMainLayout() {
   const searchParams = useSearchParams();
   const activeProfile = getProfileById(searchParams.get("profile"));
   const askSurface = getAskSurface(activeProfile.profileId);
+  const askPanelData = getAskPanelData(activeProfile.profileId);
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">
@@ -301,79 +301,7 @@ export function AskMainLayout() {
             />
           </div>
 
-          <div className="scrollbar-thin flex-1 overflow-y-auto px-4 py-4">
-            <div className="space-y-3">
-              <article className="rounded-[20px] border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-[var(--foreground)]">Answer basis</p>
-                    <p className="mt-2 text-sm leading-6 text-[var(--body)]">
-                      formal wiki와 직전 세션을 우선 사용해 답변을 grounded 상태로 유지합니다.
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-[var(--evidence-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--evidence)]">
-                    grounded
-                  </span>
-                </div>
-              </article>
-
-              <article className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
-                <p className="text-sm font-semibold text-[var(--foreground)]">Retrieval refs</p>
-                <div className="mt-3 space-y-3">
-                  {retrievalRefs.map((ref) => (
-                    <div
-                      key={ref.title}
-                      className="rounded-[18px] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-[var(--foreground)]">{ref.title}</p>
-                        <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">
-                          {ref.label}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-[var(--body)]">{ref.description}</p>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
-                <p className="text-sm font-semibold text-[var(--foreground)]">Runtime status</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <span className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--primary)]">
-                    {runtimeSummary.mode}
-                  </span>
-                  <span className="rounded-full bg-[var(--review-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--review)]">
-                    {runtimeSummary.state}
-                  </span>
-                  <span className="rounded-full bg-[var(--success-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--success)]">
-                    {runtimeSummary.fallback}
-                  </span>
-                </div>
-                <p className="mt-3 text-sm leading-6 text-[var(--body)]">{runtimeSummary.note}</p>
-              </article>
-
-              <article className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
-                <p className="text-sm font-semibold text-[var(--foreground)]">Write-back results</p>
-                <div className="mt-3 space-y-3">
-                  {writebackResults.map((item) => (
-                    <div
-                      key={item.label}
-                      className="rounded-[18px] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-[var(--foreground)]">{item.label}</p>
-                        <span className="rounded-full bg-[var(--warning-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--warning)]">
-                          {item.status}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-[var(--body)]">{item.description}</p>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </div>
-          </div>
+          <AskEvidencePanel panelData={askPanelData} profileId={activeProfile.profileId} />
         </aside>
       </div>
     </div>
