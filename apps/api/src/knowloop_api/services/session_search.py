@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import sqlite3
 from enum import StrEnum
 
 from pydantic import BaseModel
@@ -9,37 +9,46 @@ from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole
 from knowloop_api.services.sessions import (
     SessionRecord,
+    _session_from_row,
     list_recent_sessions,
     list_sessions_for_class,
 )
 
-TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 STOPWORDS = {
     "about",
     "again",
+    "all",
     "also",
     "and",
     "are",
     "because",
+    "but",
     "class",
     "does",
+    "for",
     "from",
     "have",
-    "homework",
+    "how",
     "into",
     "just",
+    "let",
     "not",
     "our",
     "same",
     "test",
+    "than",
     "that",
     "the",
     "their",
     "them",
     "they",
     "this",
+    "too",
+    "what",
     "when",
     "where",
+    "were",
+    "will",
     "with",
     "would",
     "your",
@@ -84,32 +93,17 @@ def search_sessions(
     if not normalized_query:
         raise ValueError("query must not be blank")
 
-    sessions = _load_visible_sessions(
+    hits, total = _search_visible_sessions_with_index(
         settings,
         role=role,
         actor_id=actor_id,
         course_id=course_id,
         class_id=class_id,
+        query=normalized_query,
+        limit=limit,
+        offset=offset,
     )
-    tokens = _tokenize(normalized_query)
-    scored_sessions = [
-        (session, _score_session(session, tokens=tokens, normalized_query=normalized_query.lower()))
-        for session in sessions
-    ]
-    matches = [
-        _build_search_hit(
-            session,
-            viewer_role=role,
-            match_count=score,
-        )
-        for session, score in sorted(
-            (item for item in scored_sessions if item[1] > 0),
-            key=lambda item: (item[1], item[0].created_at, item[0].session_id),
-            reverse=True,
-        )
-    ]
-    total = len(matches)
-    return matches[offset : offset + limit], total
+    return hits, total
 
 
 def list_recent_session_hits(
@@ -206,37 +200,218 @@ def _build_search_hit(
     )
 
 
-def _score_session(
-    session: SessionRecord,
+def _build_scope_filter(
     *,
-    tokens: set[str],
-    normalized_query: str,
-) -> int:
-    haystack = " ".join(
-        [
-            session.question.lower(),
-            session.answer.lower(),
-            " ".join(session.tags).lower(),
+    role: ActorRole,
+    actor_id: str,
+    course_id: str,
+    class_id: str,
+) -> tuple[str, list[object]]:
+    if role in {ActorRole.STUDENT, ActorRole.OPERATOR}:
+        return "s.user_id = ? AND s.class_id = ? AND s.course_id = ?", [
+            actor_id,
+            class_id,
+            course_id,
         ]
+    if role is ActorRole.INSTRUCTOR:
+        return "s.class_id = ? AND s.course_id = ? AND s.role = ?", [
+            class_id,
+            course_id,
+            ActorRole.STUDENT.value,
+        ]
+    raise ForbiddenSessionSearchError("This role cannot access the session search routes.")
+
+
+def _search_visible_sessions_with_index(
+    settings: Settings,
+    *,
+    role: ActorRole,
+    actor_id: str,
+    course_id: str,
+    class_id: str,
+    query: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[SessionSearchHit], int]:
+    fts_query = _build_fts_query(query)
+    if fts_query is None:
+        hits, total = _search_visible_sessions_fallback(
+            settings,
+            role=role,
+            actor_id=actor_id,
+            course_id=course_id,
+            class_id=class_id,
+            query=query,
+            limit=limit,
+            offset=offset,
+        )
+        return hits, total
+
+    filter_clause, base_parameters = _build_scope_filter(
+        role=role,
+        actor_id=actor_id,
+        course_id=course_id,
+        class_id=class_id,
     )
-    haystack_tokens = _tokenize(haystack)
-    score = 0
-    for token in tokens:
-        if token in haystack_tokens:
-            score += 3
-        if token in {tag.lower() for tag in session.tags}:
-            score += 2
-    if normalized_query and normalized_query in haystack:
-        score += 4
-    return score
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM sessions_fts
+            JOIN sessions AS s
+              ON s.rowid = sessions_fts.rowid
+            WHERE {filter_clause}
+              AND sessions_fts MATCH ?
+            """,
+            [*base_parameters, fts_query],
+        ).fetchone()
+        rows = connection.execute(
+            f"""
+            SELECT
+                s.session_id,
+                s.role,
+                s.user_id,
+                s.class_id,
+                s.course_id,
+                s.question,
+                s.answer,
+                s.created_at,
+                s.tags_json,
+                s.source_refs_json,
+                s.retrieval_refs_json,
+                s.candidate_refs_json,
+                s.learning_note_refs_json,
+                s.replay_intent_json,
+                bm25(sessions_fts, 8.0, 3.0, 2.0) AS rank_score
+            FROM sessions_fts
+            JOIN sessions AS s
+              ON s.rowid = sessions_fts.rowid
+            WHERE {filter_clause}
+              AND sessions_fts MATCH ?
+            ORDER BY rank_score ASC, s.created_at DESC, s.session_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*base_parameters, fts_query, limit, offset],
+        ).fetchall()
+
+    match_count = _match_token_count(query)
+    hits = [
+        _build_search_hit(
+            _session_from_row(row[:14]),
+            viewer_role=role,
+            match_count=match_count,
+        )
+        for row in rows
+    ]
+    return hits, int(count_row[0] if count_row is not None else 0)
 
 
-def _tokenize(value: str) -> set[str]:
-    return {
-        token
-        for token in TOKEN_PATTERN.findall(value.lower())
-        if len(token) >= 3 and token not in STOPWORDS
-    }
+def _search_visible_sessions_fallback(
+    settings: Settings,
+    *,
+    role: ActorRole,
+    actor_id: str,
+    course_id: str,
+    class_id: str,
+    query: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[SessionSearchHit], int]:
+    normalized_query = query.lower()
+    filter_clause, base_parameters = _build_scope_filter(
+        role=role,
+        actor_id=actor_id,
+        course_id=course_id,
+        class_id=class_id,
+    )
+    like_pattern = f"%{normalized_query}%"
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE {filter_clause}
+              AND (
+                LOWER(s.question) LIKE ?
+                OR LOWER(s.answer) LIKE ?
+                OR LOWER(s.tags_json) LIKE ?
+              )
+            """,
+            [*base_parameters, like_pattern, like_pattern, like_pattern],
+        ).fetchone()
+        rows = connection.execute(
+            f"""
+            SELECT
+                s.session_id,
+                s.role,
+                s.user_id,
+                s.class_id,
+                s.course_id,
+                s.question,
+                s.answer,
+                s.created_at,
+                s.tags_json,
+                s.source_refs_json,
+                s.retrieval_refs_json,
+                s.candidate_refs_json,
+                s.learning_note_refs_json,
+                s.replay_intent_json
+            FROM sessions AS s
+            WHERE {filter_clause}
+              AND (
+                LOWER(s.question) LIKE ?
+                OR LOWER(s.answer) LIKE ?
+                OR LOWER(s.tags_json) LIKE ?
+              )
+            ORDER BY s.created_at DESC, s.session_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*base_parameters, like_pattern, like_pattern, like_pattern, limit, offset],
+        ).fetchall()
+
+    total = int(count_row[0] if count_row is not None else 0)
+    return [
+        _build_search_hit(
+            _session_from_row(row),
+            viewer_role=role,
+            match_count=1,
+        )
+        for row in rows
+    ], total
+
+
+def _build_fts_query(value: str) -> str | None:
+    normalized = " ".join(value.lower().split())
+    if not normalized:
+        return None
+
+    tokens: list[str] = []
+    for raw_token in normalized.split():
+        token = raw_token.strip("\"'()[]{}:;,.!?")
+        if len(token) < 2 or token in STOPWORDS:
+            continue
+        escaped = token.replace('"', '""')
+        tokens.append(f'"{escaped}"*')
+
+    if not tokens:
+        return None
+    return " AND ".join(tokens)
+
+
+def _match_token_count(value: str) -> int:
+    return max(
+        len(
+            [
+                token
+                for token in (" ".join(value.lower().split())).split()
+                if len(token.strip("\"'()[]{}:;,.!?")) >= 2
+                and token.strip("\"'()[]{}:;,.!?") not in STOPWORDS
+            ]
+        ),
+        1,
+    )
 
 
 def _truncate_preview(value: str, *, limit: int = 140) -> str:

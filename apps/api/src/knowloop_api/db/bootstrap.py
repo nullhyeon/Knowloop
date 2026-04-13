@@ -37,6 +37,75 @@ SESSIONS_SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS idx_sessions_role_created_at
     ON sessions (role, created_at)
     """,
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+        session_id UNINDEXED,
+        role UNINDEXED,
+        user_id UNINDEXED,
+        class_id UNINDEXED,
+        course_id UNINDEXED,
+        question,
+        answer,
+        tags,
+        tokenize = 'porter unicode61'
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
+        INSERT INTO sessions_fts (
+            rowid,
+            session_id,
+            role,
+            user_id,
+            class_id,
+            course_id,
+            question,
+            answer,
+            tags
+        ) VALUES (
+            new.rowid,
+            new.session_id,
+            new.role,
+            new.user_id,
+            new.class_id,
+            new.course_id,
+            new.question,
+            new.answer,
+            new.tags_json
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
+        DELETE FROM sessions_fts WHERE rowid = old.rowid;
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
+        DELETE FROM sessions_fts WHERE rowid = old.rowid;
+        INSERT INTO sessions_fts (
+            rowid,
+            session_id,
+            role,
+            user_id,
+            class_id,
+            course_id,
+            question,
+            answer,
+            tags
+        ) VALUES (
+            new.rowid,
+            new.session_id,
+            new.role,
+            new.user_id,
+            new.class_id,
+            new.course_id,
+            new.question,
+            new.answer,
+            new.tags_json
+        );
+    END
+    """,
 ]
 
 AUDIT_SCHEMA_STATEMENTS = [
@@ -129,6 +198,17 @@ SESSIONS_REQUIRED_COLUMNS = {
     "replay_intent_json",
 }
 
+SESSIONS_FTS_REQUIRED_COLUMNS = {
+    "session_id",
+    "role",
+    "user_id",
+    "class_id",
+    "course_id",
+    "question",
+    "answer",
+    "tags",
+}
+
 AUDIT_REQUIRED_COLUMNS = {
     "event_id",
     "entity_type",
@@ -168,6 +248,12 @@ MUTATION_REQUEST_REQUIRED_PRIMARY_KEY = (
     "idempotency_key",
 )
 
+SESSIONS_REQUIRED_TRIGGERS = {
+    "sessions_ai",
+    "sessions_ad",
+    "sessions_au",
+}
+
 
 def bootstrap_storage(settings: Settings) -> None:
     settings.data_root.mkdir(parents=True, exist_ok=True)
@@ -184,8 +270,12 @@ def build_storage_readiness_payload(settings: Settings) -> dict[str, object]:
         "manifest": manifest_status(settings),
         "sessions_db": _status_for_database(
             settings.sessions_db_path,
-            table_columns={"sessions": SESSIONS_REQUIRED_COLUMNS},
+            table_columns={
+                "sessions": SESSIONS_REQUIRED_COLUMNS,
+                "sessions_fts": SESSIONS_FTS_REQUIRED_COLUMNS,
+            },
             table_primary_keys={"sessions": SESSIONS_REQUIRED_PRIMARY_KEY},
+            trigger_names=SESSIONS_REQUIRED_TRIGGERS,
         ),
         "audit_db": _status_for_database(
             settings.audit_db_path,
@@ -227,6 +317,7 @@ def _bootstrap_sqlite_database(path: Path, statements: list[str]) -> None:
             "mutation_requests",
             MUTATION_REQUEST_MIGRATION_COLUMN_DEFINITIONS,
         )
+        _rebuild_sessions_fts(connection)
         connection.commit()
 
 
@@ -239,6 +330,7 @@ def _status_for_database(
     *,
     table_columns: dict[str, set[str]],
     table_primary_keys: dict[str, tuple[str, ...]],
+    trigger_names: set[str] | None = None,
 ) -> str:
     if not path.exists():
         return "missing"
@@ -254,6 +346,10 @@ def _status_for_database(
                     return "missing"
             for table_name, required_primary_key in table_primary_keys.items():
                 if _fetch_primary_key_columns(connection, table_name) != required_primary_key:
+                    return "missing"
+            if trigger_names is not None:
+                existing_triggers = _fetch_trigger_names(connection)
+                if not trigger_names.issubset(existing_triggers):
                     return "missing"
         return "ok"
     except sqlite3.DatabaseError:
@@ -296,6 +392,13 @@ def _fetch_table_columns(connection: sqlite3.Connection, table_name: str) -> set
     return {row[1] for row in rows}
 
 
+def _fetch_trigger_names(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
 def _fetch_primary_key_columns(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
     rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     primary_key_rows = sorted(
@@ -303,3 +406,35 @@ def _fetch_primary_key_columns(connection: sqlite3.Connection, table_name: str) 
         key=lambda row: row[5],
     )
     return tuple(row[1] for row in primary_key_rows)
+
+
+def _rebuild_sessions_fts(connection: sqlite3.Connection) -> None:
+    if not _table_exists(connection, "sessions") or not _table_exists(connection, "sessions_fts"):
+        return
+    connection.execute("DELETE FROM sessions_fts")
+    connection.execute(
+        """
+        INSERT INTO sessions_fts (
+            rowid,
+            session_id,
+            role,
+            user_id,
+            class_id,
+            course_id,
+            question,
+            answer,
+            tags
+        )
+        SELECT
+            rowid,
+            session_id,
+            role,
+            user_id,
+            class_id,
+            course_id,
+            question,
+            answer,
+            tags_json
+        FROM sessions
+        """
+    )

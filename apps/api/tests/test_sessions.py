@@ -1,12 +1,15 @@
 import hashlib
 import json
 import shutil
+import sqlite3
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
+from knowloop_api.core.contracts import ActorRole
 from knowloop_api.main import create_app
 from knowloop_api.services.sessions import SessionRecord, save_session
 
@@ -209,3 +212,216 @@ def test_session_search_rejects_validator_role(tmp_path: Path) -> None:
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden_scope"
+
+
+
+def test_session_search_uses_fts_index_for_newly_saved_sessions(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+
+    session = SessionRecord(
+        session_id="ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260410T090000Z",
+        role=ActorRole.STUDENT,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        question="How do I use antiderivative boundary checks on this quiz?",
+        answer="Focus on the antiderivative boundary value before simplifying the polynomial.",
+        created_at=datetime(2026, 4, 10, 9, 0, tzinfo=UTC),
+        tags=["antiderivative", "quiz"],
+    )
+    save_session(settings, session, request_id="req-session-search-fts")
+
+    response = client.get(
+        "/api/v1/sessions/search?q=antiderivative",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-session-search-fts",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 1
+    assert payload["data"][0]["session_id"] == session.session_id
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM sessions_fts WHERE sessions_fts MATCH ?",
+            ('"antiderivative"*',),
+        ).fetchone()[0]
+
+    assert count == 1
+
+
+def test_session_search_fallback_preserves_total_when_query_reduces_to_stopwords(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+
+    for index, question in enumerate(
+        (
+            "Tell me about the chain rule again.",
+            "What about the homework revision window?",
+        ),
+        start=1,
+    ):
+        save_session(
+            settings,
+            SessionRecord(
+                session_id=(
+                    f"ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260411T09000{index}Z"
+                ),
+                role=ActorRole.STUDENT,
+                user_id="stu-kim-minji",
+                class_id="class-calculus-1-2026-spring-a",
+                course_id="course-calculus-1",
+                question=question,
+                answer="Saved for fallback total coverage.",
+                created_at=datetime(2026, 4, 11, 9, 0, index, tzinfo=UTC),
+                tags=["about"],
+            ),
+            request_id=f"req-session-search-stopword-{index}",
+        )
+
+    response = client.get(
+        "/api/v1/sessions/search?q=about&limit=1",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-session-search-stopword",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 2
+    assert len(payload["data"]) == 1
+
+
+
+def test_session_search_fts_triggers_track_updates_and_deletes(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+
+    session = SessionRecord(
+        session_id="ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260412T100000Z",
+        role=ActorRole.STUDENT,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        question="Need help with substitution strategy before the quiz.",
+        answer="Start from the substitution boundary and simplify the derivative.",
+        created_at=datetime(2026, 4, 12, 10, 0, tzinfo=UTC),
+        tags=["substitution", "quiz"],
+    )
+    save_session(settings, session, request_id="req-session-search-fts-update")
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        connection.execute(
+            "UPDATE sessions SET question = ?, tags_json = ? WHERE session_id = ?",
+            (
+                "Need help with tangent-line strategy before the quiz.",
+                json.dumps(["tangent-line", "quiz"], ensure_ascii=False),
+                session.session_id,
+            ),
+        )
+        connection.commit()
+
+    updated_response = client.get(
+        "/api/v1/sessions/search?q=tangent-line",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-session-search-fts-updated",
+        ),
+    )
+
+    assert updated_response.status_code == 200
+    updated_payload = updated_response.json()
+    assert updated_payload["meta"]["total"] == 1
+    assert updated_payload["data"][0]["session_id"] == session.session_id
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        connection.execute("DELETE FROM sessions WHERE session_id = ?", (session.session_id,))
+        connection.commit()
+
+    deleted_response = client.get(
+        "/api/v1/sessions/search?q=tangent-line",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-session-search-fts-deleted",
+        ),
+    )
+
+    assert deleted_response.status_code == 200
+    deleted_payload = deleted_response.json()
+    assert deleted_payload["meta"]["total"] == 0
+    assert deleted_payload["data"] == []
+
+
+def test_instructor_stopword_fallback_search_is_not_capped_by_seed_window(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+
+    rows = []
+    for index in range(505):
+        rows.append(
+            (
+                f"ses-student-stu-seeded-{index:03d}-class-calculus-1-2026-spring-a-20260412T120000Z",
+                "student",
+                f"stu-seeded-{index:03d}",
+                "class-calculus-1-2026-spring-a",
+                "course-calculus-1",
+                f"Tell me about topic {index}.",
+                "Stored for instructor fallback coverage.",
+                f"2026-04-12T12:{index % 60:02d}:00Z",
+                json.dumps(["about"], ensure_ascii=False),
+                "[]",
+                "[]",
+                "[]",
+                "[]",
+                "null",
+            )
+        )
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO sessions (
+                session_id,
+                role,
+                user_id,
+                class_id,
+                course_id,
+                question,
+                answer,
+                created_at,
+                tags_json,
+                source_refs_json,
+                retrieval_refs_json,
+                candidate_refs_json,
+                learning_note_refs_json,
+                replay_intent_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.commit()
+
+    response = client.get(
+        "/api/v1/sessions/search?q=about&limit=1",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-instructor-session-search-stopword",
+            domain="academic",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 505
+    assert len(payload["data"]) == 1
+    assert payload["data"][0]["visibility"] == "class_redacted"

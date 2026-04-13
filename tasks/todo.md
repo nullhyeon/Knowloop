@@ -100,3 +100,10 @@
 - Critic prompt: `.agents/prompts/gemini-critic.md`
 - Backend kickoff prompt: `.agents/prompts/kickoff-backend-foundation.md`
 - Storage kickoff prompt: `.agents/prompts/kickoff-storage-bootstrap.md`
+
+## Pre-Frontend Backend Hardening
+
+- [x] Codex Builder: replace heuristic session search scoring with SQLite FTS5-backed search
+- [x] Codex Critic: review the FTS-backed session-search slice for index sync, readiness drift, and fallback count risks
+- [x] Codex Builder: fix readiness trigger checks and uncapped fallback totals for instructor stopword searches
+- [x] Codex Reviewer: review the FTS-backed session-search slice for correctness and missing regressions

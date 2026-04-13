@@ -105,6 +105,15 @@ def read_table_columns(database_path: Path, table_name: str) -> set[str]:
     return {row[1] for row in rows}
 
 
+def read_trigger_names(database_path: Path) -> set[str]:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+
+    return {row[0] for row in rows}
+
+
 def test_root_endpoint_reports_service_status(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 
@@ -507,7 +516,13 @@ def test_storage_bootstrap_creates_expected_databases_and_tables(tmp_path: Path)
     assert (settings.meta_root / "manifest.json").exists()
     assert settings.sessions_db_path.exists()
     assert settings.audit_db_path.exists()
-    assert {"sessions"}.issubset(read_table_names(settings.sessions_db_path))
+    assert {"sessions", "sessions_fts"}.issubset(read_table_names(settings.sessions_db_path))
+    assert {"sessions_ai", "sessions_ad", "sessions_au"}.issubset(
+        read_trigger_names(settings.sessions_db_path)
+    )
+    assert {"session_id", "question", "answer", "tags"}.issubset(
+        read_table_columns(settings.sessions_db_path, "sessions_fts")
+    )
     assert {"audit_events", "mutation_requests"}.issubset(read_table_names(settings.audit_db_path))
     assert {"request_id", "idempotency_key"}.issubset(
         read_table_columns(settings.audit_db_path, "audit_events")
@@ -575,6 +590,7 @@ def test_storage_bootstrap_migrates_legacy_storage_columns(tmp_path: Path) -> No
         "learning_note_refs_json",
         "replay_intent_json",
     }.issubset(read_table_columns(settings.sessions_db_path, "sessions"))
+    assert {"sessions_fts"}.issubset(read_table_names(settings.sessions_db_path))
     assert {"audit_events", "mutation_requests"}.issubset(read_table_names(settings.audit_db_path))
     assert {"request_id", "idempotency_key"}.issubset(
         read_table_columns(settings.audit_db_path, "audit_events")
@@ -831,5 +847,29 @@ def test_storage_readiness_reports_corrupt_database_files_as_not_ready(
             "manifest": "missing",
             "sessions_db": "missing",
             "audit_db": "missing",
+        },
+    }
+
+
+
+def test_storage_readiness_reports_missing_session_fts_triggers_as_not_ready(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        connection.execute("DROP TRIGGER sessions_ai")
+        connection.commit()
+
+    payload = build_storage_readiness_payload(settings)
+
+    assert payload == {
+        "status": "not_ready",
+        "checks": {
+            "data_root": "ok",
+            "manifest": "ok",
+            "sessions_db": "missing",
+            "audit_db": "ok",
         },
     }
