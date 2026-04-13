@@ -1,5 +1,5 @@
-﻿import { redirect } from "next/navigation";
+import { HomeEntryPage } from "@/components/home/home-entry-page";
 
 export default function HomePage() {
-  redirect("/workspace?profile=student-minji");
+  return <HomeEntryPage />;
 }
