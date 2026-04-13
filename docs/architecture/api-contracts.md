@@ -186,12 +186,52 @@ Purpose:
 ### `GET /readyz`
 ### `GET /api/v1/system/health`
 ### `GET /api/v1/system/ready`
+### `GET /api/v1/system/runtime`
 
 Purpose:
 
 - verifies storage bootstrap and runtime readiness
+- exposes the current optional LLM runtime configuration that the API would use for grounded rewrites
 
-## 6.2 Source APIs
+## 6.2 Context Bootstrap APIs
+
+### `GET /api/v1/context/profiles`
+
+Purpose:
+
+- expose the checked-in demo/frontend profile registry
+- let the frontend switch personas without handcrafting the full `X-Knowloop-*` header bundle
+
+Response highlights:
+
+- `profile_id`
+- `label`
+- `role`
+- `actor_id`
+- `course_id`
+- `class_id`
+- `domain`
+- `landing_surface`
+
+### `GET /api/v1/context/self`
+
+Purpose:
+
+- resolve the canonical request context for the current request
+- verify whether the request was resolved from `X-Knowloop-Profile-Id` or from explicit `X-Knowloop-*` headers
+
+Response highlights:
+
+- `profile_id`
+- `profile_label`
+- `role`
+- `actor_id`
+- `course_id`
+- `class_id`
+- `domain`
+- `domain_was_explicit`
+
+## 6.3 Source APIs
 
 ### `POST /api/v1/sources/register`
 
@@ -252,7 +292,7 @@ Purpose:
 
 - load one registered source record by ID
 
-## 6.3 Query API
+## 6.4 Query API
 
 ### `POST /api/v1/query/respond`
 
@@ -309,6 +349,29 @@ Response body inside `data`:
 }
 ```
 
+Response `meta.runtime`:
+
+```json
+{
+  "runtime": {
+    "answer_source": "llm_rewrite",
+    "stored_answer_source": "deterministic_fallback",
+    "llm_enabled": true,
+    "llm_applied": true,
+    "provider": "openai",
+    "configured_model": "gpt-5.4"
+  }
+}
+```
+
+Runtime metadata rules:
+
+- `answer_source` is `llm_rewrite` only when the immediate HTTP response text differs from the deterministic stored session answer
+- `stored_answer_source` remains `deterministic_fallback` for the current MVP because replay and session history are always pinned to the deterministic answer
+- `llm_enabled` reflects operator configuration, not whether the provider call succeeded
+- `llm_applied` reflects whether the provider rewrite actually survived guard checks for the current HTTP attempt
+- `provider` and `configured_model` are observability fields only; they do not authorize the provider as a new source of truth
+
 `answer_basis` values currently supported:
 
 - `formal_wiki`
@@ -350,11 +413,11 @@ Boundary rules:
 - student retrieval refs do not expose raw source metadata
 - open candidates are not returned as authoritative student answer evidence
 
-## 6.4 Review Workflow Routes
+## 6.5 Review Workflow Routes
 
 The review workflow is now implemented through dedicated candidate endpoints.
 
-### 6.4.1 `GET /api/v1/review/candidates`
+### 6.5.1 `GET /api/v1/review/candidates`
 
 Purpose:
 
@@ -390,7 +453,7 @@ Response body inside `data`:
 - candidate summaries derived from `CandidateItem`
 - each item includes `review_domain`
 
-### 6.4.2 `GET /api/v1/review/candidates/{candidate_id}`
+### 6.5.2 `GET /api/v1/review/candidates/{candidate_id}`
 
 Purpose:
 
@@ -406,7 +469,7 @@ Response body inside `data`:
   - promoted candidates with `wiki_sync_status = pending`: `resume_sync` for finalize-capable roles
   - `system` remains read-only in the review workflow, so it only receives `patch_preview`, including when a promoted candidate is still pending wiki sync
 
-### 6.4.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
+### 6.5.3 `POST /api/v1/review/candidates/{candidate_id}/patch-preview`
 
 Purpose:
 
@@ -438,7 +501,7 @@ Rules:
 - `system` may inspect review candidates and generate patch previews, but it may not finalize `approve`, `merge`, `drop`, or `resume-sync`
 - when `target_page_id` already exists, it must belong to the same `course_id` and `class_id` scope as the candidate being reviewed
 
-### 6.4.4 `POST /api/v1/review/candidates/{candidate_id}/approve`
+### 6.5.4 `POST /api/v1/review/candidates/{candidate_id}/approve`
 
 Purpose:
 
@@ -482,7 +545,7 @@ Response body inside `data`:
 - `patch`
 - `wiki_page`
 
-### 6.4.5 `POST /api/v1/review/candidates/{candidate_id}/resume-sync`
+### 6.5.5 `POST /api/v1/review/candidates/{candidate_id}/resume-sync`
 
 Purpose:
 
@@ -526,7 +589,7 @@ Response body inside `data`:
 
 The `candidate` payload should include `wiki_sync_status` and, once sync is complete, `wiki_synced_at`.
 
-### 6.4.6 `POST /api/v1/review/candidates/{candidate_id}/merge`
+### 6.5.6 `POST /api/v1/review/candidates/{candidate_id}/merge`
 
 Purpose:
 
@@ -552,7 +615,7 @@ Rules:
 - same `Idempotency-Key` plus the same merge payload replays safely
 - same `Idempotency-Key` plus a different merge payload returns `409 duplicate_action`
 
-### 6.4.7 `POST /api/v1/review/candidates/{candidate_id}/drop`
+### 6.5.7 `POST /api/v1/review/candidates/{candidate_id}/drop`
 
 Purpose:
 
@@ -583,7 +646,7 @@ Rules:
 - same `Idempotency-Key` plus the same drop payload replays safely
 - same `Idempotency-Key` plus a different drop payload returns `409 duplicate_action`
 
-## 6.5 Wiki Read Routes
+## 6.6 Wiki Read Routes
 
 The formal wiki browser is now implemented through dedicated read-only endpoints.
 
@@ -649,7 +712,7 @@ Response body inside `data`:
 - `candidate_refs`
 - `body_markdown`
 
-## 6.6 Instructor Insight Routes
+## 6.7 Instructor Insight Routes
 
 The instructor dashboard is implemented through aggregated, academic-only insight endpoints.
 
@@ -717,7 +780,7 @@ Response body inside `data`:
 - `tags`
 - `max_confidence`
 
-## 6.7 Session Search Routes
+## 6.8 Session Search Routes
 
 The session browser is implemented as a role-aware search surface with redaction rules.
 
@@ -776,7 +839,7 @@ Rules:
 - shares the same redaction rules as `GET /api/v1/sessions/search`
 - acts as the default recent-history surface when no search query is provided
 
-## 6.8 Maintenance Routes
+## 6.9 Maintenance Routes
 
 The maintenance surface is implemented through a dedicated report generator and a read-only status endpoint.
 

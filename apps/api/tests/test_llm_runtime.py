@@ -13,6 +13,7 @@ from knowloop_api.services import llm_runtime as llm_runtime_service
 from knowloop_api.services.llm_runtime import (
     EvidenceBlock,
     LLMAnswerContext,
+    build_llm_runtime_status,
     generate_grounded_answer,
 )
 
@@ -1798,6 +1799,45 @@ def test_settings_reject_blank_openai_model(tmp_path: Path) -> None:
         assert "openai_model" in str(exc)
     else:
         raise AssertionError("expected blank model to fail")
+
+
+def test_build_llm_runtime_status_reports_disabled_runtime(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path, llm_enabled=False)
+
+    assert build_llm_runtime_status(settings) == {
+        "enabled": False,
+        "configured": False,
+        "provider": None,
+        "model": None,
+        "reasoning_effort": None,
+        "text_verbosity": None,
+        "timeout_seconds": None,
+        "max_output_tokens": None,
+    }
+
+
+def test_build_llm_runtime_status_reports_enabled_runtime_configuration(tmp_path: Path) -> None:
+    settings = build_settings(
+        tmp_path,
+        llm_enabled=True,
+        openai_api_key="test-key",
+        openai_model="gpt-5.4",
+        openai_reasoning_effort="medium",
+        openai_text_verbosity="high",
+        openai_timeout_seconds=18.0,
+        openai_max_output_tokens=512,
+    )
+
+    assert build_llm_runtime_status(settings) == {
+        "enabled": True,
+        "configured": True,
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "reasoning_effort": "medium",
+        "text_verbosity": "high",
+        "timeout_seconds": 18.0,
+        "max_output_tokens": 512,
+    }
 
 
 class _RaisingClient:

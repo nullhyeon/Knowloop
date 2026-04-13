@@ -110,3 +110,6 @@
 - [x] Codex Builder: add a frontend-ready context profile adapter and context bootstrap routes
 - [x] Codex Critic: review the context profile slice for profile/header conflicts, route exposure, and contract drift
 - [x] Codex Reviewer: review the context profile slice for correctness and missing regressions
+- [x] Codex Builder: expose LLM runtime observability through query response metadata and system runtime status
+- [x] Codex Critic: review the LLM runtime observability slice for replay ambiguity and provider-authority drift
+- [x] Codex Reviewer: review the LLM runtime observability slice for correctness and missing regressions

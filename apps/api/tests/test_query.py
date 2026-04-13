@@ -1826,6 +1826,14 @@ def test_query_endpoint_llm_rewrite_keeps_non_answer_contract_artifacts_stable(
     )
     assert baseline_response.status_code == 200
     baseline_payload = baseline_response.json()
+    assert baseline_payload["meta"]["runtime"] == {
+        "answer_source": "deterministic_fallback",
+        "stored_answer_source": "deterministic_fallback",
+        "llm_enabled": False,
+        "llm_applied": False,
+        "provider": None,
+        "configured_model": None,
+    }
 
     monkeypatch.setattr(
         query_service,
@@ -1849,6 +1857,14 @@ def test_query_endpoint_llm_rewrite_keeps_non_answer_contract_artifacts_stable(
     )
     assert llm_response.status_code == 200
     llm_payload = llm_response.json()
+    assert llm_payload["meta"]["runtime"] == {
+        "answer_source": "llm_rewrite",
+        "stored_answer_source": "deterministic_fallback",
+        "llm_enabled": True,
+        "llm_applied": True,
+        "provider": "openai",
+        "configured_model": "gpt-5.4",
+    }
 
     assert llm_payload["data"]["answer"] != baseline_payload["data"]["answer"]
     assert canonicalize(llm_payload["data"]) == canonicalize(baseline_payload["data"])
@@ -1981,6 +1997,14 @@ def test_query_endpoint_llm_guard_falls_back_without_contract_drift(
     )
     assert llm_response.status_code == 200
     llm_payload = llm_response.json()
+    assert llm_payload["meta"]["runtime"] == {
+        "answer_source": "deterministic_fallback",
+        "stored_answer_source": "deterministic_fallback",
+        "llm_enabled": True,
+        "llm_applied": False,
+        "provider": "openai",
+        "configured_model": "gpt-5.4",
+    }
 
     assert canonicalize(llm_payload["data"]) == canonicalize(baseline_payload["data"])
 

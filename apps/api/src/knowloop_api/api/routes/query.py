@@ -17,6 +17,7 @@ from knowloop_api.services.query import (
     QueryRequest,
     QueryStateError,
     QueryStorageBusyError,
+    build_query_runtime_meta,
     respond_to_query,
 )
 
@@ -70,6 +71,7 @@ def create_query_router(settings: Settings) -> APIRouter:
         return success_response(
             context.request_id,
             response.model_dump(mode="json", exclude_none=True),
+            meta={"runtime": build_query_runtime_meta(settings, response=response)},
         )
 
     return router

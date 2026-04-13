@@ -152,7 +152,20 @@ then the backend must return the deterministic fallback answer and keep the
 rest of the query contract unchanged.
 
 Provider failures should be observable through application logging, but they do
-not change the HTTP response shape, `answer_basis`, or write-back plan.
+not change the durable query contract, `answer_basis`, or write-back plan.
+
+The immediate query response may still expose runtime observability metadata in
+the success `meta` envelope:
+
+- `runtime.answer_source`
+- `runtime.stored_answer_source`
+- `runtime.llm_enabled`
+- `runtime.llm_applied`
+- `runtime.provider`
+- `runtime.configured_model`
+
+These fields are operational hints only. They must not become replay truth,
+storage truth, or authorization inputs.
 
 The durable session record and replay-owned answer state remain deterministic.
 An LLM rewrite may decorate the immediate HTTP response, but it does not become
@@ -194,3 +207,5 @@ Rules:
 - if `KNOWLOOP_OPENAI_MODEL` is omitted, the current supported default is `gpt-5.4`
 - operator tuning values must not weaken the deterministic fallback contract,
   the evidence-minimization contract, or the structured-output validation rule
+- `GET /api/v1/system/runtime` is the stable backend surface for inspecting the
+  current optional LLM runtime configuration before the frontend is attached

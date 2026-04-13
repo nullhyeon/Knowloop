@@ -210,6 +210,31 @@ Rules:
 """
 
 
+def build_llm_runtime_status(settings: Settings) -> dict[str, object]:
+    if not settings.llm_enabled:
+        return {
+            "enabled": False,
+            "configured": False,
+            "provider": None,
+            "model": None,
+            "reasoning_effort": None,
+            "text_verbosity": None,
+            "timeout_seconds": None,
+            "max_output_tokens": None,
+        }
+
+    return {
+        "enabled": True,
+        "configured": settings.openai_api_key is not None,
+        "provider": "openai",
+        "model": settings.openai_model,
+        "reasoning_effort": settings.openai_reasoning_effort,
+        "text_verbosity": settings.openai_text_verbosity,
+        "timeout_seconds": settings.openai_timeout_seconds,
+        "max_output_tokens": settings.openai_max_output_tokens,
+    }
+
+
 def generate_grounded_answer(
     settings: Settings,
     *,

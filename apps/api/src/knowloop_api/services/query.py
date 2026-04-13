@@ -202,6 +202,30 @@ class BuiltAnswer(BaseModel):
     stored_answer: str
 
 
+def build_query_runtime_meta(
+    settings: Settings,
+    *,
+    response: QueryResponse,
+) -> dict[str, object]:
+    stored_answer = None
+    try:
+        stored_answer = get_session(settings, response.session_id).answer
+    except SessionNotFoundError:
+        stored_answer = None
+
+    llm_applied = bool(
+        settings.llm_enabled and stored_answer is not None and response.answer != stored_answer
+    )
+    return {
+        "answer_source": "llm_rewrite" if llm_applied else "deterministic_fallback",
+        "stored_answer_source": "deterministic_fallback",
+        "llm_enabled": settings.llm_enabled,
+        "llm_applied": llm_applied,
+        "provider": "openai" if settings.llm_enabled else None,
+        "configured_model": settings.openai_model if settings.llm_enabled else None,
+    }
+
+
 class LearningReplayProposal(BaseModel):
     learning_note_id: str
     student_id: str

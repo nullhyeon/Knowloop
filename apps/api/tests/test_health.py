@@ -148,6 +148,33 @@ def test_api_health_endpoint_is_available(tmp_path: Path) -> None:
     )
 
 
+def test_api_runtime_endpoint_reports_disabled_llm_runtime(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        "/api/v1/system/runtime",
+        headers={"X-Request-Id": "req-client-supplied-api-runtime"},
+    )
+
+    assert response.status_code == 200
+    assert_api_success_envelope(
+        response,
+        expected_data={
+            "llm_runtime": {
+                "enabled": False,
+                "configured": False,
+                "provider": None,
+                "model": None,
+                "reasoning_effort": None,
+                "text_verbosity": None,
+                "timeout_seconds": None,
+                "max_output_tokens": None,
+            }
+        },
+        client_request_id="req-client-supplied-api-runtime",
+    )
+
+
 def test_api_health_endpoint_uses_attempt_local_request_ids(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 
