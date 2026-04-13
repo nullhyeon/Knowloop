@@ -14,14 +14,15 @@ Read them together with the root frontend source-of-truth files:
 
 ## Recommended Page Build Order
 
-1. `page-structures/workspace.md`
-2. `page-structures/ask.md`
-3. `page-structures/wiki.md`
-4. `page-structures/review.md`
-5. `page-structures/insights.md`
-6. `page-structures/learning.md`
-7. `page-structures/sources.md`
-8. `page-structures/maintenance.md`
+1. `page-structures/home.md`
+2. `page-structures/workspace.md`
+3. `page-structures/ask.md`
+4. `page-structures/wiki.md`
+5. `page-structures/review.md`
+6. `page-structures/insights.md`
+7. `page-structures/learning.md`
+8. `page-structures/sources.md`
+9. `page-structures/maintenance.md`
 
 ## Rules
 

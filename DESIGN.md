@@ -48,6 +48,27 @@ The UI must never feel like:
 - a playful edtech app for children
 - a BI dashboard full of charts but weak on actionability
 
+### Product Entry Exception
+
+The public product entry page at `/` is the only surface allowed to feel slightly more editorial than the inner console.
+Even there, the product must still feel like a real tool, not a generic AI landing page.
+
+Reference priority for `/`:
+
+- `Linear` for the hero layout, product confidence, and CTA discipline
+- `GitBook` for the "how it works" sequence and maintained knowledge messaging
+- `NotebookLM` Korean product copy tone for evidence-based AI explanation
+- `Slite` for trust, knowledge quality, and maintenance messaging
+- `Vercel` only for subtle operational trust signals
+
+Rules for `/`:
+
+- show the product as a knowledge operations system, not a chatbot homepage
+- keep the hero concise and product-first
+- show the workflow `question -> accumulate -> review -> promote -> explore`
+- make sample-entry buttons obvious and high-trust
+- use Korean-first copy with only natural English nouns such as `Ask`, `Wiki`, `Review`
+
 ---
 
 ## 2. Design Principles

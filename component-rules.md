@@ -188,7 +188,28 @@ If a page cannot justify the right panel with meaningful content, collapse it de
 
 ---
 
-## 7. Table Rules
+## 7. Public Entry Rules
+
+The `/` page is the only route allowed to use a lighter product-marketing composition.
+It still belongs to the same system and must share the same typography, spacing, buttons, and trust signals as the inner console.
+
+Recommended wrappers for the public entry page:
+
+- `HeroSection`
+- `WorkflowStepCard`
+- `RoleEntryCard`
+- `TrustSignalRow`
+
+Rules:
+
+- keep the hero short and product-led
+- make the two sample-start cards visually primary
+- do not use decorative illustrations that break from the product shell
+- do not create a separate brand language for `/`
+
+---
+
+## 8. Table Rules
 
 ### Use Tables For
 
@@ -212,7 +233,7 @@ If a page cannot justify the right panel with meaningful content, collapse it de
 
 ---
 
-## 8. Ask Surface Rules
+## 9. Ask Surface Rules
 
 The ask surface is not a landing-page chat interface.
 
@@ -240,7 +261,7 @@ The ask surface is not a landing-page chat interface.
 
 ---
 
-## 9. Review Surface Rules
+## 10. Review Surface Rules
 
 ### Required Sections
 

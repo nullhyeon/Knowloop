@@ -54,19 +54,21 @@ Never try to implement the entire frontend in one pass.
 
 Work in this order:
 
-1. workspace entry and shell
-2. ask surface
-3. wiki surface
-4. review surface
-5. insights surface
-6. learning
-7. sources
-8. maintenance
+1. public product entry page
+2. workspace entry and shell
+3. ask surface
+4. wiki surface
+5. review surface
+6. insights surface
+7. learning
+8. sources
+9. maintenance
 
 ### One Responsibility per Slice
 
 Examples of valid slices:
 
+- public entry hero and sample-start section
 - workspace shell and context switch
 - ask page main layout
 - ask evidence panel
@@ -180,7 +182,29 @@ It must always show:
 
 ---
 
-## 10. Shared Object Language
+## 10. Public Entry Page Rule
+
+The `/` page is not a generic marketing site.
+It is a demo entry surface for judges and first-time users.
+
+It must always show:
+
+- what Knowloop is
+- how it works in one short workflow section
+- why it is not just a chatbot
+- two obvious seeded entry buttons
+  - `학생용 샘플 데이터로 시작`
+  - `교강사용 샘플 데이터로 시작`
+
+It must not:
+
+- bury the entry buttons below long feature marketing
+- rely on vague AI slogans
+- look unrelated to the in-product console
+
+---
+
+## 11. Shared Object Language
 
 Always use the same object names:
 
@@ -205,7 +229,7 @@ Never rename these per page.
 
 ---
 
-## 11. Component Ownership Rules
+## 12. Component Ownership Rules
 
 - primitives live in `components/ui`
 - semantic wrappers live in feature or shared folders
@@ -215,18 +239,19 @@ Never rename these per page.
 
 ---
 
-## 12. Do Not Do These
+## 13. Do Not Do These
 
 - do not use chat-product references as the main shell
 - do not create visually different mini-products per page
 - do not overuse gradients, glows, or glassmorphism
+- do not turn the public entry page into a glossy startup landing page
 - do not let insights become a meaningless chart gallery
 - do not hide traceability behind hover-only UI
 - do not design for mobile first at the expense of desktop console quality
 
 ---
 
-## 13. Required Deliverables Per Page
+## 14. Required Deliverables Per Page
 
 Before a page is considered complete, it must have:
 
@@ -241,7 +266,7 @@ Before a page is considered complete, it must have:
 
 ---
 
-## 14. Frontend Handoff Format
+## 15. Frontend Handoff Format
 
 When handing a frontend slice to Critic or Reviewer, include:
 

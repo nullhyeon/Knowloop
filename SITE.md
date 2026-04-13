@@ -87,21 +87,23 @@ Primary value by role:
 
 ### Core Pages
 
+- `/`
 - `/workspace`
 - `/ask`
 - `/learning`
 - `/wiki`
-- `/wiki/:pageId`
 - `/review`
-- `/review/:candidateId`
 - `/insights`
 - `/sources`
-- `/sources/:sourceId`
 - `/maintenance`
 
 ### Support and Shared Flows
 
 - `/context` may redirect into `/workspace` if a dedicated route is kept
+- detail selection currently uses query-param deep links instead of dynamic route segments
+  - `/wiki?page=<page-id>`
+  - `/review?candidate=<candidate-id>`
+  - `/sources?source=<source-id>`
 - modal, drawer, and panel states should not create unnecessary standalone routes unless they need shareable URLs
 
 ---
@@ -110,30 +112,65 @@ Primary value by role:
 
 ```mermaid
 flowchart TD
-    A["/workspace"] --> B["/ask"]
-    A --> C["/learning"]
-    A --> D["/wiki"]
-    A --> E["/review"]
-    A --> F["/insights"]
-    A --> G["/sources"]
-    A --> H["/maintenance"]
-    D --> D1["/wiki/:pageId"]
-    E --> E1["/review/:candidateId"]
-    G --> G1["/sources/:sourceId"]
+    H0["/"] --> A["/workspace"]
+    H0 --> B["student sample start"]
+    H0 --> C["instructor sample start"]
+    A --> D["/ask"]
+    A --> E["/learning"]
+    A --> F["/wiki"]
+    A --> G["/review"]
+    A --> H["/insights"]
+    A --> I["/sources"]
+    A --> J["/maintenance"]
+    B --> D
     B --> E
-    B --> D1
-    B --> C
-    F --> E
-    F --> D1
-    G1 --> D1
-    G1 --> E1
+    B --> F
+    C --> H
+    C --> G
+    C --> F
+    F --> F1["/wiki?page=..."]
+    G --> G1["/review?candidate=..."]
+    I --> I1["/sources?source=..."]
+    D --> G
+    D --> F1
+    H --> G
+    H --> F1
+    I1 --> F1
+    I1 --> G1
 ```
 
 ---
 
 ## 6. Page Inventory
 
-### 6.1 `/workspace`
+### 6.1 `/`
+
+Purpose:
+
+- introduce Knowloop as a maintained knowledge operations product, not a generic AI chat app
+- let judges and first-time users understand the workflow in under one minute
+- provide immediate seeded demo entry through two high-trust sample-start buttons
+
+Primary UX requirements:
+
+- concise hero with strong product explanation
+- workflow section showing `question -> accumulate -> review -> promote -> explore`
+- two primary start buttons only
+  - `학생용 샘플 데이터로 시작`
+  - `교강사용 샘플 데이터로 시작`
+- product trust section explaining evidence, candidate review, and maintained wiki
+
+Primary backend dependency:
+
+- none required for the informational sections
+- sample-start buttons must link into the existing context bootstrap flow using canonical sample profiles
+
+Current implementation note:
+
+- until the dedicated home entry page is shipped, the live root route may temporarily redirect into `/workspace`
+- this document defines the target contract for the next frontend slice
+
+### 6.2 `/workspace`
 
 Purpose:
 
@@ -145,7 +182,7 @@ Primary backend dependency:
 - `GET /api/v1/context/profiles`
 - `GET /api/v1/context/self`
 
-### 6.2 `/ask`
+### 6.3 `/ask`
 
 Purpose:
 
@@ -158,7 +195,7 @@ Primary backend dependency:
 - `GET /api/v1/sessions/recent`
 - `GET /api/v1/sessions/search`
 
-### 6.3 `/learning`
+### 6.4 `/learning`
 
 Purpose:
 
@@ -176,7 +213,7 @@ Note:
 - there is no separate dedicated learning API in the current backend MVP
 - the page must derive its content from sessions, query write-back payloads, and stored learning artifacts
 
-### 6.4 `/wiki`
+### 6.5 `/wiki`
 
 Purpose:
 
@@ -188,7 +225,7 @@ Primary backend dependency:
 - `GET /api/v1/wiki/pages`
 - `GET /api/v1/wiki/pages/{page_id}`
 
-### 6.5 `/review`
+### 6.6 `/review`
 
 Purpose:
 
@@ -204,7 +241,7 @@ Primary backend dependency:
 - `POST /api/v1/review/candidates/{candidate_id}/drop`
 - `POST /api/v1/review/candidates/{candidate_id}/resume-sync`
 
-### 6.6 `/insights`
+### 6.7 `/insights`
 
 Purpose:
 
@@ -215,7 +252,7 @@ Primary backend dependency:
 - `GET /api/v1/instructor/insights/overview`
 - `GET /api/v1/instructor/insights/patterns`
 
-### 6.7 `/sources`
+### 6.8 `/sources`
 
 Purpose:
 
@@ -227,7 +264,7 @@ Primary backend dependency:
 - `GET /api/v1/sources/{source_id}`
 - `POST /api/v1/sources/register`
 
-### 6.8 `/maintenance`
+### 6.9 `/maintenance`
 
 Purpose:
 
@@ -316,18 +353,20 @@ Structure:
 
 Implement pages in this order:
 
-1. `/workspace`
-2. `/ask`
-3. `/wiki`
-4. `/review`
-5. `/insights`
-6. `/learning`
-7. `/sources`
-8. `/maintenance`
+1. `/`
+2. `/workspace`
+3. `/ask`
+4. `/wiki`
+5. `/review`
+6. `/insights`
+7. `/learning`
+8. `/sources`
+9. `/maintenance`
 
 Reason:
 
-- the first five pages already express the core product loop
+- the public entry page sets the demo frame before the console opens
+- the next five pages express the core product loop
 - `Learning`, `Sources`, and `Maintenance` deepen the product after the core loop is visible
 
 ---
