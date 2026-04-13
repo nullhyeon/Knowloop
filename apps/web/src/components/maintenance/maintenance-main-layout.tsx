@@ -1,20 +1,20 @@
-"use client";
+﻿"use client";
 
-import { useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { getDomainLabel, getRoleLabel, type KnowloopRole } from "@/lib/demo-data";
 import {
-  getDomainLabel,
-  getMaintenanceConsoleData,
-  getProfileById,
-  getRoleLabel,
+  fetchMaintenanceReport,
+  fetchMaintenanceStatus,
   type MaintenanceConsoleData,
-  type MaintenanceSeverity,
-} from "@/lib/demo-data";
+  type MaintenanceFinding,
+  type MaintenanceSeverityLabel,
+} from "@/lib/maintenance-browser";
 
+import { useContextBootstrap } from "@/components/console/context-bootstrap-provider";
 import { ScopeHeader } from "@/components/console/scope-header";
 
-const maintenanceSeverityFilters: Array<"전체" | MaintenanceSeverity> = ["전체", "Error", "Warning", "Info"];
+const maintenanceSeverityFilters: Array<"전체" | MaintenanceSeverityLabel> = ["전체", "Error", "Warning"];
 
 function MaintenanceToneBadge({
   tone,
@@ -31,7 +31,7 @@ function MaintenanceToneBadge({
   return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${styles}`}>{tone}</span>;
 }
 
-function MaintenanceSeverityBadge({ severity }: { severity: MaintenanceSeverity }) {
+function MaintenanceSeverityBadge({ severity }: { severity: MaintenanceSeverityLabel }) {
   const styles = {
     Error: "bg-[var(--danger-soft)] text-[var(--danger)]",
     Warning: "bg-[var(--warning-soft)] text-[var(--warning)]",
@@ -48,6 +48,12 @@ function MaintenanceStatusBanner({ data, validatorView }: { data: MaintenanceCon
     "Not Run": "border-[var(--border-strong)] bg-[var(--surface-muted)]",
   }[data.statusLabel];
 
+  const statusCopy = {
+    Healthy: "정상",
+    "Needs Attention": "주의 필요",
+    "Not Run": "실행 전",
+  }[data.statusLabel];
+
   return (
     <section className={`panel-card border ${statusStyles} px-6 py-5 lg:px-7`}>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -56,9 +62,11 @@ function MaintenanceStatusBanner({ data, validatorView }: { data: MaintenanceCon
             <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--body)]">
               Maintenance status
             </span>
-            <MaintenanceSeverityBadge severity={data.statusLabel === "Needs Attention" ? "Warning" : data.statusLabel === "Healthy" ? "Info" : "Error"} />
+            <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--body)]">
+              {validatorView ? "Validator report" : "Instructor status"}
+            </span>
           </div>
-          <h2 className="text-xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">{data.statusLabel}</h2>
+          <h2 className="text-xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">{statusCopy}</h2>
           <p className="max-w-4xl text-sm leading-7 text-[var(--body)]">{data.summary}</p>
         </div>
 
@@ -66,18 +74,47 @@ function MaintenanceStatusBanner({ data, validatorView }: { data: MaintenanceCon
           <div className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">Health score</p>
             <p className="mt-2 text-3xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">{data.healthScore}</p>
-            <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{data.lastRunAt ? `마지막 점검 ${data.lastRunAt}` : "아직 보고서가 실행되지 않았습니다."}</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+              {data.lastRunAt ? `마지막 실행 ${data.lastRunAt}` : "아직 이 스코프에서 maintenance report가 실행되지 않았습니다."}
+            </p>
           </div>
           <div className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">Report mode</p>
-            <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">{validatorView ? "Validator report" : "Instructor status"}</p>
+            <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">{validatorView ? "Full report" : "Read-only status"}</p>
             <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
-              {validatorView ? "새 보고서를 다시 생성하고 세부 repair 대상까지 읽을 수 있습니다." : "redacted status만 읽을 수 있고 새 보고서를 생성할 수는 없습니다."}
+              {validatorView
+                ? "validator는 최신 maintenance report를 생성하고 상세 finding을 읽습니다."
+                : "instructor는 민감한 entity id를 가린 status만 읽습니다."}
             </p>
           </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function MaintenanceSkeleton() {
+  return (
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px] animate-pulse">
+      <section className="panel-card min-h-[680px] px-5 py-5">
+        <div className="h-5 w-40 rounded-full bg-[var(--surface-muted)]" />
+        <div className="mt-4 h-4 w-80 rounded-full bg-[var(--surface-muted)]" />
+        <div className="mt-8 space-y-3">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <div key={index} className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
+              <div className="h-4 w-36 rounded-full bg-[var(--surface-muted)]" />
+              <div className="mt-3 h-4 w-full rounded-full bg-[var(--surface-muted)]" />
+              <div className="mt-2 h-4 w-4/5 rounded-full bg-[var(--surface-muted)]" />
+            </div>
+          ))}
+        </div>
+      </section>
+      <aside className="panel-card min-h-[680px] px-5 py-5">
+        <div className="h-5 w-32 rounded-full bg-[var(--surface-muted)]" />
+        <div className="mt-4 h-4 w-full rounded-full bg-[var(--surface-muted)]" />
+        <div className="mt-2 h-4 w-4/5 rounded-full bg-[var(--surface-muted)]" />
+      </aside>
+    </div>
   );
 }
 
@@ -93,17 +130,80 @@ function EmptyFindingsPanel({ title, description }: { title: string; description
   );
 }
 
+function AccessPanel({ role }: { role: KnowloopRole | null }) {
+  return (
+    <div className="panel-card flex min-h-[520px] items-center justify-center px-6 py-8">
+      <div className="max-w-2xl rounded-[24px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-6 py-7">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Maintenance access</p>
+        <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">이 화면은 유지보수 상태를 읽는 운영 surface입니다.</h2>
+        <p className="mt-3 text-sm leading-7 text-[var(--body)]">
+          현재 프로필은 {role ? getRoleLabel(role) : "알 수 없는 역할"}로 인식되었습니다. maintenance 전체 보고서는 validator가 보고, instructor는 읽기 전용 상태만 확인합니다.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function MaintenanceMainLayout() {
-  const searchParams = useSearchParams();
-  const activeProfile = getProfileById(searchParams.get("profile"));
-  const maintenanceData = useMemo(() => getMaintenanceConsoleData(activeProfile.profileId), [activeProfile.profileId]);
-  const validatorView = activeProfile.role === "validator";
-  const [activeSeverityFilter, setActiveSeverityFilter] = useState<"전체" | MaintenanceSeverity>("전체");
-  const [selectedFindingId, setSelectedFindingId] = useState(maintenanceData?.findings[0]?.findingId ?? "");
+  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const maintenanceAllowed = Boolean(activeProfile && ["instructor", "validator"].includes(activeProfile.role));
+  const validatorView = activeProfile?.role === "validator";
+
+  const [maintenanceData, setMaintenanceData] = useState<MaintenanceConsoleData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeSeverityFilter, setActiveSeverityFilter] = useState<"전체" | MaintenanceSeverityLabel>("전체");
+  const [selectedFindingId, setSelectedFindingId] = useState("");
+  const requestSequenceRef = useRef(0);
+
+  const loadMaintenance = useCallback(async () => {
+    if (!activeProfile || !maintenanceAllowed) {
+      requestSequenceRef.current += 1;
+      setMaintenanceData(null);
+      setLoading(false);
+      setError(null);
+      setSelectedFindingId("");
+      return;
+    }
+
+    const requestSequence = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestSequence;
+    setLoading(true);
+    setError(null);
+
+    try {
+      const nextData = validatorView
+        ? await fetchMaintenanceReport({ profileId: activeProfile.profileId }, self, activeProfile)
+        : await fetchMaintenanceStatus({ profileId: activeProfile.profileId }, self, activeProfile);
+
+      if (requestSequence !== requestSequenceRef.current) {
+        return;
+      }
+
+      setMaintenanceData(nextData);
+      setSelectedFindingId((current) => (nextData.findings.some((finding) => finding.findingId === current) ? current : nextData.findings[0]?.findingId ?? ""));
+    } catch (caughtError) {
+      if (requestSequence !== requestSequenceRef.current) {
+        return;
+      }
+      const message = caughtError instanceof Error ? caughtError.message : "maintenance 상태를 불러오지 못했습니다.";
+      setMaintenanceData(null);
+      setSelectedFindingId("");
+      setError(message);
+    } finally {
+      if (requestSequence === requestSequenceRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [activeProfile, maintenanceAllowed, self, validatorView]);
+
+  useEffect(() => {
+    void loadMaintenance();
+  }, [loadMaintenance]);
 
   const filteredFindings = useMemo(() => {
     if (!maintenanceData) {
-      return [];
+      return [] as MaintenanceFinding[];
     }
 
     return maintenanceData.findings.filter((finding) => activeSeverityFilter === "전체" || finding.severity === activeSeverityFilter);
@@ -113,7 +213,6 @@ export function MaintenanceMainLayout() {
     if (filteredFindings.some((finding) => finding.findingId === selectedFindingId)) {
       return selectedFindingId;
     }
-
     return filteredFindings[0]?.findingId ?? "";
   }, [filteredFindings, selectedFindingId]);
 
@@ -121,28 +220,32 @@ export function MaintenanceMainLayout() {
     return filteredFindings.find((finding) => finding.findingId === displayedFindingId) ?? filteredFindings[0] ?? null;
   }, [displayedFindingId, filteredFindings]);
 
+  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? (validatorView ? "review" : "academic"));
+
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">
       <ScopeHeader
         title="Maintenance"
-        description="stale candidate, orphan reference, report freshness를 한 화면에서 읽고 어떤 복구를 먼저 해야 하는지 판단하는 운영 콘솔입니다."
-        role={getRoleLabel(activeProfile.role)}
-        course={activeProfile.courseLabel}
-        classNameLabel={activeProfile.classLabel}
-        domain={getDomainLabel(activeProfile.domain)}
+        description="stale candidate, orphan reference, report freshness를 읽고 어느 복구를 먼저 해야 하는지 판단하는 운영 콘솔입니다."
+        role={roleLabel}
+        course={courseLabel}
+        classNameLabel={classLabel}
+        domain={domainLabel}
       />
 
-      {!maintenanceData ? (
-        <div className="panel-card flex min-h-[520px] items-center justify-center px-6 py-8">
-          <div className="max-w-2xl rounded-[24px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-6 py-7">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Maintenance access</p>
-            <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">이 화면은 knowledge health를 읽고 복구 순서를 정하는 운영 surface입니다.</h2>
-            <p className="mt-3 text-sm leading-7 text-[var(--body)]">
-              현재 MVP에서는 validator가 전체 maintenance report를 다루고, instructor는 redacted status만 읽을 수 있습니다. 운영자는 Sources와 Review 흐름을 통해
-              연결 상태를 간접적으로 확인합니다.
-            </p>
-          </div>
-        </div>
+      {!maintenanceAllowed ? (
+        <AccessPanel role={activeProfile?.role ?? null} />
+      ) : bootstrapLoading || loading ? (
+        <MaintenanceSkeleton />
+      ) : bootstrapError ? (
+        <EmptyFindingsPanel title="컨텍스트를 불러오지 못했습니다." description={bootstrapError} />
+      ) : error ? (
+        <EmptyFindingsPanel title="maintenance 상태를 불러오지 못했습니다." description={error} />
+      ) : !maintenanceData ? (
+        <EmptyFindingsPanel title="maintenance 데이터가 아직 없습니다." description="현재 스코프에서 읽을 수 있는 maintenance status가 준비되지 않았습니다." />
       ) : (
         <>
           <MaintenanceStatusBanner data={maintenanceData} validatorView={validatorView} />
@@ -168,13 +271,14 @@ export function MaintenanceMainLayout() {
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Findings</p>
-                    <h2 className="mt-2 text-lg font-semibold text-[var(--foreground)]">현재 스코프에서 먼저 복구해야 하는 항목</h2>
+                    <h2 className="mt-2 text-lg font-semibold text-[var(--foreground)]">현재 스코프에서 먼저 봐야 할 유지보수 항목</h2>
                     <p className="mt-2 text-sm leading-6 text-[var(--body)]">
-                      심각도별로 stale candidate와 orphan ref를 읽고, 어떤 화면에서 복구를 마쳐야 하는지 바로 판단할 수 있도록 구성한 목록입니다.
+                      severity별로 stale candidate와 orphan ref를 읽고, 어떤 화면에서 복구를 시작해야 하는지 바로 판단할 수 있도록 정리한 목록입니다.
                     </p>
                   </div>
                   <button
                     type="button"
+                    onClick={() => void loadMaintenance()}
                     disabled={!validatorView}
                     className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition ${
                       validatorView
@@ -182,7 +286,7 @@ export function MaintenanceMainLayout() {
                         : "cursor-not-allowed border border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)]"
                     }`}
                   >
-                    {validatorView ? "새 보고서 기준으로 보기" : "read-only status"}
+                    {validatorView ? "최신 보고서 다시 생성" : "read-only status"}
                   </button>
                 </div>
               </div>
@@ -196,6 +300,7 @@ export function MaintenanceMainLayout() {
                       <button
                         key={filter}
                         type="button"
+                        aria-pressed={active}
                         onClick={() => setActiveSeverityFilter(filter)}
                         className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
                           active
@@ -245,10 +350,17 @@ export function MaintenanceMainLayout() {
                     })}
                   </div>
                 </div>
+              ) : maintenanceData.statusLabel === "Not Run" ? (
+                <EmptyFindingsPanel
+                  title="아직 유지보수 보고서가 없습니다."
+                  description={validatorView
+                    ? "validator가 최신 보고서를 생성하면 stale candidate와 orphan ref가 여기에 표시됩니다."
+                    : "현재는 read-only status만 읽고 있습니다. validator가 보고서를 실행하면 상태가 갱신됩니다."}
+                />
               ) : (
                 <EmptyFindingsPanel
-                  title="현재 필터 조건에 맞는 maintenance finding이 없습니다."
-                  description="심각도 필터를 전체로 바꾸면 현재 스코프의 stale candidate와 orphan ref를 다시 볼 수 있습니다."
+                  title="현재 조건에 맞는 maintenance finding이 없습니다."
+                  description="필터를 다시 넓혀 보거나, 현재 스코프가 clean 상태인지 우측 메타데이터에서 함께 확인해 주세요."
                 />
               )}
             </section>
@@ -289,7 +401,7 @@ export function MaintenanceMainLayout() {
                     </article>
                   ) : (
                     <div className="rounded-[20px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-4 py-5 text-sm leading-6 text-[var(--body)]">
-                      선택한 finding이 없으면 상세 패널도 비워 둡니다. 왼쪽 목록에서 항목을 선택해 주세요.
+                      선택한 finding이 없으면 상세 영역은 비워 둡니다. 왼쪽 목록에서 항목을 선택해 주세요.
                     </div>
                   )}
 
@@ -307,10 +419,6 @@ export function MaintenanceMainLayout() {
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">Report source</p>
                         <p className="mt-1 text-sm text-[var(--body)]">{maintenanceData.generatedBy}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">Storage</p>
-                        <p className="mt-1 break-all text-sm text-[var(--body)]">{maintenanceData.reportPath}</p>
                       </div>
                     </div>
                     {maintenanceData.redactionNote ? (
