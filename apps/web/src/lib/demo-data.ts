@@ -372,6 +372,21 @@ export const demoProfiles: KnowloopProfile[] = [
 
 export const defaultProfileId = "student-minji";
 
+const externalProfileAliases: Record<string, string> = {
+  "student-minji": "student-minji",
+  "instructor-calculus-team": "instructor-park",
+  "operator-academic-office": "operator-lee",
+  "validator-course-admin": "validator-han",
+};
+
+export function normalizeKnownProfileId(profileId?: string | null): string | null {
+  if (!profileId) {
+    return null;
+  }
+
+  return externalProfileAliases[profileId] ?? profileId;
+}
+
 export const recentContexts: RecentContext[] = [
   {
     contextId: "ctx-student-recent",
@@ -1340,7 +1355,8 @@ export const reviewCandidates: ReviewCandidate[] = [
 ];
 
 export function getProfileById(profileId?: string | null): KnowloopProfile {
-  return demoProfiles.find((profile) => profile.profileId === profileId) ?? demoProfiles[0];
+  const normalizedProfileId = normalizeKnownProfileId(profileId);
+  return demoProfiles.find((profile) => profile.profileId === normalizedProfileId) ?? demoProfiles[0];
 }
 
 export function getRoleLabel(role: KnowloopRole): string {
