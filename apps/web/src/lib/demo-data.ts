@@ -195,6 +195,21 @@ export type InsightPriorityAction = {
   tone: "review" | "primary" | "warning";
 };
 
+export type SourceRecord = {
+  sourceId: string;
+  title: string;
+  sourceType: "Lecture Note" | "Announcement" | "Policy" | "Class Memo";
+  domainLabel: "Academic" | "Operations";
+  scopeLabel: string;
+  statusLabel: "Registered" | "Needs Sync" | "Active";
+  registeredAt: string;
+  ownerLabel: string;
+  summary: string;
+  linkedWikiPages: string[];
+  linkedCandidates: string[];
+  originLabel: string;
+};
+
 export type WikiPagePreview = {
   pageId: string;
   title: string;
@@ -260,7 +275,7 @@ export const navigationItems: NavigationItem[] = [
   { label: "Wiki", href: "/wiki", roles: ["student", "instructor", "validator"], implemented: true },
   { label: "Review", href: "/review", roles: ["instructor", "operator", "validator"], implemented: true },
   { label: "Insights", href: "/insights", roles: ["instructor"], implemented: true },
-  { label: "Sources", href: "/sources", roles: ["instructor", "operator"], implemented: false },
+  { label: "Sources", href: "/sources", roles: ["instructor", "operator", "validator"], implemented: true },
   { label: "Maintenance", href: "/maintenance", roles: ["operator", "validator"], implemented: false },
 ];
 
@@ -833,6 +848,51 @@ export const insightPriorityActions: InsightPriorityAction[] = [
   },
 ];
 
+export const sourceRecords: SourceRecord[] = [
+  {
+    sourceId: "src-lecture-note-week-03",
+    title: "3주차 강의 노트 주석",
+    sourceType: "Lecture Note",
+    domainLabel: "Academic",
+    scopeLabel: "미적분 I · A반",
+    statusLabel: "Active",
+    registeredAt: "오늘 오전 9:30",
+    ownerLabel: "강사 박준호",
+    summary: "연쇄법칙과 곱의 미분법을 함께 설명할 때 자주 발생하는 오개념과 시험 표현을 정리한 강의 주석입니다.",
+    linkedWikiPages: ["연쇄법칙 핵심 정리", "곱의 미분법 빠른 판단 규칙"],
+    linkedCandidates: ["연쇄법칙 오개념 보강 후보"],
+    originLabel: "lecture-note-week-03-chain-rule.md",
+  },
+  {
+    sourceId: "src-homework-policy",
+    title: "과제 제출 운영 공지",
+    sourceType: "Announcement",
+    domainLabel: "Operations",
+    scopeLabel: "미적분 I · A반",
+    statusLabel: "Active",
+    registeredAt: "어제 오후 5:40",
+    ownerLabel: "운영자 이도윤",
+    summary: "과제 제출 마감, 재제출 승인 조건, 운영 문의 응답 기준이 담긴 공지 source입니다.",
+    linkedWikiPages: ["과제 제출 FAQ"],
+    linkedCandidates: ["과제 제출 FAQ 보강 후보"],
+    originLabel: "announcement-homework-policy.md",
+  },
+  {
+    sourceId: "src-product-rule-memo",
+    title: "곱의 미분법 수업 메모",
+    sourceType: "Class Memo",
+    domainLabel: "Academic",
+    scopeLabel: "미적분 I · A반",
+    statusLabel: "Needs Sync",
+    registeredAt: "2일 전 오후 2:10",
+    ownerLabel: "강사 박준호",
+    summary: "곱의 미분법 quick guide를 최신 수업 표현으로 보강하기 위한 메모입니다. 현재 sync pending 후보와 연결됩니다.",
+    linkedWikiPages: ["곱의 미분법 빠른 판단 규칙"],
+    linkedCandidates: ["곱의 미분법 동기화 복구 후보"],
+    originLabel: "lecture-note-product-rule.md",
+  },
+];
+
 export const wikiPages: WikiPagePreview[] = [
   {
     pageId: "page-chain-rule-guide",
@@ -1195,6 +1255,21 @@ export function getReviewActionsForProfile(
       return candidate.availableActions;
     case "instructor":
       return candidate.scopeLabel.includes("Operations") ? [] : candidate.availableActions;
+    default:
+      return [];
+  }
+}
+
+export function getSourcesForProfile(profileId?: string | null): SourceRecord[] {
+  const profile = getProfileById(profileId);
+
+  switch (profile.role) {
+    case "operator":
+      return sourceRecords.filter((record) => record.domainLabel === "Operations");
+    case "validator":
+      return sourceRecords;
+    case "instructor":
+      return sourceRecords;
     default:
       return [];
   }
