@@ -66,13 +66,13 @@ Primary value by role:
 - Review
 - Insights
 - Sources
+- Maintenance
 
 #### Operator
 
 - Workspace
 - Review
 - Sources
-- Maintenance
 
 #### Validator
 

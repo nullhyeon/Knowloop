@@ -210,6 +210,42 @@ export type SourceRecord = {
   originLabel: string;
 };
 
+export type MaintenanceSeverity = "Error" | "Warning" | "Info";
+
+export type MaintenanceSummaryCard = {
+  label: string;
+  value: string;
+  hint: string;
+  tone: "danger" | "warning" | "success" | "neutral";
+};
+
+export type MaintenanceFinding = {
+  findingId: string;
+  title: string;
+  severity: MaintenanceSeverity;
+  code: string;
+  entityType: "Candidate" | "Wiki Page" | "Source Ref" | "Report";
+  entityLabel: string;
+  summary: string;
+  detail: string;
+  suggestedAction: string;
+};
+
+export type MaintenanceConsoleData = {
+  statusLabel: "Healthy" | "Needs Attention" | "Not Run";
+  reportState: "report-available" | "read-only-status";
+  healthScore: string;
+  lastRunAt?: string;
+  reviewQueueCount: string;
+  summary: string;
+  scopeLabel: string;
+  reportPath: string;
+  generatedBy: string;
+  redactionNote?: string;
+  summaryCards: MaintenanceSummaryCard[];
+  findings: MaintenanceFinding[];
+};
+
 export type WikiPagePreview = {
   pageId: string;
   title: string;
@@ -276,7 +312,7 @@ export const navigationItems: NavigationItem[] = [
   { label: "Review", href: "/review", roles: ["instructor", "operator", "validator"], implemented: true },
   { label: "Insights", href: "/insights", roles: ["instructor"], implemented: true },
   { label: "Sources", href: "/sources", roles: ["instructor", "operator", "validator"], implemented: true },
-  { label: "Maintenance", href: "/maintenance", roles: ["operator", "validator"], implemented: false },
+  { label: "Maintenance", href: "/maintenance", roles: ["instructor", "validator"], implemented: true },
 ];
 
 export const demoProfiles: KnowloopProfile[] = [
@@ -893,6 +929,149 @@ export const sourceRecords: SourceRecord[] = [
   },
 ];
 
+const validatorMaintenanceData: MaintenanceConsoleData = {
+  statusLabel: "Needs Attention",
+  reportState: "report-available",
+  healthScore: "82",
+  lastRunAt: "오늘 오후 7:18",
+  reviewQueueCount: "3",
+  summary:
+    "현재 스코프에서 stale candidate 1건과 orphan reference 2건이 감지되었습니다. 공식 지식이 깨지기 전에 review와 source traceability를 먼저 복구해야 합니다.",
+  scopeLabel: "미적분 I · A반 · Review",
+  reportPath: "data/meta/maintenance/course-calculus-1/class-calculus-1-2026-spring-a/lint-status.json",
+  generatedBy: "validator scoped report",
+  summaryCards: [
+    {
+      label: "Health score",
+      value: "82",
+      hint: "차트보다 먼저, 현재 스코프가 운영 가능한 상태인지 읽는 점수입니다.",
+      tone: "warning",
+    },
+    {
+      label: "Stale candidate",
+      value: "1건",
+      hint: "오래 열려 있어 review가 필요한 candidate입니다.",
+      tone: "warning",
+    },
+    {
+      label: "Orphan refs",
+      value: "2건",
+      hint: "위키 또는 source traceability가 끊긴 참조입니다.",
+      tone: "danger",
+    },
+    {
+      label: "Review queue",
+      value: "3건",
+      hint: "현재 maintenance와 함께 같이 정리해야 하는 후보 수입니다.",
+      tone: "neutral",
+    },
+  ],
+  findings: [
+    {
+      findingId: "maint-stale-chain-rule",
+      title: "연쇄법칙 오개념 후보가 stale 상태로 오래 열려 있음",
+      severity: "Warning",
+      code: "stale_candidate",
+      entityType: "Candidate",
+      entityLabel: "cand-chain-rule-misconception",
+      summary: "학생 질문 패턴은 계속 반복되는데 candidate가 3일째 열려 있어 review 우선순위가 높습니다.",
+      detail:
+        "A반에서 동일한 confusion이 누적되고 있어 공식 위키 보강 시점이 지났습니다. 지금 상태로 두면 Ask와 Insights의 메시지는 유지되지만 공식 지식 반영이 늦어집니다.",
+      suggestedAction: "Review에서 candidate를 열고 approve 또는 drop 판단을 먼저 내립니다.",
+    },
+    {
+      findingId: "maint-orphan-source-ref",
+      title: "곱의 미분법 위키에서 source ref 하나가 끊어졌습니다",
+      severity: "Error",
+      code: "orphan_source_ref",
+      entityType: "Source Ref",
+      entityLabel: "lecture-note-product-rule-v1.md",
+      summary: "현재 위키에 적힌 source ref가 manifest에 없는 이전 파일명을 가리키고 있습니다.",
+      detail:
+        "위키 본문은 유지되고 있지만 근거 경로가 사라져 traceability가 깨졌습니다. validator가 source registry와 wiki meta를 맞춰야 합니다.",
+      suggestedAction: "Sources에서 현재 등록된 강의 메모를 확인한 뒤, Review/Wiki에서 연결 ref를 최신 source로 갱신합니다.",
+    },
+    {
+      findingId: "maint-orphan-candidate-ref",
+      title: "과제 제출 FAQ 위키에 orphan candidate ref가 남아 있습니다",
+      severity: "Error",
+      code: "orphan_candidate_ref",
+      entityType: "Wiki Page",
+      entityLabel: "page-homework-faq",
+      summary: "이미 merge 또는 drop된 후보의 ref가 위키 메타에 남아 있어 patch 이력이 혼동될 수 있습니다.",
+      detail:
+        "운영 FAQ는 최신 상태지만, candidate ref cleanup이 누락되어 review 이력과 위키 메타 사이의 신뢰도가 떨어지고 있습니다.",
+      suggestedAction: "Review audit와 wiki meta panel을 함께 열어 stale ref를 제거하고 마지막 sync를 다시 기록합니다.",
+    },
+  ],
+};
+
+const instructorMaintenanceData: MaintenanceConsoleData = {
+  statusLabel: "Needs Attention",
+  reportState: "read-only-status",
+  healthScore: "82",
+  lastRunAt: "오늘 오후 7:18",
+  reviewQueueCount: "3",
+  summary:
+    "현재 스코프에 review가 필요한 유지보수 항목이 있습니다. 강사는 상태를 읽을 수 있지만 새 보고서를 생성하거나 민감한 세부 경로를 보지는 않습니다.",
+  scopeLabel: "미적분 I · A반 · Academic",
+  reportPath: "redacted for instructor view",
+  generatedBy: "read-only maintenance status",
+  redactionNote: "강사 화면에서는 민감한 entity id와 내부 경로를 가린 요약만 제공합니다.",
+  summaryCards: [
+    {
+      label: "Health score",
+      value: "82",
+      hint: "지금 수업 운영 관점에서 knowledge health가 완전하지 않다는 신호입니다.",
+      tone: "warning",
+    },
+    {
+      label: "Needs reteach + review",
+      value: "2개",
+      hint: "수업 설명 보강과 review action이 같이 필요한 항목 수입니다.",
+      tone: "warning",
+    },
+    {
+      label: "Broken traceability",
+      value: "2건",
+      hint: "근거 추적이 깨져 validator 도움을 요청해야 하는 상태입니다.",
+      tone: "danger",
+    },
+    {
+      label: "Last status sync",
+      value: "오늘",
+      hint: "이 화면은 최신 persisted maintenance status를 읽습니다.",
+      tone: "neutral",
+    },
+  ],
+  findings: [
+    {
+      findingId: "maint-public-stale",
+      title: "오래 열린 candidate가 있어 위키 반영이 늦어지고 있습니다",
+      severity: "Warning",
+      code: "stale_candidate",
+      entityType: "Candidate",
+      entityLabel: "redacted",
+      summary: "반복 confusion이 이미 확인됐지만 review가 지연되고 있습니다.",
+      detail:
+        "강사 화면에서는 세부 entity id를 숨기고, 수업 운영상 어떤 종류의 유지보수가 필요한지만 보여줍니다.",
+      suggestedAction: "Review 화면에서 validator와 함께 우선순위를 정해 먼저 닫아야 합니다.",
+    },
+    {
+      findingId: "maint-public-orphan-source",
+      title: "공식 위키 중 일부가 현재 source traceability를 잃었습니다",
+      severity: "Error",
+      code: "orphan_source_ref",
+      entityType: "Source Ref",
+      entityLabel: "redacted",
+      summary: "근거 자료와 공식 위키 연결이 끊긴 항목이 있어 강의 자료 재사용 전에 확인이 필요합니다.",
+      detail:
+        "강사 화면에서는 내부 파일명 대신 어떤 종류의 끊김이 있는지만 보여줍니다. 실제 복구는 validator가 수행합니다.",
+      suggestedAction: "Review 또는 Sources 담당자에게 최신 source 연결 상태를 확인해 달라고 요청합니다.",
+    },
+  ],
+};
+
 export const wikiPages: WikiPagePreview[] = [
   {
     pageId: "page-chain-rule-guide",
@@ -1272,5 +1451,18 @@ export function getSourcesForProfile(profileId?: string | null): SourceRecord[] 
       return sourceRecords;
     default:
       return [];
+  }
+}
+
+export function getMaintenanceConsoleData(profileId?: string | null): MaintenanceConsoleData | null {
+  const profile = getProfileById(profileId);
+
+  switch (profile.role) {
+    case "validator":
+      return validatorMaintenanceData;
+    case "instructor":
+      return instructorMaintenanceData;
+    default:
+      return null;
   }
 }
