@@ -29,6 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         description="Backend foundation for Knowloop.",
     )
+    app.state.settings = resolved_settings
 
     @app.middleware("http")
     async def attach_request_id(request: Request, call_next):

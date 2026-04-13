@@ -41,6 +41,13 @@ Canonical actors:
 - `ops-academic-office`
 - `val-course-admin`
 
+Canonical frontend/bootstrap profiles:
+
+- `student-minji`
+- `instructor-calculus-team`
+- `operator-academic-office`
+- `validator-course-admin`
+
 Canonical scenario families:
 
 1. chain-rule vs product-rule confusion
@@ -52,6 +59,7 @@ Canonical scenario families:
 
 ```text
 data/fixtures/
+  context/
   sources/
   queries/
   sessions/
@@ -62,6 +70,7 @@ data/fixtures/
 
 Meaning:
 
+- `context/`: frontend/bootstrap demo profile registry that resolves canonical request contexts
 - `sources/`: raw source registration seeds
 - `queries/`: request and expected response-shape fixtures for `POST /api/v1/query/respond`
   including optional `setup_fixtures` for sequential scenarios and declarative error cases

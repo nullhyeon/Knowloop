@@ -6,6 +6,7 @@ Follow the catalog in `docs/product/fixture-catalog.md`.
 
 Canonical MVP fixture pack:
 
+- `context/`: frontend/bootstrap demo profiles that resolve to canonical Knowloop request contexts
 - `sources/`: lecture notes, announcements, and operations-safe source documents
 - `queries/`: request fixtures for `POST /api/v1/query/respond`
   and expected retrieval/write-back contracts

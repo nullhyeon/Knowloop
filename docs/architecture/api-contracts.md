@@ -53,6 +53,7 @@ Required headers:
 
 Optional headers:
 
+- `X-Knowloop-Profile-Id`
 - `X-Knowloop-Domain`
 - `X-Request-Id`
 - `Idempotency-Key`
@@ -74,6 +75,11 @@ Header notes:
   - duplicate, comma-joined, or otherwise multi-value inputs are treated as non-canonical and dropped instead of being reflected
   - reflected values are transport-only metadata and must not be persisted into session, candidate, wiki, learning, audit, or mutation artifacts
 - `Idempotency-Key` is the replay-safe mutation key for routes that support retry semantics.
+- `X-Knowloop-Profile-Id` is a frontend/bootstrap adapter for demo and local UI flows:
+  - when present, the API resolves the role, actor, course, class, and default domain from the checked-in context profile registry
+  - when omitted, the route still uses the explicit `X-Knowloop-*` header contract
+  - if `X-Knowloop-Profile-Id` is sent together with explicit `X-Knowloop-*` values, every provided explicit field must match the profile exactly or the request fails with `422 validation_failed`
+  - `X-Knowloop-Profile-Id` does not replace `Idempotency-Key` or the tracing headers; it only resolves the scoped actor context
 - role and domain combinations must satisfy the role-permission contract.
 - when `X-Knowloop-Domain` is omitted, the shared request-context dependency first resolves the role's default domain using `Request Context Default Domains v1` only for roles listed in that table
 - `system` has no shared request-context default domain; omitted-domain behavior for `system` must be declared per route family
@@ -86,6 +92,14 @@ Header notes:
   - `validator` and `system` review requests use `review`
 - `/api/v1/review/*` is the workflow boundary for candidate promotion actions; `X-Knowloop-Domain` alone does not grant review authority.
 - every `/api/v1/*` response must emit `X-Request-Id`; probe routes such as `/`, `/healthz`, and `/readyz` stay outside the API envelope contract
+
+Context bootstrap routes:
+
+- `GET /api/v1/context/profiles`
+  - returns the demo/frontend profile registry that can be used to seed UI role switching without handcrafting verbose request headers
+- `GET /api/v1/context/self`
+  - resolves and returns the canonical request context for the current request
+  - supports either `X-Knowloop-Profile-Id` or the explicit `X-Knowloop-*` header contract
 
 ## 5. Response Envelopes
 

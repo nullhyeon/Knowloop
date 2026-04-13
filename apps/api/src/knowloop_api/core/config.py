@@ -26,8 +26,16 @@ class Settings(BaseSettings):
     meta_root: Path | None = None
     sessions_db_path: Path | None = None
     audit_db_path: Path | None = None
+    context_profiles_path: Path | None = None
 
-    @field_validator("data_root", "meta_root", "sessions_db_path", "audit_db_path", mode="before")
+    @field_validator(
+        "data_root",
+        "meta_root",
+        "sessions_db_path",
+        "audit_db_path",
+        "context_profiles_path",
+        mode="before",
+    )
     @classmethod
     def resolve_relative_paths(cls, value: Path | str | None) -> Path | None:
         if value is None:
@@ -80,6 +88,10 @@ class Settings(BaseSettings):
             self.sessions_db_path = self.meta_root / "sessions.db"
         if self.audit_db_path is None:
             self.audit_db_path = self.meta_root / "audit.db"
+        if self.context_profiles_path is None:
+            self.context_profiles_path = (
+                REPO_ROOT / "data" / "fixtures" / "context" / "profiles.json"
+            )
         if self.llm_enabled and not self.openai_api_key:
             raise ValueError("openai_api_key is required when llm_enabled=true")
         return self

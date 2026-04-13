@@ -10,6 +10,7 @@ from fastapi import Depends, Header, Request
 from pydantic import BaseModel
 
 from knowloop_api.api.errors import ApiError
+from knowloop_api.core.config import Settings, get_settings
 from knowloop_api.core.contracts import (
     ActorRole,
     RequestDomain,
@@ -19,9 +20,16 @@ from knowloop_api.core.contracts import (
     validate_class_id,
     validate_course_id,
 )
+from knowloop_api.services.context_profiles import (
+    ContextProfile,
+    ContextProfileNotFoundError,
+    get_context_profile,
+)
 
 
 class RequestContext(BaseModel):
+    profile_id: str | None = None
+    profile_label: str | None = None
     role: ActorRole
     actor_id: str
     course_id: str
@@ -136,6 +144,7 @@ ROUTE_DOMAIN_POLICIES = {
 
 def get_request_context(
     request: Request,
+    knowloop_profile_id: str | None = Header(None, alias="X-Knowloop-Profile-Id"),
     knowloop_role: str | None = Header(None, alias="X-Knowloop-Role"),
     knowloop_actor_id: str | None = Header(None, alias="X-Knowloop-Actor-Id"),
     knowloop_course_id: str | None = Header(None, alias="X-Knowloop-Course-Id"),
@@ -147,6 +156,8 @@ def get_request_context(
     del client_request_id
     ensure_request_tracing_context(request, extract_client_request_id(request))
     context = _build_request_context(
+        request=request,
+        knowloop_profile_id=knowloop_profile_id,
         knowloop_role=knowloop_role,
         knowloop_actor_id=knowloop_actor_id,
         knowloop_course_id=knowloop_course_id,
@@ -162,6 +173,7 @@ def get_request_context(
 
 def get_public_query_request_context(
     request: Request,
+    knowloop_profile_id: str | None = Header(None, alias="X-Knowloop-Profile-Id"),
     knowloop_role: str | None = Header(None, alias="X-Knowloop-Role"),
     knowloop_actor_id: str | None = Header(None, alias="X-Knowloop-Actor-Id"),
     knowloop_course_id: str | None = Header(None, alias="X-Knowloop-Course-Id"),
@@ -173,6 +185,8 @@ def get_public_query_request_context(
     del client_request_id
     ensure_request_tracing_context(request, extract_client_request_id(request))
     context = _build_request_context(
+        request=request,
+        knowloop_profile_id=knowloop_profile_id,
         knowloop_role=knowloop_role,
         knowloop_actor_id=knowloop_actor_id,
         knowloop_course_id=knowloop_course_id,
@@ -403,8 +417,93 @@ def normalize_client_request_id(request_id: str | None) -> str | None:
     return request_id
 
 
+def _get_request_settings(request: Request) -> Settings:
+    settings = getattr(request.app.state, "settings", None)
+    if isinstance(settings, Settings):
+        return settings
+    return get_settings()
+
+
+def _resolve_context_profile(
+    *,
+    request: Request,
+    profile_id: str | None,
+    request_id: str,
+) -> ContextProfile | None:
+    normalized_profile_id = profile_id.strip() if isinstance(profile_id, str) else None
+    if not normalized_profile_id:
+        return None
+
+    try:
+        return get_context_profile(_get_request_settings(request), normalized_profile_id)
+    except ContextProfileNotFoundError as exc:
+        raise ApiError(
+            status_code=422,
+            code="validation_failed",
+            message="Unknown X-Knowloop-Profile-Id value.",
+            request_id=request_id,
+            details={"profile_id": normalized_profile_id},
+        ) from exc
+
+
+def _resolve_context_fields_from_headers_or_profile(
+    *,
+    profile: ContextProfile | None,
+    knowloop_role: str | None,
+    knowloop_actor_id: str | None,
+    knowloop_course_id: str | None,
+    knowloop_class_id: str | None,
+    knowloop_domain: str | None,
+    request_id: str,
+) -> dict[str, str | None]:
+    if profile is None:
+        return {
+            "role": knowloop_role,
+            "actor_id": knowloop_actor_id,
+            "course_id": knowloop_course_id,
+            "class_id": knowloop_class_id,
+            "domain": knowloop_domain,
+        }
+
+    profile_values = {
+        "role": profile.role.value,
+        "actor_id": profile.actor_id,
+        "course_id": profile.course_id,
+        "class_id": profile.class_id,
+        "domain": profile.domain.value,
+    }
+    provided_values = {
+        "role": knowloop_role,
+        "actor_id": knowloop_actor_id,
+        "course_id": knowloop_course_id,
+        "class_id": knowloop_class_id,
+        "domain": knowloop_domain,
+    }
+
+    conflicts = [
+        key
+        for key, value in provided_values.items()
+        if value is not None and value.strip() and value.strip() != profile_values[key]
+    ]
+    if conflicts:
+        raise ApiError(
+            status_code=422,
+            code="validation_failed",
+            message="X-Knowloop-Profile-Id conflicts with explicit Knowloop context headers.",
+            request_id=request_id,
+            details={
+                "profile_id": profile.profile_id,
+                "conflicting_fields": conflicts,
+            },
+        )
+
+    return profile_values
+
+
 def _build_request_context(
     *,
+    request: Request,
+    knowloop_profile_id: str | None,
     knowloop_role: str | None,
     knowloop_actor_id: str | None,
     knowloop_course_id: str | None,
@@ -414,13 +513,27 @@ def _build_request_context(
     idempotency_key: str | None,
     preserve_omitted_domain: bool,
 ) -> RequestContext:
+    profile = _resolve_context_profile(
+        request=request,
+        profile_id=knowloop_profile_id,
+        request_id=resolved_request_id,
+    )
+    resolved_fields = _resolve_context_fields_from_headers_or_profile(
+        profile=profile,
+        knowloop_role=knowloop_role,
+        knowloop_actor_id=knowloop_actor_id,
+        knowloop_course_id=knowloop_course_id,
+        knowloop_class_id=knowloop_class_id,
+        knowloop_domain=knowloop_domain,
+        request_id=resolved_request_id,
+    )
     missing_headers = [
         header_name
         for header_name, value in (
-            ("X-Knowloop-Role", knowloop_role),
-            ("X-Knowloop-Actor-Id", knowloop_actor_id),
-            ("X-Knowloop-Course-Id", knowloop_course_id),
-            ("X-Knowloop-Class-Id", knowloop_class_id),
+            ("X-Knowloop-Role", resolved_fields["role"]),
+            ("X-Knowloop-Actor-Id", resolved_fields["actor_id"]),
+            ("X-Knowloop-Course-Id", resolved_fields["course_id"]),
+            ("X-Knowloop-Class-Id", resolved_fields["class_id"]),
         )
         if value is None or not value.strip()
     ]
@@ -434,41 +547,44 @@ def _build_request_context(
         )
 
     try:
-        role = ActorRole(knowloop_role)
+        role = ActorRole(resolved_fields["role"])
     except ValueError as exc:
         raise ApiError(
             status_code=422,
             code="validation_failed",
             message="Unsupported X-Knowloop-Role value.",
             request_id=resolved_request_id,
-            details={"role": knowloop_role},
+            details={"role": resolved_fields["role"]},
         ) from exc
 
     domain = None if preserve_omitted_domain else default_domain_for_role(role)
     domain_was_explicit = False
-    if knowloop_domain is not None and knowloop_domain.strip():
+    resolved_domain_value = resolved_fields["domain"]
+    if resolved_domain_value is not None and resolved_domain_value.strip():
         domain_was_explicit = True
         try:
-            domain = RequestDomain(knowloop_domain)
+            domain = RequestDomain(resolved_domain_value)
         except ValueError as exc:
             raise ApiError(
                 status_code=422,
                 code="validation_failed",
                 message="Unsupported X-Knowloop-Domain value.",
                 request_id=resolved_request_id,
-                details={"domain": knowloop_domain},
+                details={"domain": resolved_domain_value},
             ) from exc
+        if profile is not None:
+            domain_was_explicit = False
 
     try:
-        actor_id = validate_actor_id(knowloop_actor_id, actor_role=role)
-        course_id = validate_course_id(knowloop_course_id)
-        class_id = validate_class_id(knowloop_class_id)
+        actor_id = validate_actor_id(resolved_fields["actor_id"], actor_role=role)
+        course_id = validate_course_id(resolved_fields["course_id"])
+        class_id = validate_class_id(resolved_fields["class_id"])
     except ValueError as exc:
         field_name = str(exc).split(" ", maxsplit=1)[0]
         field_values = {
-            "actor_id": knowloop_actor_id,
-            "course_id": knowloop_course_id,
-            "class_id": knowloop_class_id,
+            "actor_id": resolved_fields["actor_id"],
+            "course_id": resolved_fields["course_id"],
+            "class_id": resolved_fields["class_id"],
         }
         raise ApiError(
             status_code=422,
@@ -479,6 +595,8 @@ def _build_request_context(
         ) from exc
 
     return RequestContext(
+        profile_id=profile.profile_id if profile is not None else None,
+        profile_label=profile.label if profile is not None else None,
         role=role,
         actor_id=actor_id,
         course_id=course_id,

@@ -107,3 +107,6 @@
 - [x] Codex Critic: review the FTS-backed session-search slice for index sync, readiness drift, and fallback count risks
 - [x] Codex Builder: fix readiness trigger checks and uncapped fallback totals for instructor stopword searches
 - [x] Codex Reviewer: review the FTS-backed session-search slice for correctness and missing regressions
+- [x] Codex Builder: add a frontend-ready context profile adapter and context bootstrap routes
+- [x] Codex Critic: review the context profile slice for profile/header conflicts, route exposure, and contract drift
+- [x] Codex Reviewer: review the context profile slice for correctness and missing regressions
