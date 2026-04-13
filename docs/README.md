@@ -1,6 +1,6 @@
 # Documentation Guide
 
-This directory is organized so product, architecture, research, and development docs stay easy to navigate in GitHub and easy to load for AI agents.
+This directory is organized so product, architecture, research, development, and frontend docs stay easy to navigate in GitHub and easy to load for AI agents.
 
 ## Recommended Reading Order
 
@@ -20,7 +20,8 @@ This directory is organized so product, architecture, research, and development 
 14. `product/mvp-patterns.md`
 15. `development/agent-harness.md`
 16. `development/backend-runbook.md`
-17. `research/reference-reading-guide.md` (optional deep-dive)
+17. `frontend/README.md`
+18. `research/reference-reading-guide.md` (optional deep-dive)
 
 ## Directory Map
 
@@ -28,6 +29,7 @@ This directory is organized so product, architecture, research, and development 
 - `architecture/`: system layers, flows, and diagrams
 - `research/`: external reference reading guides and investigation notes
 - `development/`: agent workflow and repository operating conventions
+- `frontend/`: page-level frontend structure docs used with `DESIGN.md` and `SITE.md`
 - `adr/`: architectural decision records tied to implementation changes
 
 ## What Each Core Doc Covers
@@ -49,6 +51,8 @@ This directory is organized so product, architecture, research, and development 
 - `development/agent-harness.md`: how Codex and Gemini work inside this repository
 - `development/backend-runbook.md`: how to operate, verify, troubleshoot, and hand off the backend
 - `development/planning-audit.md`: the current cross-document audit status before implementation
+- `frontend/README.md`: how frontend structure docs are organized and which page order to implement
+- `DESIGN.md`, `SITE.md`, `component-rules.md`, and `frontend-agent.md`: the frontend source-of-truth files that must be read together before any UI slice
 - `research/reference-reading-guide.md`: the research trail behind the architecture decisions
 
 ## Public Repo Notes
@@ -58,3 +62,5 @@ This directory is organized so product, architecture, research, and development 
 - Secrets and local runtime settings belong in `apps/api/.env`, with defaults documented in `apps/api/.env.example`.
 - The backend can be smoke-verified from the repo root with `.\scripts\smoke-api.ps1`.
 - Live OpenAI runtime wiring can be checked separately with `.\scripts\live-llm-smoke.ps1`.
+- Frontend agents should also read the repo-root files `DESIGN.md`, `SITE.md`, `component-rules.md`, and `frontend-agent.md`.
+- Frontend pages should never be implemented without the matching file in `docs/frontend/page-structures/`.

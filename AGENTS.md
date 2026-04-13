@@ -5,7 +5,7 @@ If `AGENTS.md`, `GEMINI.md`, prompts, or chat instructions disagree, follow this
 
 ## Mission
 
-Build Knowloop as a backend-first `Edu Memory OS` for education workflows:
+Build Knowloop as an `Edu Memory OS` for education workflows:
 
 - preserve `raw sources`
 - index `session memory`
@@ -14,7 +14,7 @@ Build Knowloop as a backend-first `Edu Memory OS` for education workflows:
 - generate `learning layer` artifacts for each student
 - run maintenance, audit, and freshness checks continuously
 
-The current priority is backend foundation, not polished frontend work.
+The backend foundation is complete enough for frontend implementation to begin. Frontend work must now follow the dedicated design and information-architecture source-of-truth files.
 
 ## Canonical Context To Read First
 
@@ -36,6 +36,17 @@ When starting a new session, read these files in this order:
 14. `SPEC.md`
 15. `tasks/plan.md`
 16. `tasks/todo.md`
+
+When the task is frontend-related, continue with this additional reading order:
+
+17. `DESIGN.md`
+18. `SITE.md`
+19. `component-rules.md`
+20. `frontend-agent.md`
+21. `docs/frontend/README.md`
+22. the relevant file in `docs/frontend/page-structures/`
+
+Frontend work must treat those files as the implementation contract for layout, copy, component ownership, and route-level behavior.
 
 ## Tool and Role Split
 
@@ -155,6 +166,13 @@ Add these when relevant:
 - `debugging-and-error-recovery` when behavior is broken or uncertain
 - `frontend-ui-engineering` only after frontend work begins
 
+For frontend implementation, also follow:
+
+- `DESIGN.md` for global visual language
+- `SITE.md` for product structure and routing
+- `component-rules.md` for primitive/wrapper boundaries
+- `frontend-agent.md` for page-by-page implementation rules
+
 ## Recommended Working Loop
 
 1. `Codex Builder` reads the task and implements the next slice.
@@ -273,6 +291,8 @@ If scope or architecture changes, update the document first or together with the
 - skip verification because the change `looks right`
 - delete docs or data structures that you do not fully understand
 - mix unrelated refactors into a task unless explicitly requested
+- build a generic AI chat homepage when the page should expose evidence, write-back, or review state
+- ignore Korean readability and write English-heavy UI by default for user-facing surfaces
 
 ## Verification Bar
 
