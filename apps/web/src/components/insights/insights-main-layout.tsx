@@ -1,21 +1,20 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
 import {
-  getDomainLabel,
-  getProfileById,
-  getRoleLabel,
-  insightPatterns,
-  insightPriorityActions,
-  insightSummaryCards,
-  withProfile,
-} from "@/lib/demo-data";
+  fetchInsightsDashboard,
+  type InsightPriorityAction,
+  type InsightSummaryCard,
+  type InsightsDashboardData,
+} from "@/lib/insights-browser";
 
+import { useContextBootstrap } from "@/components/console/context-bootstrap-provider";
 import { ScopeHeader } from "@/components/console/scope-header";
 
-function InsightToneChip({ tone }: { tone: "neutral" | "review" | "warning" | "success" }) {
+function InsightToneChip({ tone }: { tone: InsightSummaryCard["tone"] }) {
   const styles = {
     neutral: "bg-[var(--surface-muted)] text-[var(--muted)]",
     review: "bg-[var(--review-soft)] text-[var(--review)]",
@@ -26,7 +25,7 @@ function InsightToneChip({ tone }: { tone: "neutral" | "review" | "warning" | "s
   return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${styles}`}>{tone}</span>;
 }
 
-function PriorityActionTone({ tone }: { tone: "review" | "primary" | "warning" }) {
+function PriorityActionTone({ tone }: { tone: InsightPriorityAction["tone"] }) {
   const styles = {
     review: "bg-[var(--review-soft)] text-[var(--review)]",
     primary: "bg-[var(--primary-soft)] text-[var(--primary)]",
@@ -36,36 +35,146 @@ function PriorityActionTone({ tone }: { tone: "review" | "primary" | "warning" }
   return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${styles}`}>{tone}</span>;
 }
 
+function InsightsSkeleton() {
+  return (
+    <div className="space-y-5 animate-pulse">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <article key={index} className="panel-card px-5 py-5">
+            <div className="h-4 w-28 rounded-full bg-[var(--surface-muted)]" />
+            <div className="mt-4 h-9 w-20 rounded-full bg-[var(--surface-muted)]" />
+            <div className="mt-4 h-4 w-full rounded-full bg-[var(--surface-muted)]" />
+          </article>
+        ))}
+      </section>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.05fr)_360px]">
+        <section className="panel-card min-h-[540px] px-6 py-5" />
+        <aside className="panel-card min-h-[540px] px-5 py-5" />
+      </div>
+    </div>
+  );
+}
+
+function AccessPanel() {
+  return (
+    <div className="panel-card flex min-h-[520px] items-center justify-center px-6 py-8">
+      <div className="max-w-2xl rounded-[24px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-6 py-7">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Insights access</p>
+        <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">이 화면은 강사용 집계 대시보드입니다.</h2>
+        <p className="mt-3 text-sm leading-7 text-[var(--body)]">
+          학생 질문과 학습 기록을 집계해 다음 수업에서 무엇을 다시 설명하고 어떤 후보를 먼저 review해야 하는지 판단하는 instructor 전용 surface입니다.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EmptyPanel() {
+  return (
+    <div className="panel-card flex min-h-[520px] items-center justify-center px-6 py-8">
+      <div className="max-w-2xl rounded-[24px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-6 py-7">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Not enough activity yet</p>
+        <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">아직 집계할 학생 활동이 충분하지 않습니다.</h2>
+        <p className="mt-3 text-sm leading-7 text-[var(--body)]">
+          Ask와 Learning, Review 데이터가 더 쌓이면 이 화면이 반복 confusion과 우선 review 후보를 자동으로 요약해 줍니다.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ErrorPanel({ message }: { message: string }) {
+  return (
+    <div className="panel-card flex min-h-[520px] items-center justify-center px-6 py-8">
+      <div className="max-w-2xl rounded-[24px] border border-dashed border-[var(--danger)] bg-[var(--danger-soft)]/45 px-6 py-7">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Insights error</p>
+        <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">강사용 집계를 불러오지 못했습니다.</h2>
+        <p className="mt-3 text-sm leading-7 text-[var(--body)]">{message}</p>
+      </div>
+    </div>
+  );
+}
+
 export function InsightsMainLayout() {
-  const searchParams = useSearchParams();
-  const activeProfile = getProfileById(searchParams.get("profile"));
-  const insightsAllowed = activeProfile.role === "instructor";
+  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const insightsAllowed = activeProfile?.role === "instructor";
+
+  const [dashboard, setDashboard] = useState<InsightsDashboardData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestSequenceRef = useRef(0);
+
+  const loadDashboard = useCallback(async () => {
+    if (!activeProfile || !insightsAllowed) {
+      requestSequenceRef.current += 1;
+      setDashboard(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    const requestSequence = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestSequence;
+    setLoading(true);
+    setError(null);
+
+    try {
+      const nextDashboard = await fetchInsightsDashboard({ profileId: activeProfile.profileId });
+      if (requestSequence !== requestSequenceRef.current) {
+        return;
+      }
+      setDashboard(nextDashboard);
+    } catch (caughtError) {
+      if (requestSequence !== requestSequenceRef.current) {
+        return;
+      }
+      const message = caughtError instanceof Error ? caughtError.message : "instructor insights를 불러오지 못했습니다.";
+      setDashboard(null);
+      setError(message);
+    } finally {
+      if (requestSequence === requestSequenceRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [activeProfile, insightsAllowed]);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? "academic");
+  const profileId = activeProfile?.profileId ?? null;
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">
       <ScopeHeader
         title="Insights"
         description="반복 질문, 오개념 패턴, review 우선순위를 한 화면에서 읽고 다음 수업에서 무엇을 보강할지 바로 결정하는 강사용 운영 대시보드입니다."
-        role={getRoleLabel(activeProfile.role)}
-        course={activeProfile.courseLabel}
-        classNameLabel={activeProfile.classLabel}
-        domain={getDomainLabel(activeProfile.domain)}
+        role={roleLabel}
+        course={courseLabel}
+        classNameLabel={classLabel}
+        domain={domainLabel}
       />
 
       {!insightsAllowed ? (
-        <div className="panel-card flex min-h-[520px] items-center justify-center px-6 py-8">
-          <div className="max-w-2xl rounded-[24px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-6 py-7">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Insights access</p>
-            <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">이 화면은 강사용 집계 대시보드입니다.</h2>
-            <p className="mt-3 text-sm leading-7 text-[var(--body)]">
-              학생, 운영자, 검토자는 같은 시스템을 다른 관점으로 보지만, class-level teaching priority를 정리하는 Insights는 instructor에게만 직접 열립니다.
-            </p>
-          </div>
-        </div>
+        <AccessPanel />
+      ) : bootstrapLoading || loading ? (
+        <InsightsSkeleton />
+      ) : bootstrapError ? (
+        <ErrorPanel message={bootstrapError} />
+      ) : error ? (
+        <ErrorPanel message={error} />
+      ) : !dashboard ? (
+        <ErrorPanel message="집계 결과가 비어 있습니다." />
+      ) : dashboard.isEmpty ? (
+        <EmptyPanel />
       ) : (
         <>
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {insightSummaryCards.map((card) => (
+            {dashboard.summaryCards.map((card) => (
               <article key={card.label} className="panel-card px-5 py-5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -85,11 +194,11 @@ export function InsightsMainLayout() {
                 <div className="space-y-1">
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Repeated confusion patterns</p>
                   <h2 className="text-lg font-semibold tracking-[-0.02em] text-[var(--foreground)]">지금 다시 설명해야 하는 패턴</h2>
-                  <p className="text-sm leading-7 text-[var(--body)]">차트보다 먼저, 어떤 개념을 왜 다시 설명해야 하는지와 그에 연결된 review/wiki surface를 함께 보여줍니다.</p>
+                  <p className="text-sm leading-7 text-[var(--body)]">백엔드의 pattern 집계를 그대로 읽되, 다음 수업에서 어떤 설명과 review를 먼저 해야 하는지 action-first 구조로 다시 정리했습니다.</p>
                 </div>
 
                 <div className="mt-5 space-y-4">
-                  {insightPatterns.map((pattern) => (
+                  {dashboard.patterns.map((pattern) => (
                     <article key={pattern.patternId} className="rounded-[22px] border border-[var(--border)] bg-[var(--surface)] px-5 py-5">
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -106,7 +215,7 @@ export function InsightsMainLayout() {
                         </span>
                       </div>
                       <Link
-                        href={withProfile(pattern.href, activeProfile.profileId)}
+                        href={pattern.href}
                         className="mt-4 inline-flex rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-2.5 text-sm font-semibold text-[var(--body)] transition hover:border-[var(--border-strong)]"
                       >
                         {pattern.actionLabel}
@@ -120,23 +229,21 @@ export function InsightsMainLayout() {
                 <div className="space-y-1">
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Next class brief</p>
                   <h2 className="text-lg font-semibold tracking-[-0.02em] text-[var(--foreground)]">다음 수업에서 바로 사용할 요약</h2>
-                  <p className="text-sm leading-7 text-[var(--body)]">분석 결과를 예쁜 수치가 아니라 실제 강의 운영 문장으로 바꿔 주는 요약 카드입니다.</p>
+                  <p className="text-sm leading-7 text-[var(--body)]">overview와 pattern 집계를 바탕으로, 차트보다 먼저 바로 말할 수 있는 강의 문장과 우선순위를 보여줍니다.</p>
                 </div>
 
                 <div className="mt-5 rounded-[22px] border border-[var(--border)] bg-[var(--surface-muted)] px-5 py-5">
                   <p className="text-sm font-semibold text-[var(--foreground)]">추천 도입 멘트</p>
-                  <p className="mt-3 text-[15px] leading-8 text-[var(--body)]">
-                    오늘은 계산을 바로 시작하지 말고, 식의 구조를 먼저 읽는 연습부터 하겠습니다. 함수가 다른 함수 안에 들어 있으면 연쇄법칙, 두 함수가 나란히 곱해져 있으면 곱의 미분법을 먼저 떠올리면 됩니다.
-                  </p>
+                  <p className="mt-3 text-[15px] leading-8 text-[var(--body)]">{dashboard.nextClassBrief}</p>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <Link
-                      href={withProfile("/wiki", activeProfile.profileId)}
+                      href={profileId ? `/wiki?profile=${profileId}` : "/wiki"}
                       className="rounded-2xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
                     >
                       관련 Wiki 열기
                     </Link>
                     <Link
-                      href={withProfile("/ask", activeProfile.profileId)}
+                      href={profileId ? `/ask?profile=${profileId}` : "/ask"}
                       className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--body)] transition hover:border-[var(--border-strong)]"
                     >
                       Ask에서 설명 재현
@@ -151,14 +258,14 @@ export function InsightsMainLayout() {
                 <div className="space-y-1">
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Priority actions</p>
                   <h2 className="text-lg font-semibold tracking-[-0.02em] text-[var(--foreground)]">지금 먼저 해야 할 일</h2>
-                  <p className="text-sm leading-7 text-[var(--body)]">가장 먼저 움직이면 효과가 큰 review, wiki, teaching action을 우선순위대로 배치합니다.</p>
+                  <p className="text-sm leading-7 text-[var(--body)]">가장 먼저 움직이면 효과가 큰 review와 wiki 후속 액션을 우선순위대로 배치합니다.</p>
                 </div>
 
                 <div className="mt-5 space-y-3">
-                  {insightPriorityActions.map((action) => (
+                  {dashboard.priorityActions.map((action) => (
                     <Link
                       key={action.actionId}
-                      href={withProfile(action.href, activeProfile.profileId)}
+                      href={action.href}
                       className="block rounded-[22px] border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-4 transition hover:border-[var(--border-strong)]"
                     >
                       <div className="flex items-center justify-between gap-3">
@@ -179,10 +286,28 @@ export function InsightsMainLayout() {
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Decision framing</p>
                 <h3 className="mt-2 text-lg font-semibold text-[var(--foreground)]">이 화면이 말해 주는 것</h3>
                 <ul className="mt-4 space-y-3 text-sm leading-7 text-[var(--body)]">
-                  <li>가장 많이 반복된 confusion은 연쇄법칙/곱의 미분법 구분 문제입니다.</li>
-                  <li>가장 먼저 처리할 review는 운영 FAQ candidate와 sync pending candidate입니다.</li>
-                  <li>다음 수업에서는 새 차트를 보여주기보다, 구조를 먼저 읽는 짧은 문장을 다시 설명하는 것이 효과적입니다.</li>
+                  {dashboard.decisionFraming.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
                 </ul>
+
+                <div className="mt-5 rounded-[20px] border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-4">
+                  <p className="muted-label">Top topics</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {dashboard.topicHighlights.length ? dashboard.topicHighlights.map((topic) => (
+                      <span key={topic} className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">{topic}</span>
+                    )) : <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">아직 집계된 topic이 없습니다.</span>}
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-[20px] border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-4">
+                  <p className="muted-label">Top gap clusters</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {dashboard.gapHighlights.length ? dashboard.gapHighlights.map((gap) => (
+                      <span key={gap} className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">{gap}</span>
+                    )) : <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">아직 집계된 gap cluster가 없습니다.</span>}
+                  </div>
+                </div>
               </section>
             </aside>
           </div>
