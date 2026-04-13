@@ -64,6 +64,18 @@ Run tests:
 .\scripts\test-api.ps1
 ```
 
+Run the representative offline backend smoke suite:
+
+```powershell
+.\scripts\smoke-api.ps1
+```
+
+Run the optional live LLM smoke when `apps/api/.env` enables the OpenAI runtime:
+
+```powershell
+.\scripts\live-llm-smoke.ps1
+```
+
 Run lint:
 
 ```powershell
@@ -101,6 +113,13 @@ Minimum local verification:
 
 1. `.\scripts\test-api.ps1`
 2. `.\scripts\lint-api.ps1`
+
+Representative pre-frontend closure verification:
+
+1. `.\scripts\smoke-api.ps1`
+2. `.\scripts\live-llm-smoke.ps1` when the local `.env` enables LLM runtime
+3. `.\scripts\test-api.ps1`
+4. `.\scripts\lint-api.ps1`
 
 When the API is running, these routes should be usable:
 
@@ -237,9 +256,8 @@ Check:
 
 After the current backend state, the next high-value work is:
 
-1. strengthen end-to-end query fixture coverage
-2. tighten candidate-to-wiki promotion coverage
-3. define the frontend-facing information architecture against the locked backend routes
+1. define the frontend-facing information architecture against the locked backend routes
+2. begin frontend implementation against the locked backend contracts
 
 ## 13. Related Documents
 

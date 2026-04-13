@@ -104,6 +104,19 @@ Planning lock documents:
 - [x] lint passes
 - [x] maintenance report produces actionable output
 
+## Phase 4: Pre-Frontend Backend Closure
+
+- [x] Task 4.1: Replace heuristic session-search scoring with SQLite FTS5
+- [x] Task 4.2: Add a frontend-ready context bootstrap adapter
+- [x] Task 4.3: Expose LLM runtime observability and fallback state
+- [x] Task 4.4: Add a reproducible offline backend smoke suite plus an opt-in live LLM smoke
+
+### Checkpoint: Pre-Frontend Backend Closure
+
+- [x] Request context can be bootstrapped from frontend-friendly profiles
+- [x] Runtime metadata exposes whether LLM rewrite paths were used
+- [x] An offline smoke suite plus an opt-in live LLM smoke verify representative backend workflows before frontend work begins
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

@@ -706,6 +706,7 @@ This canonical page is malformed and should not crash the review flow.
     assert "could not be read" in response.json()["error"]["message"]
 
 
+@pytest.mark.smoke
 def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     review_fixture = load_review_fixture("approve-homework-faq.json")

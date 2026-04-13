@@ -148,6 +148,7 @@ This page intentionally references missing candidate and source records.
     )
 
 
+@pytest.mark.smoke
 def test_maintenance_report_detects_stale_candidates_and_orphan_refs(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     seed_maintenance_runtime(settings)

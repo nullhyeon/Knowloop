@@ -6,6 +6,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
@@ -215,6 +216,7 @@ def test_session_search_rejects_validator_role(tmp_path: Path) -> None:
 
 
 
+@pytest.mark.smoke
 def test_session_search_uses_fts_index_for_newly_saved_sessions(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
 

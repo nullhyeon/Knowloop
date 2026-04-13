@@ -113,3 +113,7 @@
 - [x] Codex Builder: expose LLM runtime observability through query response metadata and system runtime status
 - [x] Codex Critic: review the LLM runtime observability slice for replay ambiguity and provider-authority drift
 - [x] Codex Reviewer: review the LLM runtime observability slice for correctness and missing regressions
+- [x] Codex Builder: add a one-command backend smoke suite for pre-frontend closure
+- [x] Codex Builder: split offline backend smoke from opt-in live LLM smoke and include source registration coverage
+- [x] Codex Critic: review the smoke suite slice for representative coverage gaps and brittle coupling
+- [x] Codex Reviewer: review the smoke suite slice for correctness and missing regressions

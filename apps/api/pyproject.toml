@@ -32,6 +32,9 @@ packages = ["src/knowloop_api"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "smoke: representative offline backend pre-frontend closure coverage",
+]
 
 [tool.ruff]
 line-length = 100

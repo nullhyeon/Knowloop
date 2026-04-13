@@ -15,6 +15,7 @@ The current slice is still not the full product. The harness and runtime foundat
 - keep the session search surface role-aware and redaction-safe
 - add a frontend-ready context bootstrap adapter so UI clients can resolve demo personas without handcrafting every `X-Knowloop-*` header
 - keep the maintenance report surface actionable and deterministic
+- add a reproducible offline backend smoke suite plus an opt-in live LLM smoke so the pre-frontend API state can be verified without ambiguity
 - document operational runbook and handoff expectations for the current backend state
 - strengthen query fixture coverage around answer basis, retrieval refs, and write-back outputs
 - support declarative follow-up and error query fixtures with setup validation and without hardcoding runtime-only IDs
@@ -133,6 +134,8 @@ Current slice verification bar:
 - `audit.db` bootstrap can run on a clean workspace
 - fixture directories and seed inputs are repository-safe
 - storage helpers respect the ID and metadata contracts from docs
+- the offline smoke suite proves representative context, source registration, query, search, review, wiki, runtime status, and maintenance routes together
+- the optional live LLM smoke verifies the OpenAI rewrite path with local runtime settings
 
 ## Boundaries
 

@@ -145,6 +145,7 @@ def test_generate_grounded_answer_uses_openai_responses_api(
     assert captured["api_key"] == "test-key"
     assert captured["timeout"] == 12.5
     assert captured["model"] == "gpt-5.4"
+    assert captured["text"] == {"verbosity": "medium"}
     prompt_sections = _parse_prompt_sections(str(captured["input"]))
     assert prompt_sections["REQUEST_CONTEXT_JSON"] == [
         {

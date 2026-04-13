@@ -56,3 +56,5 @@ This directory is organized so product, architecture, research, and development 
 - Public-facing docs avoid draft-only wording when the content is meant to represent the current direction.
 - Internal research remains available, but it lives under `research/` so it does not read like product documentation.
 - Secrets and local runtime settings belong in `apps/api/.env`, with defaults documented in `apps/api/.env.example`.
+- The backend can be smoke-verified from the repo root with `.\scripts\smoke-api.ps1`.
+- Live OpenAI runtime wiring can be checked separately with `.\scripts\live-llm-smoke.ps1`.

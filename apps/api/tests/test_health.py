@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -148,6 +149,7 @@ def test_api_health_endpoint_is_available(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.smoke
 def test_api_runtime_endpoint_reports_disabled_llm_runtime(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 
@@ -642,6 +644,7 @@ def test_settings_derive_storage_paths_from_data_root(tmp_path: Path) -> None:
     assert settings.audit_db_path == data_root / "meta" / "audit.db"
 
 
+@pytest.mark.smoke
 def test_readiness_endpoints_report_storage_checks(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 

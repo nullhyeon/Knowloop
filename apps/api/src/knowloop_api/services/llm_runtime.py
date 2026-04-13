@@ -308,8 +308,8 @@ def _request_provider_rewrite(
             instructions=SYSTEM_INSTRUCTIONS,
             input=_build_user_prompt(context),
             text_format=LLMRewritePayload,
+            text={"verbosity": settings.openai_text_verbosity},
             reasoning={"effort": settings.openai_reasoning_effort},
-            verbosity=settings.openai_text_verbosity,
             max_output_tokens=settings.openai_max_output_tokens,
         )
     except Exception as exc:

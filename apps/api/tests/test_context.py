@@ -3,6 +3,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
@@ -39,6 +40,7 @@ def test_context_profiles_endpoint_lists_demo_profiles(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.smoke
 def test_context_self_endpoint_resolves_profile_header(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 
@@ -62,6 +64,7 @@ def test_context_self_endpoint_resolves_profile_header(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.smoke
 def test_profile_header_can_access_scoped_routes_without_verbose_context_headers(
     tmp_path: Path,
 ) -> None:

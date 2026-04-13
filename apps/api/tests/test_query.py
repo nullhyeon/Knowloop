@@ -1764,6 +1764,7 @@ def test_recover_candidate_writeback_item_uses_proposed_candidate_id_from_upsert
     "fixture_name",
     QUERY_FIXTURE_NAMES,
 )
+@pytest.mark.smoke
 def test_query_endpoint_matches_fixture_expectations(
     tmp_path: Path,
     fixture_name: str,

@@ -66,6 +66,14 @@ In another terminal:
 cd C:\Users\wowjd\Desktop\Knowloop
 .\scripts\test-api.ps1
 .\scripts\lint-api.ps1
+.\scripts\smoke-api.ps1
+```
+
+Optional live provider smoke when `apps/api/.env` enables the OpenAI runtime:
+
+```powershell
+cd C:\Users\wowjd\Desktop\Knowloop
+.\scripts\live-llm-smoke.ps1
 ```
 
 ## Agent Sessions

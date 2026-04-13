@@ -3,6 +3,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
@@ -210,6 +211,7 @@ def test_system_review_domain_can_list_academic_and_operations_pages(tmp_path: P
     }
 
 
+@pytest.mark.smoke
 def test_wiki_detail_returns_page_body_for_visible_page(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     seed_fixture_pack(settings)

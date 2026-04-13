@@ -5,6 +5,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
@@ -124,6 +125,7 @@ def seed_instructor_runtime(settings: Settings) -> None:
         )
 
 
+@pytest.mark.smoke
 def test_instructor_overview_endpoint_returns_aggregated_academic_metrics(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     seed_instructor_runtime(settings)

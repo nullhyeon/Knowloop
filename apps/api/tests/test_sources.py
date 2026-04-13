@@ -74,6 +74,7 @@ def assert_server_owned_request_id(
         assert payload["request_id"] != client_request_id
 
 
+@pytest.mark.smoke
 def test_register_source_endpoint_persists_raw_file_manifest_and_audit(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
 
