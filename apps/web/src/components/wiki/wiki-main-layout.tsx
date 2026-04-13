@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
 import {
@@ -99,6 +100,9 @@ function WikiDocumentBody({ blocks }: { blocks: WikiBodyBlock[] }) {
 }
 
 export function WikiMainLayout() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
   const [selectedPageId, setSelectedPageId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -111,6 +115,17 @@ export function WikiMainLayout() {
   const catalogRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  const requestedPageId = searchParams.get("page");
+
+  function syncPageQuery(pageId: string) {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    if (pageId) {
+      nextParams.set("page", pageId);
+    } else {
+      nextParams.delete("page");
+    }
+    router.replace(`${pathname}?${nextParams.toString()}`, { scroll: false });
+  }
 
   const normalizedQuery = searchQuery.trim();
 
@@ -312,12 +327,16 @@ export function WikiMainLayout() {
   }, [activePageSet, effectiveActiveSection]);
 
   const displayedPageId = useMemo(() => {
+    if (requestedPageId && filteredPages.some((page) => page.pageId === requestedPageId)) {
+      return requestedPageId;
+    }
+
     if (filteredPages.some((page) => page.pageId === selectedPageId)) {
       return selectedPageId;
     }
 
     return filteredPages[0]?.pageId ?? "";
-  }, [filteredPages, selectedPageId]);
+  }, [filteredPages, requestedPageId, selectedPageId]);
 
   const currentDetailCacheKey = activeProfile && displayedPageId ? buildDetailCacheKey(activeProfile.profileId, displayedPageId) : null;
   const selectedPage = currentDetailCacheKey ? detailCache[currentDetailCacheKey] ?? null : null;
@@ -347,6 +366,7 @@ export function WikiMainLayout() {
     setSearchQuery("");
     setActiveSection("전체");
     setSelectedPageId(pageId);
+    syncPageQuery(pageId);
   }
 
   const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
@@ -432,7 +452,7 @@ export function WikiMainLayout() {
                     <button
                       key={page.pageId}
                       type="button"
-                      onClick={() => setSelectedPageId(page.pageId)}
+                      onClick={() => handleSelectPage(page.pageId)}
                       className={`w-full rounded-[20px] border px-4 py-4 text-left transition ${
                         active
                           ? "border-[var(--primary)] bg-[var(--primary-soft)]"

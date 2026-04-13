@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
 import {
@@ -71,6 +72,9 @@ function ReviewPanelSkeleton({ count = 3 }: { count?: number }) {
 }
 
 export function ReviewMainLayout() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
   const reviewAllowed = activeProfile ? ["instructor", "operator", "validator"].includes(activeProfile.role) : false;
   const [candidateItems, setCandidateItems] = useState<ReviewCandidateSummary[]>([]);
@@ -101,6 +105,17 @@ export function ReviewMainLayout() {
   const listRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
   const previewRequestRef = useRef(0);
+  const requestedCandidateId = searchParams.get("candidate");
+
+  const syncCandidateQuery = useCallback((candidateId: string) => {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    if (candidateId) {
+      nextParams.set("candidate", candidateId);
+    } else {
+      nextParams.delete("candidate");
+    }
+    router.replace(`${pathname}?${nextParams.toString()}`, { scroll: false });
+  }, [pathname, router, searchParams]);
 
   const loadCandidates = useCallback(async () => {
     if (!activeProfile || !reviewAllowed) {
@@ -278,11 +293,15 @@ export function ReviewMainLayout() {
   }, [activeKindFilter, activeStateFilter, candidateItems, normalizedQuery]);
 
   const displayedCandidateId = useMemo(() => {
+    if (requestedCandidateId && filteredCandidates.some((candidate) => candidate.candidateId === requestedCandidateId)) {
+      return requestedCandidateId;
+    }
+
     if (filteredCandidates.some((candidate) => candidate.candidateId === selectedCandidateId)) {
       return selectedCandidateId;
     }
     return filteredCandidates[0]?.candidateId ?? "";
-  }, [filteredCandidates, selectedCandidateId]);
+  }, [filteredCandidates, requestedCandidateId, selectedCandidateId]);
 
   useEffect(() => {
     if (!displayedCandidateId) {
@@ -389,6 +408,7 @@ export function ReviewMainLayout() {
 
       await loadCandidates();
       setSelectedCandidateId(result.candidate.candidateId);
+      syncCandidateQuery(result.candidate.candidateId);
       await loadCandidateDetail(result.candidate.candidateId, { preserveMessages: true });
       setActionSuccess(result.summary);
       setSelectedAction(null);
@@ -399,7 +419,7 @@ export function ReviewMainLayout() {
     } finally {
       setActionLoading(false);
     }
-  }, [actionIdempotencyKey, activeProfile, draft, loadCandidateDetail, loadCandidates, selectedAction, selectedCandidate, self]);
+  }, [actionIdempotencyKey, activeProfile, draft, loadCandidateDetail, loadCandidates, selectedAction, selectedCandidate, self, syncCandidateQuery]);
 
   const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
   const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
@@ -524,7 +544,10 @@ export function ReviewMainLayout() {
                       <button
                         key={candidate.candidateId}
                         type="button"
-                        onClick={() => setSelectedCandidateId(candidate.candidateId)}
+                          onClick={() => {
+                            setSelectedCandidateId(candidate.candidateId);
+                            syncCandidateQuery(candidate.candidateId);
+                          }}
                         className={`w-full rounded-[20px] border px-4 py-4 text-left transition ${
                           active
                             ? "border-[var(--review)] bg-[var(--review-soft)]"
