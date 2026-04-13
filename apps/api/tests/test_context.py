@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import shutil
 import tempfile
 from pathlib import Path
@@ -54,7 +54,7 @@ def test_context_self_endpoint_resolves_profile_header(tmp_path: Path) -> None:
     assert payload["meta"]["context_source"] == "profile"
     assert payload["data"] == {
         "profile_id": "student-minji",
-        "profile_label": "Student: Minji",
+        "profile_label": "학생 샘플 · 민지",
         "role": "student",
         "actor_id": "stu-kim-minji",
         "course_id": "course-calculus-1",

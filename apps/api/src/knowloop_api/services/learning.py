@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import (
     ActorRole,
+    RequestDomain,
     validate_actor_id,
     validate_class_id,
     validate_course_id,
@@ -16,6 +17,8 @@ from knowloop_api.core.contracts import (
 from knowloop_api.core.frontmatter import build_frontmatter_document, parse_frontmatter_document
 from knowloop_api.db.audit import create_audit_event
 from knowloop_api.services.candidates import SourceRef
+from knowloop_api.services.sessions import get_session
+from knowloop_api.services.wiki import WikiPageMatch, search_wiki_pages
 
 
 class LearningNote(BaseModel):
@@ -33,6 +36,78 @@ class LearningNote(BaseModel):
     summary: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
+
+
+class LearningSummary(BaseModel):
+    concept_count: int
+    confusion_signal_count: int
+    gap_count: int
+    next_action_count: int
+    session_ref_count: int
+    source_ref_count: int
+    related_wiki_count: int
+    updated_at: str | None = None
+
+
+class LearningConfusionSignal(BaseModel):
+    signal_id: str
+    title: str
+    summary: str
+    session_ref_count: int = 0
+    state: str
+    linked_session_id: str | None = None
+
+
+class LearningNoteCard(BaseModel):
+    note_id: str
+    title: str
+    summary: str
+    linked_session_id: str | None = None
+    linked_session_title: str | None = None
+    updated_at: str
+    focus_label: str
+    next_action_label: str
+
+
+class LearningGapCard(BaseModel):
+    title: str
+    description: str
+    severity: str
+
+
+class LearningActionItem(BaseModel):
+    title: str
+    description: str
+    target_kind: str
+    target_id: str | None = None
+
+
+class LearningRelatedWikiLink(BaseModel):
+    item_id: str
+    page_id: str
+    title: str
+    summary: str
+    reason: str
+
+
+class LearningRecentSession(BaseModel):
+    session_id: str
+    title: str
+    preview: str
+    created_at: str
+    tags: list[str] = Field(default_factory=list)
+    state_label: str
+
+
+class LearningConsolePayload(BaseModel):
+    summary: LearningSummary
+    learning_note: LearningNote | None = None
+    confusion_signals: list[LearningConfusionSignal] = Field(default_factory=list)
+    learning_notes: list[LearningNoteCard] = Field(default_factory=list)
+    gaps: list[LearningGapCard] = Field(default_factory=list)
+    next_actions: list[LearningActionItem] = Field(default_factory=list)
+    related_wiki: list[LearningRelatedWikiLink] = Field(default_factory=list)
+    recent_sessions: list[LearningRecentSession] = Field(default_factory=list)
 
 
 def get_learning_note(
@@ -74,16 +149,17 @@ def get_learning_note(
         else []
     )
 
-    class_id = str(metadata.get("class_id", ""))
+    resolved_class_id = str(metadata.get("class_id", ""))
     return LearningNote(
         learning_note_id=str(
             metadata.get(
-                "learning_note_id", build_learning_note_id(student_id, course_id, class_id)
+                "learning_note_id",
+                build_learning_note_id(student_id, course_id, resolved_class_id),
             )
         ),
         student_id=str(metadata.get("student_id", student_id)),
         course_id=str(metadata.get("course_id", course_id)),
-        class_id=str(metadata.get("class_id", class_id)),
+        class_id=str(metadata.get("class_id", resolved_class_id)),
         actor_role=ActorRole(str(metadata.get("actor_role", ActorRole.SYSTEM.value))),
         concepts=concepts,
         gaps=gaps,
@@ -100,6 +176,66 @@ def get_learning_note(
             if metadata.get("updated_at") is not None
             else None
         ),
+    )
+
+
+def build_learning_console_payload(
+    settings: Settings,
+    *,
+    student_id: str,
+    course_id: str,
+    class_id: str,
+) -> LearningConsolePayload:
+    note = get_learning_note(
+        settings,
+        student_id=student_id,
+        course_id=course_id,
+        class_id=class_id,
+    )
+    if note is None:
+        return LearningConsolePayload(
+            summary=LearningSummary(
+                concept_count=0,
+                confusion_signal_count=0,
+                gap_count=0,
+                next_action_count=0,
+                session_ref_count=0,
+                source_ref_count=0,
+                related_wiki_count=0,
+                updated_at=None,
+            )
+        )
+
+    related_wiki = _build_related_wiki_links(
+        settings,
+        note=note,
+        course_id=course_id,
+        class_id=class_id,
+    )
+    confusion_signals = _build_confusion_signals(note)
+    learning_notes = _build_learning_note_cards(settings, note)
+    gaps = _build_gap_cards(note)
+    next_actions = _build_next_action_items(note)
+    recent_sessions = _build_recent_sessions(settings, note)
+
+    return LearningConsolePayload(
+        summary=LearningSummary(
+            concept_count=len(note.concepts),
+            confusion_signal_count=len(confusion_signals),
+            gap_count=len(gaps),
+            next_action_count=len(next_actions),
+            session_ref_count=len(note.session_refs),
+            source_ref_count=len(note.source_refs),
+            related_wiki_count=len(related_wiki),
+            updated_at=_serialize_timestamp(note.updated_at or note.created_at),
+        ),
+        learning_note=note,
+        confusion_signals=confusion_signals,
+        learning_notes=learning_notes,
+        gaps=gaps,
+        next_actions=next_actions,
+        related_wiki=related_wiki,
+        recent_sessions=recent_sessions,
     )
 
 
@@ -123,11 +259,7 @@ def upsert_learning_note(
         class_id=note.class_id,
     )
     if existing is None:
-        merged = note.model_copy(
-            update={
-                "updated_at": note.updated_at or note.created_at,
-            }
-        )
+        merged = note.model_copy(update={"updated_at": note.updated_at or note.created_at})
     else:
         merged = existing.model_copy(
             update={
@@ -214,7 +346,11 @@ def build_learning_gaps_path(
 
 
 def build_learning_next_actions_path(
-    settings: Settings, *, student_id: str, course_id: str, class_id: str
+    settings: Settings,
+    *,
+    student_id: str,
+    course_id: str,
+    class_id: str,
 ) -> Path:
     return (
         build_learning_directory(
@@ -225,6 +361,181 @@ def build_learning_next_actions_path(
         )
         / "next_actions.md"
     )
+
+
+def _build_confusion_signals(note: LearningNote) -> list[LearningConfusionSignal]:
+    signals: list[LearningConfusionSignal] = []
+    linked_session_id = note.session_refs[0] if note.session_refs else None
+    for index, gap in enumerate(note.gaps, start=1):
+        signals.append(
+            LearningConfusionSignal(
+                signal_id=f"{note.learning_note_id}-signal-{index}",
+                title=_build_gap_title(gap, index=index),
+                summary=gap,
+                session_ref_count=len(note.session_refs),
+                state="needs_review" if index == 1 else "watch",
+                linked_session_id=linked_session_id,
+            )
+        )
+    return signals
+
+
+def _build_learning_note_cards(settings: Settings, note: LearningNote) -> list[LearningNoteCard]:
+    linked_session_id = note.session_refs[0] if note.session_refs else None
+    return [
+        LearningNoteCard(
+            note_id=note.learning_note_id,
+            title=note.summary or "Latest learning note",
+            summary=_build_note_card_summary(note),
+            linked_session_id=linked_session_id,
+            linked_session_title=_resolve_session_title(settings, linked_session_id)
+            if linked_session_id
+            else None,
+            updated_at=_serialize_timestamp(note.updated_at or note.created_at),
+            focus_label=note.concepts[0] if note.concepts else "Learning note",
+            next_action_label="Open next action",
+        )
+    ]
+
+
+def _build_gap_cards(note: LearningNote) -> list[LearningGapCard]:
+    cards: list[LearningGapCard] = []
+    for index, gap in enumerate(note.gaps, start=1):
+        cards.append(
+            LearningGapCard(
+                title=_build_gap_title(gap, index=index),
+                description=gap,
+                severity="focus" if index == 1 else "watch",
+            )
+        )
+    return cards
+
+
+def _build_next_action_items(note: LearningNote) -> list[LearningActionItem]:
+    items: list[LearningActionItem] = []
+    for action in note.next_actions:
+        target_kind = "wiki" if _looks_like_wiki_action(action) else "ask"
+        items.append(
+            LearningActionItem(
+                title=action,
+                description=note.summary or "Continue from the most recent confusion signal.",
+                target_kind=target_kind,
+                target_id=None,
+            )
+        )
+    return items
+
+
+def _build_related_wiki_links(
+    settings: Settings,
+    *,
+    note: LearningNote,
+    course_id: str,
+    class_id: str,
+) -> list[LearningRelatedWikiLink]:
+    ranked_pages: list[WikiPageMatch] = []
+    seen_page_ids: set[str] = set()
+    query_terms = [*note.concepts, *note.gaps, note.summary or ""]
+
+    for term in query_terms:
+        normalized_term = term.strip()
+        if not normalized_term:
+            continue
+        for match in search_wiki_pages(
+            settings,
+            role=ActorRole.STUDENT,
+            course_id=course_id,
+            class_id=class_id,
+            requested_domain=RequestDomain.ACADEMIC,
+            message=normalized_term,
+            limit=4,
+        ):
+            if match.page.page_id in seen_page_ids:
+                continue
+            ranked_pages.append(match)
+            seen_page_ids.add(match.page.page_id)
+            if len(ranked_pages) >= 4:
+                break
+        if len(ranked_pages) >= 4:
+            break
+
+    return [
+        LearningRelatedWikiLink(
+            item_id=f"wiki-{match.page.page_id}",
+            page_id=match.page.page_id,
+            title=match.page.title,
+            summary=match.page.summary,
+            reason=(
+                "Recommended because this page overlaps with the learner's "
+                "current concepts or gaps."
+            ),
+        )
+        for match in ranked_pages
+    ]
+
+
+def _build_recent_sessions(settings: Settings, note: LearningNote) -> list[LearningRecentSession]:
+    sessions: list[LearningRecentSession] = []
+    for session_id in note.session_refs[:3]:
+        try:
+            session = get_session(settings, session_id)
+        except Exception:
+            continue
+        preview = session.answer.strip().replace("\n", " ")
+        if len(preview) > 120:
+            preview = f"{preview[:119]}..."
+        sessions.append(
+            LearningRecentSession(
+                session_id=session.session_id,
+                title=_resolve_session_title(settings, session.session_id) or "Recent session",
+                preview=preview,
+                created_at=_serialize_timestamp(session.created_at),
+                tags=session.tags,
+                state_label="Recent answer",
+            )
+        )
+    return sessions
+
+
+def _build_gap_title(gap: str, *, index: int) -> str:
+    cleaned = gap.rstrip(".")
+    if len(cleaned) <= 42:
+        return cleaned
+    return f"Gap {index}"
+
+
+def _build_note_card_summary(note: LearningNote) -> str:
+    if note.summary:
+        return note.summary
+    if note.gaps:
+        return note.gaps[0]
+    if note.concepts:
+        return f"Reviewing {note.concepts[0]} should reduce the current confusion."
+    return "Learning note generated from recent grounded questions."
+
+
+def _looks_like_wiki_action(action: str) -> bool:
+    lowered = action.lower()
+    return (
+        "wiki" in lowered
+        or "review" in lowered
+        or "concept" in lowered
+        or "위키" in action
+        or "개념" in action
+    )
+
+
+def _resolve_session_title(settings: Settings, session_id: str | None) -> str | None:
+    if not session_id:
+        return None
+    try:
+        session = get_session(settings, session_id)
+    except Exception:
+        return None
+    question = session.question.strip().replace("\n", " ")
+    if len(question) <= 56:
+        return question
+    return f"{question[:55]}..."
 
 
 def _write_learning_files(settings: Settings, note: LearningNote) -> None:
@@ -257,28 +568,19 @@ def _write_learning_files(settings: Settings, note: LearningNote) -> None:
         student_id=note.student_id,
         course_id=note.course_id,
         class_id=note.class_id,
-    ).write_text(
-        build_frontmatter_document(notes_metadata, notes_body),
-        encoding="utf-8",
-    )
+    ).write_text(build_frontmatter_document(notes_metadata, notes_body), encoding="utf-8")
     build_learning_gaps_path(
         settings,
         student_id=note.student_id,
         course_id=note.course_id,
         class_id=note.class_id,
-    ).write_text(
-        _build_bullet_markdown("Gaps", note.gaps),
-        encoding="utf-8",
-    )
+    ).write_text(_build_bullet_markdown("Gaps", note.gaps), encoding="utf-8")
     build_learning_next_actions_path(
         settings,
         student_id=note.student_id,
         course_id=note.course_id,
         class_id=note.class_id,
-    ).write_text(
-        _build_bullet_markdown("Next Actions", note.next_actions),
-        encoding="utf-8",
-    )
+    ).write_text(_build_bullet_markdown("Next Actions", note.next_actions), encoding="utf-8")
 
 
 def _build_notes_body(summary: str | None, concepts: list[str]) -> str:

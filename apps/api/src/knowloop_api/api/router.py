@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from knowloop_api.api.routes.context import create_context_router
 from knowloop_api.api.routes.instructor import create_instructor_router
+from knowloop_api.api.routes.learning import create_learning_router
 from knowloop_api.api.routes.maintenance import create_maintenance_router
 from knowloop_api.api.routes.query import create_query_router
 from knowloop_api.api.routes.review import create_review_router
@@ -16,6 +17,7 @@ def create_api_router(settings: Settings) -> APIRouter:
     api_router = APIRouter()
     api_router.include_router(create_system_router(settings))
     api_router.include_router(create_context_router(settings))
+    api_router.include_router(create_learning_router(settings))
     api_router.include_router(create_query_router(settings))
     api_router.include_router(create_review_router(settings))
     api_router.include_router(create_sessions_router(settings))

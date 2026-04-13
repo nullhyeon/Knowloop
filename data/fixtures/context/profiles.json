@@ -1,46 +1,46 @@
-[
+﻿[
   {
     "profile_id": "student-minji",
-    "label": "Student: Minji",
+    "label": "학생 샘플 · 민지",
     "role": "student",
     "actor_id": "stu-kim-minji",
     "course_id": "course-calculus-1",
     "class_id": "class-calculus-1-2026-spring-a",
     "domain": "academic",
     "landing_surface": "student_hub",
-    "description": "Student learner profile for the chain rule and homework flows."
+    "description": "연쇄법칙과 과제 FAQ 흐름을 바로 체험할 수 있는 학생 샘플 프로필입니다."
   },
   {
     "profile_id": "instructor-calculus-team",
-    "label": "Instructor: Calculus Team",
+    "label": "교강사 샘플 · 미적분 강의팀",
     "role": "instructor",
     "actor_id": "ins-calculus-team",
     "course_id": "course-calculus-1",
     "class_id": "class-calculus-1-2026-spring-a",
     "domain": "academic",
     "landing_surface": "instructor_dashboard",
-    "description": "Instructor profile for FAQ review, class insight, and candidate approval."
+    "description": "반복 질문, 후보 지식, 수업 인사이트를 바로 확인할 수 있는 교강사 샘플 프로필입니다."
   },
   {
     "profile_id": "operator-academic-office",
-    "label": "Operator: Academic Office",
+    "label": "운영 샘플 · 학사 지원실",
     "role": "operator",
     "actor_id": "ops-academic-office",
     "course_id": "course-calculus-1",
     "class_id": "class-calculus-1-2026-spring-a",
     "domain": "operations",
     "landing_surface": "operations_console",
-    "description": "Operations support profile for refund and policy questions."
+    "description": "환불 정책과 운영 공지를 관리하는 운영 샘플 프로필입니다."
   },
   {
     "profile_id": "validator-course-admin",
-    "label": "Validator: Course Admin",
+    "label": "검토 샘플 · 교과 운영 관리자",
     "role": "validator",
     "actor_id": "val-course-admin",
     "course_id": "course-calculus-1",
     "class_id": "class-calculus-1-2026-spring-a",
     "domain": "review",
     "landing_surface": "review_inbox",
-    "description": "Validation profile for promotion, merge, and drop workflows."
+    "description": "candidate 승격과 유지보수 리포트를 검토하는 검토 샘플 프로필입니다."
   }
 ]

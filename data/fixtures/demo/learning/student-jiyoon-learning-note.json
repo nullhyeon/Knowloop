@@ -1,0 +1,30 @@
+﻿{
+  "learning_note_id": "learn-stu-park-jiyoon-calculus-1-calculus-1-2026-spring-a",
+  "student_id": "stu-park-jiyoon",
+  "course_id": "course-calculus-1",
+  "class_id": "class-calculus-1-2026-spring-a",
+  "concepts": [
+    "homework submission",
+    "deadline policy"
+  ],
+  "gaps": [
+    "마감 전 수정 제출과 마감 후 재제출 정책을 한 문장으로 설명하기"
+  ],
+  "next_actions": [
+    "Homework Submission FAQ를 읽고 LMS assignment page 경로를 다시 확인하기"
+  ],
+  "summary": "지윤은 과제 제출 경로와 마감 이후 예외 조건을 계속 헷갈려 FAQ 기반의 짧은 안내 문장이 필요합니다.",
+  "source_refs": [
+    {
+      "source_id": "src-announcement-acad-class-calculus-1-2026-spring-a-homework-01-4774b218-20260408T104500Z",
+      "source_type": "announcement",
+      "chunk_id": "submission-policy"
+    }
+  ],
+  "session_refs": [
+    "ses-student-stu-park-jiyoon-class-calculus-1-2026-spring-a-20260407T150000Z",
+    "ses-student-stu-park-jiyoon-class-calculus-1-2026-spring-a-20260408T083500Z"
+  ],
+  "created_at": "2026-04-07T15:05:00Z",
+  "updated_at": "2026-04-08T08:36:00Z"
+}

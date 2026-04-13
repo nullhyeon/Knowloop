@@ -96,6 +96,9 @@ MAINTENANCE_STATUS_ROUTE_DOMAINS = {
     ActorRole.VALIDATOR: RequestDomain.REVIEW,
     ActorRole.SYSTEM: RequestDomain.REVIEW,
 }
+LEARNING_SELF_ROUTE_DOMAINS = {
+    ActorRole.STUDENT: RequestDomain.ACADEMIC,
+}
 ROUTE_DOMAIN_POLICIES = {
     "public_query": RouteDomainPolicy(
         allowed_domains=PUBLIC_QUERY_ROUTE_DOMAINS,
@@ -138,6 +141,11 @@ ROUTE_DOMAIN_POLICIES = {
         allowed_domains=MAINTENANCE_STATUS_ROUTE_DOMAINS,
         error_message="This role cannot view maintenance status.",
         domain_message="Maintenance status requires the expected domain for this role.",
+    ),
+    "learning_self": RouteDomainPolicy(
+        allowed_domains=LEARNING_SELF_ROUTE_DOMAINS,
+        error_message="This role cannot view the personal learning console.",
+        domain_message="The personal learning console requires the expected domain for this role.",
     ),
 }
 
@@ -263,6 +271,12 @@ def get_maintenance_status_request_context(
     context: Annotated[RequestContext, Depends(get_request_context)],
 ) -> RequestContext:
     return _require_route_domain(context, policy=ROUTE_DOMAIN_POLICIES["maintenance_status"])
+
+
+def get_learning_self_request_context(
+    context: Annotated[RequestContext, Depends(get_request_context)],
+) -> RequestContext:
+    return _require_route_domain(context, policy=ROUTE_DOMAIN_POLICIES["learning_self"])
 
 
 def _require_route_domain(

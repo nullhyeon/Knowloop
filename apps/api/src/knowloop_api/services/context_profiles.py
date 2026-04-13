@@ -38,5 +38,5 @@ def get_context_profile(settings: Settings, profile_id: str) -> ContextProfile:
 
 @lru_cache(maxsize=8)
 def _load_context_profiles(path) -> tuple[ContextProfile, ...]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
     return tuple(ContextProfile.model_validate(item) for item in payload)

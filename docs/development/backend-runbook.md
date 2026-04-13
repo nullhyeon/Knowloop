@@ -76,6 +76,12 @@ Run the optional live LLM smoke when `apps/api/.env` enables the OpenAI runtime:
 .\scripts\live-llm-smoke.ps1
 ```
 
+Seed deployment-ready demo data for student and instructor sample flows:
+
+```powershell
+.\scripts\seed-demo-data.ps1 -AllowReset
+```
+
 Run lint:
 
 ```powershell
@@ -120,6 +126,12 @@ Representative pre-frontend closure verification:
 2. `.\scripts\live-llm-smoke.ps1` when the local `.env` enables LLM runtime
 3. `.\scripts\test-api.ps1`
 4. `.\scripts\lint-api.ps1`
+
+Representative demo verification before deployment:
+
+1. `.\scripts\seed-demo-data.ps1 -AllowReset`
+2. launch the frontend and confirm student/instructor sample entry buttons land on populated surfaces
+3. `.\scripts\smoke-api.ps1`
 
 When the API is running, these routes should be usable:
 
