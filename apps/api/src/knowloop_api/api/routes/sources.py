@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Path, Query, status
 
 from knowloop_api.api.context import RequestContext, get_request_context
 from knowloop_api.api.errors import ApiError, success_response
@@ -13,6 +13,7 @@ from knowloop_api.core.contracts import (
     SourceType,
     is_source_type_allowed_for_role,
 )
+from knowloop_api.core.input_limits import MAX_SOURCE_ID_LENGTH, MAX_SOURCE_SEARCH_QUERY_LENGTH
 from knowloop_api.services.sources import (
     SourceLockError,
     SourceNotFoundError,
@@ -132,7 +133,7 @@ def create_sources_router(settings: Settings) -> APIRouter:
         source_type: Annotated[SourceType | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
         offset: Annotated[int, Query(ge=0)] = 0,
-        q: Annotated[str | None, Query()] = None,
+        q: Annotated[str | None, Query(max_length=MAX_SOURCE_SEARCH_QUERY_LENGTH)] = None,
     ) -> dict[str, Any]:
         if context.role not in {
             ActorRole.INSTRUCTOR,
@@ -180,7 +181,7 @@ def create_sources_router(settings: Settings) -> APIRouter:
 
     @router.get("/{source_id}")
     def get_source_endpoint(
-        source_id: str,
+        source_id: Annotated[str, Path(min_length=1, max_length=MAX_SOURCE_ID_LENGTH)],
         context: Annotated[RequestContext, Depends(get_request_context)],
     ) -> dict[str, Any]:
         if context.role not in {

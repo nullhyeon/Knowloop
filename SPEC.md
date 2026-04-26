@@ -137,6 +137,7 @@ Current slice verification bar:
 - storage helpers respect the ID and metadata contracts from docs
 - the offline smoke suite proves representative context, source registration, query, search, review, wiki, runtime status, and maintenance routes together
 - the optional live LLM smoke verifies the OpenAI rewrite path with local runtime settings
+- public API boundaries enforce bounded request bodies, idempotency headers, and high-volume text/list fields before storage writes
 
 ## Boundaries
 

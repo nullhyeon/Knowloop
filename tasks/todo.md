@@ -121,7 +121,7 @@
 ## Backend Logic Hardening Backlog
 
 - [x] P0-prod Codex Builder: replace forgeable request-context headers with an auth-bound or trusted signed-header context adapter, and gate `/api/v1/context/profiles` behind explicit demo mode or authenticated access
-- [ ] P1 Codex Builder: add practical request bounds for query, source registration, candidate/review decisions, attachment lists, and idempotency keys; include route-level body-size protection and regression tests
+- [x] P1 Codex Builder: add practical request bounds for query, source registration, candidate/review decisions, attachment lists, and idempotency keys; include route-level body-size protection and regression tests
 - [ ] P1 Codex Builder: make query idempotency replay recover from a mutation owner created before session persistence, including stale-owner reclaim and crash-window tests
 - [ ] P1 Codex Builder: prevent incomplete write-back mutation payloads from being returned as successful replay responses; repair, complete, or return `storage_busy` until applied
 - [ ] P1 Codex Builder: require candidate promotion to resolve and verify every `source_ref` against manifest scope, backing file existence, and checksum before wiki mutation

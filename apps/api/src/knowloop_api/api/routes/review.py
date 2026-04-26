@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 
 from knowloop_api.api.context import (
     RequestContext,
@@ -11,6 +11,7 @@ from knowloop_api.api.context import (
 )
 from knowloop_api.api.errors import ApiError, success_response
 from knowloop_api.core.config import Settings
+from knowloop_api.core.input_limits import MAX_CANDIDATE_ID_LENGTH
 from knowloop_api.services.candidates import (
     CandidateKind,
     CandidateNotFoundError,
@@ -71,7 +72,7 @@ def create_review_router(settings: Settings) -> APIRouter:
 
     @router.get("/candidates/{candidate_id}")
     def get_review_candidate_endpoint(
-        candidate_id: str,
+        candidate_id: Annotated[str, Path(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)],
         context: Annotated[RequestContext, Depends(get_review_request_context)],
     ) -> dict[str, Any]:
         try:
@@ -104,7 +105,7 @@ def create_review_router(settings: Settings) -> APIRouter:
 
     @router.post("/candidates/{candidate_id}/patch-preview")
     def preview_review_candidate_patch_endpoint(
-        candidate_id: str,
+        candidate_id: Annotated[str, Path(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)],
         payload: ReviewPatchRequest,
         context: Annotated[RequestContext, Depends(get_review_request_context)],
     ) -> dict[str, Any]:
@@ -144,7 +145,7 @@ def create_review_router(settings: Settings) -> APIRouter:
 
     @router.post("/candidates/{candidate_id}/approve")
     def approve_review_candidate_endpoint(
-        candidate_id: str,
+        candidate_id: Annotated[str, Path(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)],
         payload: ReviewApproveRequest,
         context: Annotated[RequestContext, Depends(get_mutating_review_request_context)],
     ) -> dict[str, Any]:
@@ -193,7 +194,7 @@ def create_review_router(settings: Settings) -> APIRouter:
 
     @router.post("/candidates/{candidate_id}/merge")
     def merge_review_candidate_endpoint(
-        candidate_id: str,
+        candidate_id: Annotated[str, Path(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)],
         payload: ReviewMergeRequest,
         context: Annotated[RequestContext, Depends(get_mutating_review_request_context)],
     ) -> dict[str, Any]:
@@ -242,7 +243,7 @@ def create_review_router(settings: Settings) -> APIRouter:
 
     @router.post("/candidates/{candidate_id}/resume-sync")
     def resume_review_candidate_sync_endpoint(
-        candidate_id: str,
+        candidate_id: Annotated[str, Path(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)],
         payload: ReviewResumeSyncRequest,
         context: Annotated[RequestContext, Depends(get_mutating_review_request_context)],
     ) -> dict[str, Any]:
@@ -291,7 +292,7 @@ def create_review_router(settings: Settings) -> APIRouter:
 
     @router.post("/candidates/{candidate_id}/drop")
     def drop_review_candidate_endpoint(
-        candidate_id: str,
+        candidate_id: Annotated[str, Path(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)],
         payload: ReviewDropRequest,
         context: Annotated[RequestContext, Depends(get_mutating_review_request_context)],
     ) -> dict[str, Any]:

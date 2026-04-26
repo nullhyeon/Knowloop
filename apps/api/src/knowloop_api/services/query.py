@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field, field_validator
 from knowloop_api.api.context import RequestContext
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain, SourceType
+from knowloop_api.core.input_limits import (
+    MAX_QUERY_ATTACHMENT_SOURCE_IDS,
+    MAX_QUERY_MESSAGE_LENGTH,
+    MAX_SOURCE_ID_LENGTH,
+)
 from knowloop_api.core.query_contracts import (
     QUERY_ANSWER_BASIS_ORDER,
     AnswerBasisLabel,
@@ -157,6 +162,8 @@ class QueryRequest(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("message must not be blank")
+        if len(normalized) > MAX_QUERY_MESSAGE_LENGTH:
+            raise ValueError(f"message must be at most {MAX_QUERY_MESSAGE_LENGTH} chars")
         return normalized
 
     @field_validator("attachment_source_ids")
@@ -168,8 +175,17 @@ class QueryRequest(BaseModel):
             candidate = item.strip()
             if not candidate or candidate in seen:
                 continue
+            if len(candidate) > MAX_SOURCE_ID_LENGTH:
+                raise ValueError(
+                    f"attachment_source_ids items must be at most {MAX_SOURCE_ID_LENGTH} chars"
+                )
             normalized.append(candidate)
             seen.add(candidate)
+        if len(normalized) > MAX_QUERY_ATTACHMENT_SOURCE_IDS:
+            raise ValueError(
+                f"attachment_source_ids must contain at most "
+                f"{MAX_QUERY_ATTACHMENT_SOURCE_IDS} unique ids"
+            )
         return sorted(normalized)
 
 

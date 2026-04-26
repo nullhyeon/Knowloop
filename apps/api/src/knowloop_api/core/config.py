@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from knowloop_api.core.input_limits import MAX_API_REQUEST_BODY_BYTES
+
 API_ROOT = Path(__file__).resolve().parents[3]
 REPO_ROOT = Path(__file__).resolve().parents[5]
 DATA_ROOT = REPO_ROOT / "data"
@@ -31,6 +33,7 @@ class Settings(BaseSettings):
     sessions_db_path: Path | None = None
     audit_db_path: Path | None = None
     context_profiles_path: Path | None = None
+    max_api_request_body_bytes: int = MAX_API_REQUEST_BODY_BYTES
 
     @field_validator(
         "data_root",
@@ -100,6 +103,15 @@ class Settings(BaseSettings):
     def validate_trusted_context_max_age_seconds(cls, value: int) -> int:
         if value <= 0 or value > 86_400:
             raise ValueError("trusted_context_max_age_seconds must be between 1 and 86400")
+        return value
+
+    @field_validator("max_api_request_body_bytes")
+    @classmethod
+    def validate_max_api_request_body_bytes(cls, value: int) -> int:
+        if value <= 0 or value > MAX_API_REQUEST_BODY_BYTES:
+            raise ValueError(
+                f"max_api_request_body_bytes must be between 1 and {MAX_API_REQUEST_BODY_BYTES}"
+            )
         return value
 
     @model_validator(mode="after")

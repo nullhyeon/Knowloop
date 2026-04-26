@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from knowloop_api.api.context import (
+    RequestTracingContext,
     ensure_request_tracing_context,
     extract_client_request_id,
     get_request_tracing_context,
@@ -15,9 +16,20 @@ from knowloop_api.api.context import (
 from knowloop_api.api.errors import ApiError
 from knowloop_api.api.router import create_api_router
 from knowloop_api.core.config import Settings, get_settings
+from knowloop_api.core.input_limits import (
+    MAX_QUERY_REQUEST_BODY_BYTES,
+    MAX_REVIEW_REQUEST_BODY_BYTES,
+    MAX_SOURCE_REGISTER_REQUEST_BODY_BYTES,
+)
 from knowloop_api.db.bootstrap import bootstrap_storage, build_storage_readiness_payload
 
 logger = logging.getLogger(__name__)
+
+
+class RequestBodyTooLargeError(Exception):
+    def __init__(self, limit_bytes: int) -> None:
+        self.limit_bytes = limit_bytes
+        super().__init__(f"request body exceeds {limit_bytes} bytes")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -40,7 +52,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             request,
             extract_client_request_id(request),
         )
-        response = await call_next(request)
+        body_limit = _resolve_request_body_limit(
+            path=request.url.path,
+            method=request.method,
+            api_prefix=resolved_settings.api_v1_prefix,
+            settings=resolved_settings,
+        )
+        if body_limit is not None:
+            if _content_length_exceeds_limit(request, body_limit):
+                return _body_too_large_response(
+                    request,
+                    tracing,
+                    limit_bytes=body_limit,
+                )
+            _install_request_body_limit(request, body_limit)
+
+        try:
+            response = await call_next(request)
+        except RequestBodyTooLargeError as exc:
+            return _body_too_large_response(
+                request,
+                tracing,
+                limit_bytes=exc.limit_bytes,
+            )
         if "X-Request-Id" in response.headers:
             del response.headers["X-Request-Id"]
         if "X-Client-Request-Id" in response.headers:
@@ -197,6 +231,80 @@ def _sanitize_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, 
         }
         for error in errors
     ]
+
+
+def _resolve_request_body_limit(
+    *,
+    path: str,
+    method: str,
+    api_prefix: str,
+    settings: Settings,
+) -> int | None:
+    if method.upper() not in {"POST", "PUT", "PATCH"}:
+        return None
+    normalized_prefix = api_prefix.rstrip("/")
+    route_path = path.removeprefix(normalized_prefix).lstrip("/")
+    route_limit = settings.max_api_request_body_bytes
+    if route_path == "query/respond":
+        route_limit = MAX_QUERY_REQUEST_BODY_BYTES
+    elif route_path == "sources/register":
+        route_limit = MAX_SOURCE_REGISTER_REQUEST_BODY_BYTES
+    elif route_path.startswith("review/candidates/"):
+        route_limit = MAX_REVIEW_REQUEST_BODY_BYTES
+    return min(route_limit, settings.max_api_request_body_bytes)
+
+
+def _content_length_exceeds_limit(request: Request, limit_bytes: int) -> bool:
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        return False
+    try:
+        return int(content_length) > limit_bytes
+    except ValueError:
+        return False
+
+
+def _install_request_body_limit(request: Request, limit_bytes: int) -> None:
+    original_receive = request._receive
+    received_bytes = 0
+
+    async def limited_receive():
+        nonlocal received_bytes
+        message = await original_receive()
+        if message.get("type") == "http.request":
+            body = message.get("body", b"")
+            received_bytes += len(body)
+            if received_bytes > limit_bytes:
+                raise RequestBodyTooLargeError(limit_bytes)
+        return message
+
+    request._receive = limited_receive
+
+
+def _body_too_large_response(
+    request: Request,
+    tracing: RequestTracingContext,
+    *,
+    limit_bytes: int,
+) -> JSONResponse:
+    error = ApiError(
+        status_code=413,
+        code="body_too_large",
+        message="Request body exceeds the configured limit.",
+        request_id=tracing.request_id,
+        details={
+            "route": request.url.path,
+            "limit_bytes": limit_bytes,
+        },
+    )
+    return JSONResponse(
+        status_code=error.status_code,
+        content=error.to_payload(request_id=tracing.request_id),
+        headers=_build_error_headers(
+            request_id=tracing.request_id,
+            client_request_id=tracing.client_request_id,
+        ),
+    )
 
 
 def _build_error_headers(

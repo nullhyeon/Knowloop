@@ -13,6 +13,13 @@ from fastapi.testclient import TestClient
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, SourceType
 from knowloop_api.core.frontmatter import parse_frontmatter_document
+from knowloop_api.core.input_limits import (
+    MAX_CANDIDATE_ID_LENGTH,
+    MAX_REVIEW_NOTES_LENGTH,
+    MAX_REVIEW_REQUEST_BODY_BYTES,
+    MAX_REVIEW_TARGET_PAGE_ID_LENGTH,
+    MAX_REVIEW_TARGET_PATH_LENGTH,
+)
 from knowloop_api.db.audit import (
     create_audit_event,
     get_mutation_request,
@@ -130,6 +137,14 @@ def assert_api_error_envelope(
     return request_id
 
 
+def assert_validation_error_contains_loc(response, expected_loc: list[object]) -> None:
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["error"]["code"] == "validation_failed"
+    errors = payload["error"]["details"]["errors"]
+    assert any(error["loc"] == expected_loc for error in errors)
+
+
 def load_candidate_fixture(filename: str) -> CandidateItem:
     payload = json.loads((FIXTURE_ROOT / "candidates" / filename).read_text(encoding="utf-8"))
     return CandidateItem.model_validate(payload)
@@ -194,6 +209,103 @@ def seed_wiki_fixture(
 def parse_markdown_document(contents: str) -> tuple[dict[str, object], str]:
     metadata, body = parse_frontmatter_document(contents)
     return metadata, body.strip()
+
+
+def test_review_payload_models_reject_oversized_fields(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+    headers = build_headers(
+        role="validator",
+        actor_id="val-course-admin",
+        request_id="req-review-body-bounds",
+        idempotency_key="idem-review-body-bounds",
+    )
+
+    preview_response = client.post(
+        "/api/v1/review/candidates/cand-review-body-bounds/patch-preview",
+        headers=headers,
+        json={
+            "target_page_id": "x" * (MAX_REVIEW_TARGET_PAGE_ID_LENGTH + 1),
+            "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/body-bounds.md",
+            "notes": "ok",
+        },
+    )
+    approve_response = client.post(
+        "/api/v1/review/candidates/cand-review-body-bounds/approve",
+        headers={**headers, "X-Request-Id": "req-review-notes-too-large"},
+        json={
+            "target_page_id": "page-faq-body-bounds",
+            "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/body-bounds.md",
+            "approval_notes": "x" * (MAX_REVIEW_NOTES_LENGTH + 1),
+        },
+    )
+    patch_path_response = client.post(
+        "/api/v1/review/candidates/cand-review-body-bounds/patch-preview",
+        headers={**headers, "X-Request-Id": "req-review-target-path-too-large"},
+        json={
+            "target_page_id": "page-faq-body-bounds",
+            "target_path": "x" * (MAX_REVIEW_TARGET_PATH_LENGTH + 1),
+            "notes": "ok",
+        },
+    )
+    merge_response = client.post(
+        "/api/v1/review/candidates/cand-review-body-bounds/merge",
+        headers={**headers, "X-Request-Id": "req-review-target-candidate-too-large"},
+        json={
+            "target_candidate_id": "cand-" + ("x" * MAX_CANDIDATE_ID_LENGTH),
+            "merge_notes": "ok",
+        },
+    )
+
+    assert_validation_error_contains_loc(preview_response, ["body", "target_page_id"])
+    assert_validation_error_contains_loc(approve_response, ["body", "approval_notes"])
+    assert_validation_error_contains_loc(patch_path_response, ["body", "target_path"])
+    assert_validation_error_contains_loc(merge_response, ["body", "target_candidate_id"])
+
+
+def test_review_rejects_oversized_candidate_id_path(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        f"/api/v1/review/candidates/cand-{'x' * MAX_CANDIDATE_ID_LENGTH}",
+        headers=build_headers(role="validator", actor_id="val-course-admin"),
+    )
+
+    assert_validation_error_contains_loc(response, ["path", "candidate_id"])
+
+
+def test_review_mutation_rejects_body_over_route_limit_without_writes(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+
+    response = client.post(
+        "/api/v1/review/candidates/cand-review-body-too-large/approve",
+        headers=build_headers(
+            role="validator",
+            actor_id="val-course-admin",
+            request_id="req-review-body-too-large",
+            idempotency_key="idem-review-body-too-large",
+        ),
+        json={
+            "target_page_id": "page-faq-body-too-large",
+            "target_path": "data/wiki/faq/class-calculus-1-2026-spring-a/body-too-large.md",
+            "approval_notes": "x" * MAX_REVIEW_REQUEST_BODY_BYTES,
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 413
+    assert payload["error"]["code"] == "body_too_large"
+    assert payload["error"]["details"] == {
+        "route": "/api/v1/review/candidates/cand-review-body-too-large/approve",
+        "limit_bytes": MAX_REVIEW_REQUEST_BODY_BYTES,
+    }
+    assert [
+        request
+        for request in list_mutation_requests(settings, entity_type="candidate")
+        if request.idempotency_key == "idem-review-body-too-large"
+    ] == []
+    assert list_audit_events(settings, idempotency_key="idem-review-body-too-large") == []
 
 
 def as_zulu(timestamp: datetime) -> str:

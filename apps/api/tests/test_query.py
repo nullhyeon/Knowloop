@@ -18,6 +18,12 @@ from knowloop_api.api.routes import query as query_route_module
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain, SourceType
 from knowloop_api.core.frontmatter import parse_frontmatter_document
+from knowloop_api.core.input_limits import (
+    MAX_API_REQUEST_BODY_BYTES,
+    MAX_QUERY_ATTACHMENT_SOURCE_IDS,
+    MAX_QUERY_MESSAGE_LENGTH,
+    MAX_SOURCE_ID_LENGTH,
+)
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -159,6 +165,14 @@ def _parse_timestamp(value: str):
 
 def _load_query_fixture(fixture_name: str) -> dict[str, object]:
     return json.loads((FIXTURE_ROOT / "queries" / fixture_name).read_text(encoding="utf-8"))
+
+
+def _assert_validation_error_contains_loc(response, expected_loc: list[object]) -> None:
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["error"]["code"] == "validation_failed"
+    errors = payload["error"]["details"]["errors"]
+    assert any(error["loc"] == expected_loc for error in errors)
 
 
 def _resolve_query_request_body(
@@ -2393,6 +2407,133 @@ def test_query_endpoint_wraps_blank_message_validation_in_contract_envelope(tmp_
     assert payload["request_id"]
     assert response.headers["X-Request-Id"] == payload["request_id"]
     assert payload["error"]["code"] == "validation_failed"
+
+
+def test_query_endpoint_rejects_oversized_message(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.post(
+        "/api/v1/query/respond",
+        headers={
+            "X-Knowloop-Role": "student",
+            "X-Knowloop-Actor-Id": "stu-kim-minji",
+            "X-Knowloop-Course-Id": "course-calculus-1",
+            "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+            "X-Knowloop-Domain": "academic",
+            "X-Request-Id": "req-query-message-too-large",
+        },
+        json={
+            "message": "x" * (MAX_QUERY_MESSAGE_LENGTH + 1),
+            "attachment_source_ids": [],
+            "allow_raw_source_fallback": False,
+            "response_mode": "default",
+        },
+    )
+
+    _assert_validation_error_contains_loc(response, ["body", "message"])
+
+
+def test_query_message_length_limit_applies_after_trim() -> None:
+    request = query_service.QueryRequest(
+        message=f" {'x' * MAX_QUERY_MESSAGE_LENGTH} ",
+    )
+
+    assert request.message == "x" * MAX_QUERY_MESSAGE_LENGTH
+
+
+def test_query_endpoint_rejects_oversized_attachment_list_and_ids(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "X-Request-Id": "req-query-attachments-too-large",
+    }
+
+    too_many_response = client.post(
+        "/api/v1/query/respond",
+        headers=headers,
+        json={
+            "message": "How do I use the chain rule?",
+            "attachment_source_ids": [
+                f"src-lecture-note-class-calculus-1-2026-spring-a-week-{index:02d}"
+                for index in range(MAX_QUERY_ATTACHMENT_SOURCE_IDS + 1)
+            ],
+            "allow_raw_source_fallback": False,
+            "response_mode": "default",
+        },
+    )
+    oversized_id_response = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-attachment-id-too-large"},
+        json={
+            "message": "How do I use the chain rule?",
+            "attachment_source_ids": ["src-" + ("x" * MAX_SOURCE_ID_LENGTH)],
+            "allow_raw_source_fallback": False,
+            "response_mode": "default",
+        },
+    )
+
+    _assert_validation_error_contains_loc(too_many_response, ["body", "attachment_source_ids"])
+    _assert_validation_error_contains_loc(oversized_id_response, ["body", "attachment_source_ids"])
+
+
+def test_query_attachment_count_limit_applies_after_deduplication() -> None:
+    request = query_service.QueryRequest(
+        message="How do I use the chain rule?",
+        attachment_source_ids=["src-chain-rule"] * (MAX_QUERY_ATTACHMENT_SOURCE_IDS + 5),
+    )
+
+    assert request.attachment_source_ids == ["src-chain-rule"]
+
+
+def test_api_rejects_content_length_over_configured_body_limit(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path, max_api_request_body_bytes=256)
+
+    response = client.post(
+        "/api/v1/query/respond",
+        headers={
+            "X-Knowloop-Role": "student",
+            "X-Knowloop-Actor-Id": "stu-kim-minji",
+            "X-Knowloop-Course-Id": "course-calculus-1",
+            "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+            "X-Knowloop-Domain": "academic",
+            "X-Request-Id": "req-query-body-too-large",
+            "Idempotency-Key": "idem-query-body-too-large",
+        },
+        json={
+            "message": "x" * MAX_API_REQUEST_BODY_BYTES,
+            "attachment_source_ids": [],
+            "allow_raw_source_fallback": False,
+            "response_mode": "default",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 413
+    assert payload["error"]["code"] == "body_too_large"
+    assert payload["error"]["details"] == {
+        "route": "/api/v1/query/respond",
+        "limit_bytes": 256,
+    }
+    assert response.headers["X-Request-Id"] == payload["request_id"]
+    assert (
+        list_recent_sessions(
+            settings,
+            user_id="stu-kim-minji",
+            class_id="class-calculus-1-2026-spring-a",
+            course_id="course-calculus-1",
+            limit=5,
+        )
+        == []
+    )
+    assert [
+        record
+        for record in list_mutation_requests(settings)
+        if record.idempotency_key == "idem-query-body-too-large"
+    ] == []
 
 
 def test_query_endpoint_recovers_pending_idempotent_query_without_stored_response(

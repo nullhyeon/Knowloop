@@ -22,6 +22,7 @@ from knowloop_api.core.contracts import (
     validate_class_id,
     validate_course_id,
 )
+from knowloop_api.core.input_limits import MAX_IDEMPOTENCY_KEY_LENGTH
 from knowloop_api.services.context_profiles import (
     ContextProfile,
     ContextProfileNotFoundError,
@@ -63,6 +64,9 @@ CLIENT_REQUEST_ID_STATE_ATTR = "client_request_id"
 CLIENT_REQUEST_ID_HEADER = "X-Request-Id"
 CLIENT_REQUEST_ID_MAX_LENGTH = 128
 CLIENT_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+IDEMPOTENCY_KEY_PATTERN = re.compile(
+    rf"^[A-Za-z0-9._:/-]{{1,{MAX_IDEMPOTENCY_KEY_LENGTH}}}$"
+)
 CONTEXT_TIMESTAMP_HEADER = "X-Knowloop-Context-Timestamp"
 CONTEXT_SIGNATURE_HEADER = "X-Knowloop-Context-Signature"
 CONTEXT_SIGNATURE_PREFIX = "v1="
@@ -174,7 +178,6 @@ def get_request_context(
     knowloop_class_id: str | None = Header(None, alias="X-Knowloop-Class-Id"),
     knowloop_domain: str | None = Header(None, alias="X-Knowloop-Domain"),
     client_request_id: str | None = Header(None, alias="X-Request-Id"),
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> RequestContext:
     del client_request_id
     ensure_request_tracing_context(request, extract_client_request_id(request))
@@ -188,7 +191,7 @@ def get_request_context(
         knowloop_class_id=knowloop_class_id,
         knowloop_domain=knowloop_domain,
         resolved_request_id=get_server_request_id(request),
-        idempotency_key=idempotency_key,
+        idempotency_key=extract_idempotency_key(request, get_server_request_id(request)),
         preserve_omitted_domain=False,
     )
     _assert_standard_domain_allowed(context)
@@ -204,7 +207,6 @@ def get_public_query_request_context(
     knowloop_class_id: str | None = Header(None, alias="X-Knowloop-Class-Id"),
     knowloop_domain: str | None = Header(None, alias="X-Knowloop-Domain"),
     client_request_id: str | None = Header(None, alias="X-Request-Id"),
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> RequestContext:
     del client_request_id
     ensure_request_tracing_context(request, extract_client_request_id(request))
@@ -218,7 +220,7 @@ def get_public_query_request_context(
         knowloop_class_id=knowloop_class_id,
         knowloop_domain=knowloop_domain,
         resolved_request_id=get_server_request_id(request),
-        idempotency_key=idempotency_key,
+        idempotency_key=extract_idempotency_key(request, get_server_request_id(request)),
         preserve_omitted_domain=True,
     )
     _assert_standard_domain_allowed(context)
@@ -337,6 +339,61 @@ def require_idempotency_key(
             request_id=context.request_id,
         )
     return context
+
+
+def extract_idempotency_key(request: Request, request_id: str) -> str | None:
+    raw_values = request.headers.getlist("Idempotency-Key")
+    if not raw_values:
+        return None
+    if len(raw_values) != 1:
+        raise ApiError(
+            status_code=422,
+            code="validation_failed",
+            message="Idempotency-Key must be sent as a single canonical header.",
+            request_id=request_id,
+            details={"header": "Idempotency-Key"},
+        )
+    raw_value = raw_values[0]
+    if "," in raw_value:
+        raise ApiError(
+            status_code=422,
+            code="validation_failed",
+            message="Idempotency-Key must be sent as a single canonical header.",
+            request_id=request_id,
+            details={"header": "Idempotency-Key"},
+        )
+    return normalize_idempotency_key(raw_value, request_id)
+
+
+def normalize_idempotency_key(idempotency_key: str | None, request_id: str) -> str | None:
+    if not isinstance(idempotency_key, str):
+        return None
+    normalized = idempotency_key.strip()
+    if not normalized:
+        return None
+    if len(normalized) > MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise ApiError(
+            status_code=422,
+            code="validation_failed",
+            message="Idempotency-Key exceeds the supported length.",
+            request_id=request_id,
+            details={
+                "header": "Idempotency-Key",
+                "max_length": MAX_IDEMPOTENCY_KEY_LENGTH,
+            },
+        )
+    if IDEMPOTENCY_KEY_PATTERN.fullmatch(normalized) is None:
+        raise ApiError(
+            status_code=422,
+            code="validation_failed",
+            message="Idempotency-Key contains unsupported characters.",
+            request_id=request_id,
+            details={
+                "header": "Idempotency-Key",
+                "allowed_characters": "letters, digits, '.', '_', ':', '/', '-'",
+            },
+        )
+    return normalized
 
 
 def _assert_standard_domain_allowed(context: RequestContext) -> None:

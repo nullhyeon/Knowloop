@@ -6,12 +6,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from knowloop_api.api.context import RequestContext
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain
 from knowloop_api.core.frontmatter import build_frontmatter_document
+from knowloop_api.core.input_limits import (
+    MAX_CANDIDATE_ID_LENGTH,
+    MAX_REVIEW_NOTES_LENGTH,
+    MAX_REVIEW_TARGET_PAGE_ID_LENGTH,
+    MAX_REVIEW_TARGET_PATH_LENGTH,
+)
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -75,9 +81,9 @@ class ForbiddenReviewScopeError(ReviewStateError):
 
 
 class ReviewPatchRequest(BaseModel):
-    target_page_id: str | None = None
-    target_path: str | None = None
-    notes: str | None = None
+    target_page_id: str | None = Field(default=None, max_length=MAX_REVIEW_TARGET_PAGE_ID_LENGTH)
+    target_path: str | None = Field(default=None, max_length=MAX_REVIEW_TARGET_PATH_LENGTH)
+    notes: str | None = Field(default=None, max_length=MAX_REVIEW_NOTES_LENGTH)
 
     @model_validator(mode="after")
     def ensure_target_hint(self) -> "ReviewPatchRequest":
@@ -87,9 +93,9 @@ class ReviewPatchRequest(BaseModel):
 
 
 class ReviewApproveRequest(BaseModel):
-    target_page_id: str | None = None
-    target_path: str | None = None
-    approval_notes: str | None = None
+    target_page_id: str | None = Field(default=None, max_length=MAX_REVIEW_TARGET_PAGE_ID_LENGTH)
+    target_path: str | None = Field(default=None, max_length=MAX_REVIEW_TARGET_PATH_LENGTH)
+    approval_notes: str | None = Field(default=None, max_length=MAX_REVIEW_NOTES_LENGTH)
 
     @model_validator(mode="after")
     def ensure_target_hint(self) -> "ReviewApproveRequest":
@@ -99,17 +105,17 @@ class ReviewApproveRequest(BaseModel):
 
 
 class ReviewMergeRequest(BaseModel):
-    target_candidate_id: str
-    merge_notes: str | None = None
+    target_candidate_id: str = Field(min_length=1, max_length=MAX_CANDIDATE_ID_LENGTH)
+    merge_notes: str | None = Field(default=None, max_length=MAX_REVIEW_NOTES_LENGTH)
 
 
 class ReviewDropRequest(BaseModel):
     reason: DropReason
-    drop_notes: str | None = None
+    drop_notes: str | None = Field(default=None, max_length=MAX_REVIEW_NOTES_LENGTH)
 
 
 class ReviewResumeSyncRequest(BaseModel):
-    resume_notes: str | None = None
+    resume_notes: str | None = Field(default=None, max_length=MAX_REVIEW_NOTES_LENGTH)
 
 
 class ReviewCandidateDetail(BaseModel):

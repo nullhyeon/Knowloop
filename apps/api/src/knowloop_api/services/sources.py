@@ -21,6 +21,14 @@ from knowloop_api.core.contracts import (
     validate_class_id,
     validate_course_id,
 )
+from knowloop_api.core.input_limits import (
+    MAX_SOURCE_CONTENT_LENGTH,
+    MAX_SOURCE_FILENAME_LENGTH,
+    MAX_SOURCE_MIME_TYPE_LENGTH,
+    MAX_SOURCE_TAG_LENGTH,
+    MAX_SOURCE_TAGS,
+    MAX_SOURCE_TITLE_LENGTH,
+)
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -52,9 +60,9 @@ SOURCE_LOCK_STALE_AFTER = timedelta(minutes=5)
 class SourceRegistrationInput(BaseModel):
     source_type: SourceType
     title: str = Field(min_length=1)
-    content: str = Field(min_length=1)
-    mime_type: str | None = None
-    filename: str | None = None
+    content: str = Field(min_length=1, max_length=MAX_SOURCE_CONTENT_LENGTH)
+    mime_type: str | None = Field(default=None, max_length=MAX_SOURCE_MIME_TYPE_LENGTH)
+    filename: str | None = Field(default=None, max_length=MAX_SOURCE_FILENAME_LENGTH)
     tags: list[str] = Field(default_factory=list)
 
     @field_validator("title")
@@ -63,6 +71,8 @@ class SourceRegistrationInput(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("title must not be blank")
+        if len(normalized) > MAX_SOURCE_TITLE_LENGTH:
+            raise ValueError(f"title must be at most {MAX_SOURCE_TITLE_LENGTH} chars")
         return normalized
 
     @field_validator("content")
@@ -71,6 +81,23 @@ class SourceRegistrationInput(BaseModel):
         if not value.strip():
             raise ValueError("content must not be blank")
         return value
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_and_bound_tags(cls, value: list[str]) -> list[str]:
+        normalized_tags: list[str] = []
+        seen_tags: set[str] = set()
+        for tag in value:
+            normalized_tag = tag.strip()
+            if not normalized_tag or normalized_tag in seen_tags:
+                continue
+            if len(normalized_tag) > MAX_SOURCE_TAG_LENGTH:
+                raise ValueError(f"tags must be at most {MAX_SOURCE_TAG_LENGTH} chars each")
+            normalized_tags.append(normalized_tag)
+            seen_tags.add(normalized_tag)
+        if len(normalized_tags) > MAX_SOURCE_TAGS:
+            raise ValueError(f"tags must contain at most {MAX_SOURCE_TAGS} unique values")
+        return normalized_tags
 
 
 class SourceNotFoundError(FileNotFoundError):

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
+from knowloop_api.core.input_limits import MAX_IDEMPOTENCY_KEY_LENGTH
 from knowloop_api.main import create_app
 
 
@@ -103,6 +104,75 @@ def test_profile_header_conflict_with_explicit_headers_returns_validation_error(
         "profile_id": "student-minji",
         "conflicting_fields": ["role"],
     }
+
+
+def test_context_rejects_oversized_idempotency_key(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        "/api/v1/context/self",
+        headers={
+            "X-Knowloop-Role": "student",
+            "X-Knowloop-Actor-Id": "stu-kim-minji",
+            "X-Knowloop-Course-Id": "course-calculus-1",
+            "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+            "X-Knowloop-Domain": "academic",
+            "Idempotency-Key": "x" * (MAX_IDEMPOTENCY_KEY_LENGTH + 1),
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 422
+    assert payload["error"]["code"] == "validation_failed"
+    assert payload["error"]["details"] == {
+        "header": "Idempotency-Key",
+        "max_length": MAX_IDEMPOTENCY_KEY_LENGTH,
+    }
+
+
+def test_context_rejects_duplicate_idempotency_key_headers(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        "/api/v1/context/self",
+        headers=[
+            ("X-Knowloop-Role", "student"),
+            ("X-Knowloop-Actor-Id", "stu-kim-minji"),
+            ("X-Knowloop-Course-Id", "course-calculus-1"),
+            ("X-Knowloop-Class-Id", "class-calculus-1-2026-spring-a"),
+            ("X-Knowloop-Domain", "academic"),
+            ("Idempotency-Key", "idem-first"),
+            ("Idempotency-Key", "idem-second"),
+        ],
+    )
+
+    payload = response.json()
+    assert response.status_code == 422
+    assert payload["error"]["code"] == "validation_failed"
+    assert payload["error"]["details"] == {"header": "Idempotency-Key"}
+
+
+def test_context_rejects_comma_joined_idempotency_key(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        "/api/v1/context/self",
+        headers={
+            "X-Knowloop-Role": "student",
+            "X-Knowloop-Actor-Id": "stu-kim-minji",
+            "X-Knowloop-Course-Id": "course-calculus-1",
+            "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+            "X-Knowloop-Domain": "academic",
+            "Idempotency-Key": "idem-first, idem-second",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 422
+    assert payload["error"]["code"] == "validation_failed"
+    assert payload["error"]["details"] == {"header": "Idempotency-Key"}
+
+
 SIGNED_CONTEXT_SECRET = "test-context-secret-32-bytes-minimum"
 
 

@@ -40,6 +40,18 @@ Content type:
 
 Timestamps use UTC ISO 8601 strings.
 
+Request bounds:
+
+- every body-consuming `/api/v1/*` `POST`, `PUT`, and `PATCH` route is subject to a deployment cap from `max_api_request_body_bytes`, default `1048576`
+- route-level caps are lower where the workflow should stay compact:
+  - `POST /api/v1/query/respond`: `16384` bytes
+  - `POST /api/v1/sources/register`: `262144` bytes
+  - `POST /api/v1/review/candidates/*`: `8192` bytes
+- the effective body limit is the lower of the route cap and `max_api_request_body_bytes`
+- body-size enforcement happens before route parsing when `Content-Length` exceeds the effective limit, and while the route consumes the request body for clients that stream without a truthful `Content-Length`
+- body-size failures return `413 body_too_large` with `details.route` and `details.limit_bytes`
+- field, list, path, query, and header bounds return `422 validation_failed` through the standard validation envelope unless a route documents a narrower business error
+
 ## 4. Request Context Boundary
 
 Protected non-system routes use request context fields. The fields may arrive through a
@@ -130,6 +142,8 @@ Header notes:
   - duplicate, comma-joined, or otherwise multi-value inputs are treated as non-canonical and dropped instead of being reflected
   - reflected values are transport-only metadata and must not be persisted into session, candidate, wiki, learning, audit, or mutation artifacts
 - `Idempotency-Key` is the replay-safe mutation key for routes that support retry semantics.
+- `Idempotency-Key` is trimmed before replay ownership is evaluated; accepted characters are letters, digits, `.`, `_`, `:`, `/`, and `-`, and the maximum length is `128`.
+- duplicate or comma-joined `Idempotency-Key` values fail with `422 validation_failed` because replay ownership requires one canonical key per HTTP attempt.
 - `X-Knowloop-Profile-Id` is a frontend/bootstrap adapter for demo and local UI flows:
   - it is accepted only when `demo_context_profiles_enabled=true`
   - when present, the API resolves the role, actor, course, class, and default domain from the checked-in context profile registry
@@ -234,6 +248,7 @@ Common error codes:
 - `storage_busy`
 - `untrusted_context`
 - `demo_profiles_disabled`
+- `body_too_large`
 - `internal_error`
 
 ## 6. Implemented Endpoints
@@ -321,6 +336,14 @@ Request body:
 }
 ```
 
+Request field bounds:
+
+- `title`: `1..200` chars after trim
+- `content`: `1..64000` chars and non-blank
+- `mime_type`: optional, max `100` chars
+- `filename`: optional, max `255` chars
+- `tags`: max `20` unique non-blank tags after trim/dedupe, each max `40` chars
+
 Response highlights:
 
 - `source_id`
@@ -342,12 +365,15 @@ Purpose:
 
 - list registered sources visible in the current scope
 
-Supported filters:
+Supported query parameters:
 
-- `course_id`
-- `class_id`
-- `domain`
 - `source_type`
+- `q`: optional search query, max `200` chars
+- `limit`, `offset`: pagination
+
+Scope notes:
+
+- `course_id`, `class_id`, and `domain` are derived from the request context, not accepted as public query parameters
 
 ### `GET /api/v1/sources/{source_id}`
 
@@ -379,8 +405,8 @@ Request body:
 
 Request fields:
 
-- `message`: required non-blank string
-- `attachment_source_ids`: optional list of source IDs
+- `message`: required non-blank string, max `4000` chars after trim
+- `attachment_source_ids`: optional list of source IDs, max `10` unique IDs after trim/dedupe, each max `160` chars
 - `allow_raw_source_fallback`: whether raw-source fallback is allowed
 - `response_mode`: `default`, `concise`, `teaching`, or `review`
 
@@ -504,6 +530,13 @@ Authorization notes:
 
 - unsupported roles on review list/detail/patch-preview return route-owned `403 forbidden_role`
 - finalize-capable review mutations remain restricted to `instructor` and `validator`; `operator` and `system` receive route-owned `403 forbidden_role`
+
+Shared review input bounds:
+
+- `{candidate_id}` path values and `target_candidate_id` fields are max `160` chars
+- `target_page_id` is max `120` chars
+- `target_path` is max `320` chars
+- `notes`, `approval_notes`, `merge_notes`, `drop_notes`, and `resume_notes` are each max `1000` chars
 
 Query parameters:
 

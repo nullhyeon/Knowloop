@@ -13,6 +13,16 @@ from fastapi.testclient import TestClient
 import knowloop_api.services.sources as source_service
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain, SourceType
+from knowloop_api.core.input_limits import (
+    MAX_SOURCE_CONTENT_LENGTH,
+    MAX_SOURCE_FILENAME_LENGTH,
+    MAX_SOURCE_ID_LENGTH,
+    MAX_SOURCE_REGISTER_REQUEST_BODY_BYTES,
+    MAX_SOURCE_SEARCH_QUERY_LENGTH,
+    MAX_SOURCE_TAG_LENGTH,
+    MAX_SOURCE_TAGS,
+    MAX_SOURCE_TITLE_LENGTH,
+)
 from knowloop_api.db.audit import get_mutation_request, list_audit_events
 from knowloop_api.db.bootstrap import bootstrap_storage
 from knowloop_api.db.manifest import load_manifest
@@ -72,6 +82,14 @@ def assert_server_owned_request_id(
     assert response.headers["X-Request-Id"] == payload["request_id"]
     if client_request_id is not None:
         assert payload["request_id"] != client_request_id
+
+
+def assert_validation_error_contains_loc(response, expected_loc: list[object]) -> None:
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["error"]["code"] == "validation_failed"
+    errors = payload["error"]["details"]["errors"]
+    assert any(error["loc"] == expected_loc for error in errors)
 
 
 @pytest.mark.smoke
@@ -142,6 +160,167 @@ def test_register_source_endpoint_uses_server_owned_request_ids(tmp_path: Path) 
 
     assert response.status_code == 201
     assert_server_owned_request_id(response, client_request_id="req-client-supplied-source")
+
+
+def test_register_source_endpoint_rejects_oversized_registration_payload(
+    tmp_path: Path,
+) -> None:
+    client, _settings = build_client(tmp_path)
+    headers = build_headers(
+        role="instructor",
+        actor_id="ins-calculus-team",
+        request_id="req-source-title-too-large",
+        idempotency_key="idem-source-bounds",
+    )
+
+    title_response = client.post(
+        "/api/v1/sources/register",
+        headers=headers,
+        json={
+            "source_type": "lecture_note",
+            "title": "x" * (MAX_SOURCE_TITLE_LENGTH + 1),
+            "content": "# Chain Rule\nUse the outer derivative after the inner derivative.",
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule.md",
+            "tags": ["week-03"],
+        },
+    )
+    content_response = client.post(
+        "/api/v1/sources/register",
+        headers={**headers, "X-Request-Id": "req-source-content-too-large"},
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "x" * (MAX_SOURCE_CONTENT_LENGTH + 1),
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule.md",
+            "tags": ["week-03"],
+        },
+    )
+    filename_response = client.post(
+        "/api/v1/sources/register",
+        headers={**headers, "X-Request-Id": "req-source-filename-too-large"},
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "# Chain Rule\nUse the outer derivative after the inner derivative.",
+            "mime_type": "text/markdown",
+            "filename": "x" * (MAX_SOURCE_FILENAME_LENGTH + 1),
+            "tags": ["week-03"],
+        },
+    )
+    tags_response = client.post(
+        "/api/v1/sources/register",
+        headers={**headers, "X-Request-Id": "req-source-tags-too-large"},
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "# Chain Rule\nUse the outer derivative after the inner derivative.",
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule.md",
+            "tags": [f"tag-{index:02d}" for index in range(MAX_SOURCE_TAGS + 1)],
+        },
+    )
+    tag_response = client.post(
+        "/api/v1/sources/register",
+        headers={**headers, "X-Request-Id": "req-source-tag-too-large"},
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "# Chain Rule\nUse the outer derivative after the inner derivative.",
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule.md",
+            "tags": ["x" * (MAX_SOURCE_TAG_LENGTH + 1)],
+        },
+    )
+
+    assert_validation_error_contains_loc(title_response, ["body", "title"])
+    assert_validation_error_contains_loc(content_response, ["body", "content"])
+    assert_validation_error_contains_loc(filename_response, ["body", "filename"])
+    assert_validation_error_contains_loc(tags_response, ["body", "tags"])
+    assert_validation_error_contains_loc(tag_response, ["body", "tags"])
+
+
+def test_source_title_length_limit_applies_after_trim() -> None:
+    registration = SourceRegistrationInput(
+        source_type=SourceType.LECTURE_NOTE,
+        title=f" {'x' * MAX_SOURCE_TITLE_LENGTH} ",
+        content="# Chain Rule\nUse the outer derivative after the inner derivative.",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+    )
+
+    assert registration.title == "x" * MAX_SOURCE_TITLE_LENGTH
+
+
+def test_source_tag_count_limit_applies_after_normalization() -> None:
+    registration = SourceRegistrationInput(
+        source_type=SourceType.LECTURE_NOTE,
+        title="Week 03 Chain Rule",
+        content="# Chain Rule\nUse the outer derivative after the inner derivative.",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+        tags=["week-03"] * (MAX_SOURCE_TAGS + 5),
+    )
+
+    assert registration.tags == ["week-03"]
+
+
+def test_register_source_endpoint_rejects_body_over_route_limit_without_writes(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+
+    response = client.post(
+        "/api/v1/sources/register",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-source-body-too-large",
+            idempotency_key="idem-source-body-too-large",
+        ),
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "x" * MAX_SOURCE_REGISTER_REQUEST_BODY_BYTES,
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule.md",
+            "tags": ["week-03"],
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 413
+    assert payload["error"]["code"] == "body_too_large"
+    assert payload["error"]["details"] == {
+        "route": "/api/v1/sources/register",
+        "limit_bytes": MAX_SOURCE_REGISTER_REQUEST_BODY_BYTES,
+    }
+    assert load_manifest(settings).sources == []
+    assert list_audit_events(settings, idempotency_key="idem-source-body-too-large") == []
+
+
+def test_source_list_rejects_oversized_search_query(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        "/api/v1/sources",
+        headers=build_headers(role="instructor", actor_id="ins-calculus-team"),
+        params={"q": "x" * (MAX_SOURCE_SEARCH_QUERY_LENGTH + 1)},
+    )
+
+    assert_validation_error_contains_loc(response, ["query", "q"])
+
+
+def test_source_detail_rejects_oversized_source_id_path(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get(
+        f"/api/v1/sources/src-{'x' * MAX_SOURCE_ID_LENGTH}",
+        headers=build_headers(role="instructor", actor_id="ins-calculus-team"),
+    )
+
+    assert_validation_error_contains_loc(response, ["path", "source_id"])
 
 
 def test_register_source_endpoint_replay_uses_attempt_local_request_ids(tmp_path: Path) -> None:
