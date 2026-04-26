@@ -14,6 +14,7 @@ The current slice is still not the full product. The harness and runtime foundat
 - keep the instructor insight surface aggregated and privacy-safe
 - keep the session search surface role-aware and redaction-safe
 - add a frontend-ready context bootstrap adapter so UI clients can resolve demo personas without handcrafting every `X-Knowloop-*` header
+- require production deployments to use a trusted signed-context adapter instead of accepting forgeable role/scope headers
 - keep the maintenance report surface actionable and deterministic
 - add a reproducible offline backend smoke suite plus an opt-in live LLM smoke so the pre-frontend API state can be verified without ambiguity
 - document operational runbook and handoff expectations for the current backend state
@@ -149,7 +150,7 @@ Current slice verification bar:
 
 - changing the backend framework
 - adding new infrastructure services
-- introducing auth, queues, workers, or vector search
+- introducing full user auth, queues, workers, or vector search
 - changing the persisted data contract in a way that invalidates current docs
 
 ### Never
@@ -175,4 +176,4 @@ Current slice verification bar:
 
 - Which persistence layer should own candidate metadata first: plain files, SQLite tables, or a hybrid file-plus-index approach?
 - Should promotion rules live in code, config, or markdown policy files?
-- At what point should auth and privacy controls move from repo conventions into product code?
+- Which external identity provider or session model should replace the signed-context adapter when Knowloop moves beyond MVP deployment boundaries?

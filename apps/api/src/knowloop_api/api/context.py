@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hmac
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Annotated
@@ -61,6 +63,19 @@ CLIENT_REQUEST_ID_STATE_ATTR = "client_request_id"
 CLIENT_REQUEST_ID_HEADER = "X-Request-Id"
 CLIENT_REQUEST_ID_MAX_LENGTH = 128
 CLIENT_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+CONTEXT_TIMESTAMP_HEADER = "X-Knowloop-Context-Timestamp"
+CONTEXT_SIGNATURE_HEADER = "X-Knowloop-Context-Signature"
+CONTEXT_SIGNATURE_PREFIX = "v1="
+CONTEXT_SIGNATURE_PAYLOAD_VERSION = "knowloop-context-v1"
+CONTEXT_SIGNATURE_MAX_FUTURE_SKEW_SECONDS = 30
+CONTEXT_SIGNATURE_HEADERS = (
+    "X-Knowloop-Profile-Id",
+    "X-Knowloop-Role",
+    "X-Knowloop-Actor-Id",
+    "X-Knowloop-Course-Id",
+    "X-Knowloop-Class-Id",
+    "X-Knowloop-Domain",
+)
 REVIEW_ROUTE_DOMAINS = {
     ActorRole.INSTRUCTOR: RequestDomain.ACADEMIC,
     ActorRole.OPERATOR: RequestDomain.OPERATIONS,
@@ -163,6 +178,7 @@ def get_request_context(
 ) -> RequestContext:
     del client_request_id
     ensure_request_tracing_context(request, extract_client_request_id(request))
+    _assert_request_context_trusted(request, get_server_request_id(request))
     context = _build_request_context(
         request=request,
         knowloop_profile_id=knowloop_profile_id,
@@ -192,6 +208,7 @@ def get_public_query_request_context(
 ) -> RequestContext:
     del client_request_id
     ensure_request_tracing_context(request, extract_client_request_id(request))
+    _assert_request_context_trusted(request, get_server_request_id(request))
     context = _build_request_context(
         request=request,
         knowloop_profile_id=knowloop_profile_id,
@@ -436,6 +453,164 @@ def _get_request_settings(request: Request) -> Settings:
     if isinstance(settings, Settings):
         return settings
     return get_settings()
+
+
+def _assert_request_context_trusted(request: Request, request_id: str) -> None:
+    settings = _get_request_settings(request)
+    profile_id = _read_optional_single_header(request, "X-Knowloop-Profile-Id", request_id)
+    if profile_id and not settings.demo_context_profiles_enabled:
+        raise ApiError(
+            status_code=403,
+            code="demo_profiles_disabled",
+            message="Context profiles are disabled outside explicit demo mode.",
+            request_id=request_id,
+        )
+    if settings.context_trust_mode != "signed":
+        return
+    _assert_signed_context_headers(request, settings, request_id)
+
+
+def _assert_signed_context_headers(
+    request: Request,
+    settings: Settings,
+    request_id: str,
+) -> None:
+    missing_headers = [
+        header_name
+        for header_name in (CONTEXT_TIMESTAMP_HEADER, CONTEXT_SIGNATURE_HEADER)
+        if not request.headers.getlist(header_name)
+    ]
+    if missing_headers:
+        raise ApiError(
+            status_code=403,
+            code="untrusted_context",
+            message="Knowloop request context is missing a trusted signature.",
+            request_id=request_id,
+            details={"missing_headers": missing_headers},
+        )
+
+    timestamp = _read_required_single_header(request, CONTEXT_TIMESTAMP_HEADER, request_id)
+    signature = _read_required_single_header(request, CONTEXT_SIGNATURE_HEADER, request_id)
+    try:
+        timestamp_seconds = int(timestamp)
+    except ValueError as exc:
+        raise _invalid_context_signature_error(
+            request_id,
+            details={"header": CONTEXT_TIMESTAMP_HEADER},
+        ) from exc
+
+    now_seconds = int(time.time())
+    if timestamp_seconds - now_seconds > CONTEXT_SIGNATURE_MAX_FUTURE_SKEW_SECONDS:
+        raise _invalid_context_signature_error(
+            request_id,
+            details={"max_future_skew_seconds": CONTEXT_SIGNATURE_MAX_FUTURE_SKEW_SECONDS},
+        )
+    if now_seconds - timestamp_seconds > settings.trusted_context_max_age_seconds:
+        raise _invalid_context_signature_error(
+            request_id,
+            details={"max_age_seconds": settings.trusted_context_max_age_seconds},
+        )
+
+    if not signature.startswith(CONTEXT_SIGNATURE_PREFIX):
+        raise _invalid_context_signature_error(
+            request_id,
+            details={"header": CONTEXT_SIGNATURE_HEADER},
+        )
+
+    secret = settings.trusted_context_secret
+    if secret is None:
+        raise _invalid_context_signature_error(request_id, details={"adapter": "signed_headers"})
+    expected_signature = _build_context_signature(
+        secret=secret.get_secret_value(),
+        payload=_build_context_signature_payload(request, timestamp),
+    )
+    if not hmac.compare_digest(signature, f"{CONTEXT_SIGNATURE_PREFIX}{expected_signature}"):
+        raise _invalid_context_signature_error(request_id, details={"adapter": "signed_headers"})
+
+
+def _read_optional_single_header(
+    request: Request,
+    header_name: str,
+    request_id: str,
+) -> str | None:
+    raw_values = request.headers.getlist(header_name)
+    if not raw_values:
+        return None
+    return _normalize_trusted_context_header_value(
+        header_name=header_name,
+        raw_values=raw_values,
+        request_id=request_id,
+        allow_empty=True,
+    )
+
+
+def _read_required_single_header(request: Request, header_name: str, request_id: str) -> str:
+    return _normalize_trusted_context_header_value(
+        header_name=header_name,
+        raw_values=request.headers.getlist(header_name),
+        request_id=request_id,
+        allow_empty=False,
+    )
+
+
+def _normalize_trusted_context_header_value(
+    *,
+    header_name: str,
+    raw_values: list[str],
+    request_id: str,
+    allow_empty: bool,
+) -> str:
+    if len(raw_values) != 1:
+        raise _invalid_context_signature_error(request_id, details={"header": header_name})
+    value = raw_values[0]
+    if "," in value or value != value.strip():
+        raise _invalid_context_signature_error(request_id, details={"header": header_name})
+    if not allow_empty and not value:
+        raise _invalid_context_signature_error(request_id, details={"header": header_name})
+    return value
+
+
+def _build_context_signature_payload(request: Request, timestamp: str) -> str:
+    lines = [
+        CONTEXT_SIGNATURE_PAYLOAD_VERSION,
+        request.method.upper(),
+        request.url.path,
+        timestamp,
+    ]
+    for header_name in CONTEXT_SIGNATURE_HEADERS:
+        raw_values = request.headers.getlist(header_name)
+        header_value = ""
+        if raw_values:
+            header_value = _normalize_trusted_context_header_value(
+                header_name=header_name,
+                raw_values=raw_values,
+                request_id=get_server_request_id(request),
+                allow_empty=True,
+            )
+        lines.append(f"{header_name.lower()}:{header_value}")
+    return "\n".join(lines)
+
+
+def _build_context_signature(*, secret: str, payload: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+
+
+def _invalid_context_signature_error(
+    request_id: str,
+    *,
+    details: dict[str, object],
+) -> ApiError:
+    return ApiError(
+        status_code=403,
+        code="untrusted_context",
+        message="Knowloop request context is missing, expired, or invalid.",
+        request_id=request_id,
+        details=details,
+    )
 
 
 def _resolve_context_profile(
