@@ -490,6 +490,9 @@ Replay behavior:
 - if a same-key retry reaches an already accepted mutation in the same normalized scope, the route replays the stored deterministic `data` payload, including `session_id` and `writeback_plan`, instead of generating a new mutation; the top-level `request_id` still belongs to the current attempt and the retry must not duplicate durable side effects or create a second session record
 - when an optional LLM rewrite is enabled, only the first successful HTTP attempt may carry that rewritten `answer`; replay, recovery, and session history stay pinned to the deterministic stored answer
 - while the original mutation is still pending or recovering durable side effects, the same normalized replay key may temporarily return `503 storage_busy`
+- if a same-key retry sees a fresh pending replay-owner row before the session row exists, the route returns `503 storage_busy` instead of guessing whether the first writer is still alive
+- if that pre-session replay-owner row is stale, has no response payload, and its request fingerprint still matches the retry, the route may reclaim the owner internally, create the deterministic session row using the original owner timestamp, and return the normal `200` query response
+- if the replay-owner row proves a different request fingerprint, `409 duplicate_action` takes precedence even when the row is stale and the session row does not exist
 - if replay recovery finds a degraded pending owner, without a reusable replay payload, or otherwise cannot safely complete in the current request, the route returns `503 storage_busy` rather than a transient payload conflict or a partial answer
 - clients that receive `503 storage_busy` during query replay must retry later with the same `Idempotency-Key`, using backoff; generating a new key turns the retry into a new mutation attempt
 - when the server can estimate a safe retry window, it may include `Retry-After`; clients should honor it when present

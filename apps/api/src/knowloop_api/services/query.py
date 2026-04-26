@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -26,11 +26,13 @@ from knowloop_api.core.query_contracts import (
     ResponseMode,
 )
 from knowloop_api.db.audit import (
+    MutationRequestRecord,
     begin_mutation_request,
     create_audit_event,
     get_mutation_request,
     list_audit_events,
     mark_mutation_request_applied,
+    reclaim_stale_mutation_request,
     store_mutation_request_response_payload,
     touch_mutation_request,
 )
@@ -395,14 +397,22 @@ def respond_to_query(
             return replayed_response
     existing_session = _load_existing_query_session(settings, session_id=session_id)
     if mutation_request is not None and existing_session is None:
-        raise QueryStorageBusyError(
-            "query replay requires durable session state before replay can succeed"
+        mutation_request = _reclaim_stale_query_mutation_owner_without_session(
+            settings,
+            mutation_request=mutation_request,
+            session_id=session_id,
+            request_fingerprint=request_fingerprint,
         )
-    created_at = (
-        existing_session.created_at
-        if existing_session is not None
-        else requested_at
-    )
+        if mutation_request is None:
+            raise QueryStorageBusyError(
+                "query replay requires durable session state before replay can succeed"
+            )
+    if existing_session is not None:
+        created_at = existing_session.created_at
+    elif mutation_request is not None:
+        created_at = mutation_request.created_at
+    else:
+        created_at = requested_at
     session_saved_audit = (
         _get_session_saved_audit(
             settings,
@@ -1320,6 +1330,48 @@ def _wait_for_stored_query_response(
         if request_age_seconds >= stale_after_seconds:
             return None
         time.sleep(poll_interval_seconds)
+
+
+def _reclaim_stale_query_mutation_owner_without_session(
+    settings: Settings,
+    *,
+    mutation_request: MutationRequestRecord,
+    session_id: str,
+    request_fingerprint: str,
+    stale_after_seconds: float = QUERY_REPLAY_PENDING_GRACE_SECONDS,
+) -> MutationRequestRecord | None:
+    latest_request = get_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=QUERY_MUTATION_ACTION,
+        idempotency_key=mutation_request.idempotency_key,
+    )
+    if latest_request is None:
+        return None
+    if latest_request.request_fingerprint != request_fingerprint:
+        raise QueryReplayConflictError(
+            "Idempotency-Key was reused for a different query payload within the same scope."
+        )
+    if latest_request.status == "applied" or latest_request.response_payload is not None:
+        return None
+    if _load_existing_query_session(settings, session_id=session_id) is not None:
+        return None
+    request_age_seconds = (datetime.now(UTC) - latest_request.updated_at).total_seconds()
+    if request_age_seconds < stale_after_seconds:
+        return None
+    reclaimed_at = datetime.now(UTC)
+    cutoff_updated_at = reclaimed_at - timedelta(seconds=stale_after_seconds)
+    return reclaim_stale_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=QUERY_MUTATION_ACTION,
+        idempotency_key=latest_request.idempotency_key,
+        request_fingerprint=request_fingerprint,
+        cutoff_updated_at=cutoff_updated_at,
+        reclaimed_at=reclaimed_at,
+    )
 
 
 @contextmanager

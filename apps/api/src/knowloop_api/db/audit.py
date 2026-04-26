@@ -579,6 +579,56 @@ def touch_mutation_request(
     return record
 
 
+def reclaim_stale_mutation_request(
+    settings: Settings,
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    cutoff_updated_at: datetime,
+    reclaimed_at: datetime,
+) -> MutationRequestRecord | None:
+    cutoff_timestamp = cutoff_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    reclaimed_timestamp = reclaimed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE mutation_requests
+            SET updated_at = ?
+            WHERE entity_type = ?
+              AND entity_id = ?
+              AND action = ?
+              AND idempotency_key = ?
+              AND request_fingerprint = ?
+              AND status = 'pending'
+              AND response_json IS NULL
+              AND updated_at <= ?
+            """,
+            (
+                reclaimed_timestamp,
+                entity_type,
+                entity_id,
+                action,
+                idempotency_key,
+                request_fingerprint,
+                cutoff_timestamp,
+            ),
+        )
+        connection.commit()
+        if cursor.rowcount != 1:
+            return None
+
+    return get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+
+
 def build_audit_event_id(
     *,
     action: str,

@@ -27,9 +27,11 @@ from knowloop_api.core.input_limits import (
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
+    get_mutation_request,
     list_audit_events,
     list_mutation_requests,
     mark_mutation_request_applied,
+    reclaim_stale_mutation_request,
     store_mutation_request_response_payload,
 )
 from knowloop_api.db.bootstrap import bootstrap_storage
@@ -43,6 +45,7 @@ from knowloop_api.services.candidates import (
 )
 from knowloop_api.services.learning import get_learning_note
 from knowloop_api.services.sessions import (
+    SessionNotFoundError,
     SessionRecord,
     get_session,
     list_recent_sessions,
@@ -225,6 +228,141 @@ def _clear_stored_query_response_payload(
             (session_id, idempotency_key),
         )
         connection.commit()
+
+
+def _seed_query_mutation_owner_without_session(
+    settings: Settings,
+    *,
+    headers: dict[str, str],
+    body: dict[str, object],
+    created_at,
+) -> str:
+    context = RequestContext(
+        role=ActorRole(str(headers["X-Knowloop-Role"])),
+        actor_id=headers["X-Knowloop-Actor-Id"],
+        course_id=headers["X-Knowloop-Course-Id"],
+        class_id=headers["X-Knowloop-Class-Id"],
+        domain=RequestDomain(str(headers["X-Knowloop-Domain"])),
+        request_id=headers.get("X-Request-Id", "req-query-owner-seed"),
+        idempotency_key=headers["Idempotency-Key"],
+    )
+    query_request = query_service.QueryRequest.model_validate(body)
+    request_fingerprint = query_service._build_query_request_fingerprint(
+        context=context,
+        request=query_request,
+    )
+    session_id = query_service._build_query_session_id(
+        context=context,
+        request_fingerprint=request_fingerprint,
+        created_at=created_at,
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key=headers["Idempotency-Key"],
+        actor_role=context.role.value,
+        actor_id=context.actor_id,
+        request_fingerprint=request_fingerprint,
+        created_at=created_at,
+    )
+    return session_id
+
+
+def test_reclaim_stale_mutation_request_preserves_created_at_and_guards_cas(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = _parse_timestamp("2026-04-10T00:00:00Z")
+    reclaimed_at = _parse_timestamp("2026-04-10T00:05:00Z")
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-stale-owner-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-stale-owner-cas",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fingerprint-stale-owner-cas",
+        created_at=created_at,
+    )
+
+    reclaimed = reclaim_stale_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-stale-owner-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-stale-owner-cas",
+        request_fingerprint="fingerprint-stale-owner-cas",
+        cutoff_updated_at=_parse_timestamp("2026-04-10T00:01:00Z"),
+        reclaimed_at=reclaimed_at,
+    )
+
+    assert reclaimed is not None
+    assert reclaimed.created_at == created_at
+    assert reclaimed.updated_at == reclaimed_at
+    assert (
+        reclaim_stale_mutation_request(
+            settings,
+            entity_type="query",
+            entity_id="ses-stale-owner-cas",
+            action=query_service.QUERY_MUTATION_ACTION,
+            idempotency_key="idem-stale-owner-cas",
+            request_fingerprint="fingerprint-stale-owner-cas",
+            cutoff_updated_at=_parse_timestamp("2026-04-10T00:04:00Z"),
+            reclaimed_at=_parse_timestamp("2026-04-10T00:06:00Z"),
+        )
+        is None
+    )
+
+    payload_owner_created_at = _parse_timestamp("2026-04-10T00:00:00Z")
+    payload_owner_updated_at = _parse_timestamp("2026-04-10T00:00:30Z")
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-stale-owner-payload",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-stale-owner-payload",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fingerprint-stale-owner-payload",
+        created_at=payload_owner_created_at,
+    )
+    store_mutation_request_response_payload(
+        settings,
+        entity_type="query",
+        entity_id="ses-stale-owner-payload",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-stale-owner-payload",
+        updated_at=payload_owner_updated_at,
+        response_payload={"session_id": "ses-stale-owner-payload"},
+    )
+
+    assert (
+        reclaim_stale_mutation_request(
+            settings,
+            entity_type="query",
+            entity_id="ses-stale-owner-payload",
+            action=query_service.QUERY_MUTATION_ACTION,
+            idempotency_key="idem-stale-owner-payload",
+            request_fingerprint="fingerprint-stale-owner-payload",
+            cutoff_updated_at=_parse_timestamp("2026-04-10T00:01:00Z"),
+            reclaimed_at=_parse_timestamp("2026-04-10T00:05:00Z"),
+        )
+        is None
+    )
+    payload_owner = get_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-stale-owner-payload",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-stale-owner-payload",
+    )
+    assert payload_owner is not None
+    assert payload_owner.updated_at == payload_owner_updated_at
+    assert payload_owner.response_payload == {"session_id": "ses-stale-owner-payload"}
 
 
 def _assert_query_mutation_request_cached(
@@ -2581,6 +2719,183 @@ def test_query_endpoint_recovers_pending_idempotent_query_without_stored_respons
 
     assert second.status_code == 200
     assert second.json()["data"] == first.json()["data"]
+
+
+def test_query_endpoint_reclaims_stale_mutation_owner_without_session(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "X-Request-Id": "req-query-stale-owner-no-session",
+        "Idempotency-Key": "idem-query-stale-owner-no-session",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "teaching",
+    }
+    original_created_at = _parse_timestamp("2026-04-10T00:00:00Z")
+    context = RequestContext(
+        role=ActorRole.STUDENT,
+        actor_id=headers["X-Knowloop-Actor-Id"],
+        course_id=headers["X-Knowloop-Course-Id"],
+        class_id=headers["X-Knowloop-Class-Id"],
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-query-stale-owner-seed",
+        idempotency_key=headers["Idempotency-Key"],
+    )
+    query_request = query_service.QueryRequest.model_validate(body)
+    request_fingerprint = query_service._build_query_request_fingerprint(
+        context=context,
+        request=query_request,
+    )
+    session_id = query_service._build_query_session_id(
+        context=context,
+        request_fingerprint=request_fingerprint,
+        created_at=original_created_at,
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key=headers["Idempotency-Key"],
+        actor_role=ActorRole.STUDENT.value,
+        actor_id=headers["X-Knowloop-Actor-Id"],
+        request_fingerprint=request_fingerprint,
+        created_at=original_created_at,
+    )
+
+    response = client.post("/api/v1/query/respond", headers=headers, json=body)
+
+    assert response.status_code == 200
+    response_data = response.json()["data"]
+    assert response_data["session_id"] == session_id
+    assert _parse_timestamp(response_data["created_at"]) == original_created_at
+    stored_session = get_session(settings, session_id)
+    assert stored_session.created_at == original_created_at
+    assert stored_session.question == body["message"]
+    candidate_writeback = next(
+        item for item in response_data["writeback_plan"] if item["kind"] == "candidate"
+    )
+    assert candidate_writeback["target_id"].endswith("-20260410T000000Z")
+    mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session_id
+        and record.idempotency_key == headers["Idempotency-Key"]
+    ]
+    assert len(mutation_requests) == 1
+    assert mutation_requests[0].status == "applied"
+    assert mutation_requests[0].response_payload == response_data
+
+
+def test_query_endpoint_keeps_fresh_mutation_owner_without_session_busy(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "X-Request-Id": "req-query-fresh-owner-no-session",
+        "Idempotency-Key": "idem-query-fresh-owner-no-session",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "teaching",
+    }
+    session_id = _seed_query_mutation_owner_without_session(
+        settings,
+        headers=headers,
+        body=body,
+        created_at=query_service.datetime.now(query_service.UTC),
+    )
+
+    response = client.post("/api/v1/query/respond", headers=headers, json=body)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "storage_busy"
+    with pytest.raises(SessionNotFoundError):
+        get_session(settings, session_id)
+    mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session_id
+        and record.idempotency_key == headers["Idempotency-Key"]
+    ]
+    assert len(mutation_requests) == 1
+    assert mutation_requests[0].status == "pending"
+    assert mutation_requests[0].response_payload is None
+
+
+def test_query_endpoint_rejects_different_payload_for_stale_owner_without_session(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "X-Request-Id": "req-query-conflict-owner-no-session",
+        "Idempotency-Key": "idem-query-conflict-owner-no-session",
+    }
+    original_body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "teaching",
+    }
+    changed_body = {
+        **original_body,
+        "message": "When is the homework deadline?",
+    }
+    session_id = _seed_query_mutation_owner_without_session(
+        settings,
+        headers=headers,
+        body=original_body,
+        created_at=_parse_timestamp("2026-04-10T00:00:00Z"),
+    )
+
+    response = client.post("/api/v1/query/respond", headers=headers, json=changed_body)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "duplicate_action"
+    with pytest.raises(SessionNotFoundError):
+        get_session(settings, session_id)
+    mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session_id
+        and record.idempotency_key == headers["Idempotency-Key"]
+    ]
+    assert len(mutation_requests) == 1
+    assert mutation_requests[0].status == "pending"
+    assert mutation_requests[0].response_payload is None
 
 
 def test_query_endpoint_replay_keeps_original_candidate_writeback_after_later_promotion(

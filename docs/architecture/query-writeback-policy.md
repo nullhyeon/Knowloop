@@ -215,9 +215,12 @@ Rules:
 - when an optional LLM rewrite decorates the first successful HTTP response, replay and recovery still use the deterministic stored answer from the session row
 - if two identical same-key requests race, the losing request must recover the stored session/result instead of surfacing a false payload-conflict error
 - if a same-key race is still actively progressing, the retry may briefly wait for the winner's stored replay payload before taking over recovery work
+- if a retry finds a fresh pending replay-owner row before the session row exists, it must return `503 storage_busy`; the server cannot yet distinguish active work from a crash without waiting for the lease to expire
+- if a retry finds a stale pending replay-owner row before the session row exists, and the row has no response payload and the same effective request fingerprint, it may reclaim that owner row and continue the original deterministic session mutation using the owner row's original timestamp
+- if that owner row proves a different effective request fingerprint, `409 duplicate_action` takes precedence whether or not the owner row is stale
 - if a retry lands while the original request has only persisted the session row, the retry must finish the pending learning/candidate write-backs before caching the replay response
 - a session row that already exists while the replay-owner record is still `pending` is still visible to normal read surfaces inside the caller's role boundary, but replay acceptance is not considered complete until the matching `mutation_requests` row reaches `applied`
-- pending replay ownership uses a bounded lease backed by `mutation_requests.updated_at`; active work refreshes that timestamp and retries may reclaim recovery only after that lease expires
+- pending replay ownership uses a bounded internal lease backed by `mutation_requests.updated_at`; active work refreshes that timestamp and retries may reclaim recovery only after that lease expires
 - if the stored replay payload still cannot be recovered after bounded recovery work, the route must return `503 storage_busy` instead of a transient payload-conflict response or a partially reconstructed answer
 - reusing the same `Idempotency-Key` with a different effective request fingerprint in the same scope must fail with a conflict; if pending ownership is already provable from the replay-owner record, this `duplicate_action` outcome takes precedence even before the earlier mutation reaches `applied`
 - if the server cannot yet prove same-key ownership from the pending replay-owner record, it must return `503 storage_busy` instead of guessing between `duplicate_action` and safe replay
