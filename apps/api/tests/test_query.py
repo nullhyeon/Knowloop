@@ -2315,6 +2315,99 @@ def test_query_endpoint_llm_rewrite_keeps_non_answer_contract_artifacts_stable(
     assert stored_session.answer == baseline_payload["data"]["answer"]
 
 
+def test_query_session_source_refs_exclude_unused_raw_source_hits(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    source_id_map = seed_query_runtime(settings)
+    unused_raw_source = register_source(
+        settings,
+        SourceRegistrationInput(
+            source_type=SourceType.LECTURE_NOTE,
+            title="Extra Chain Rule Product Rule Drill",
+            content=(
+                "# Extra Chain Rule Product Rule Drill\n\n"
+                "This raw note repeats chain rule and product rule comparison terms, "
+                "but it is not linked from the formal wiki page."
+            ),
+            mime_type="text/markdown",
+            filename="extra-chain-rule-product-rule-drill.md",
+            tags=["chain-rule", "product-rule"],
+        ),
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-extra-unused-raw-source",
+        created_at=_parse_timestamp("2026-04-09T12:00:00Z"),
+    )
+    fixture = _load_query_fixture("student-chain-rule-confusion.json")
+
+    response = _run_query_fixture_request(
+        client,
+        fixture,
+        source_id_map=source_id_map,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["answer_basis"] == ["formal_wiki", "session_context"]
+    assert [item["entity_type"] for item in payload["data"]["retrieval_refs"]] == [
+        "wiki_page",
+        "session",
+    ]
+
+    stored_session = get_session(settings, payload["data"]["session_id"])
+    stored_source_ids = {source_ref.source_id for source_ref in stored_session.source_refs}
+    expected_wiki_source_ids = {
+        source_id_map[
+            "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z"
+        ],
+    }
+    assert stored_source_ids == expected_wiki_source_ids
+    assert unused_raw_source.source_id not in stored_source_ids
+
+    candidate = next(
+        item
+        for item in list_candidates(
+            settings,
+            kind=CandidateKind.MISCONCEPTION,
+            status=CandidateStatus.OPEN,
+            class_id="class-calculus-1-2026-spring-a",
+        )
+        if stored_session.session_id in item.session_refs
+    )
+    assert unused_raw_source.source_id in {
+        source_ref.source_id for source_ref in candidate.source_refs
+    }
+
+
+def test_query_session_source_refs_keep_used_raw_fallback_for_student(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    source_id_map = seed_query_runtime(settings)
+    fixture = _load_query_fixture("student-unresolved-question.json")
+
+    response = _run_query_fixture_request(
+        client,
+        fixture,
+        source_id_map=source_id_map,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["answer_basis"] == ["raw_source_fallback"]
+    assert payload["data"]["retrieval_refs"] == []
+
+    stored_session = get_session(settings, payload["data"]["session_id"])
+    stored_source_ids = {source_ref.source_id for source_ref in stored_session.source_refs}
+    assert stored_source_ids
+    assert (
+        source_id_map[
+            "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z"
+        ]
+        in stored_source_ids
+    )
+
+
 def test_query_endpoint_llm_rewrite_keeps_replay_payload_deterministic(
     tmp_path: Path,
     monkeypatch,

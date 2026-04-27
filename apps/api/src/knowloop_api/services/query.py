@@ -669,6 +669,11 @@ def respond_to_query(
             learning_proposal=learning_proposal,
             candidate_proposal=candidate_proposal,
         )
+        session_raw_source_hits = (
+            raw_source_hits
+            if AnswerBasisLabel.RAW_SOURCE_FALLBACK.value in answer_basis
+            else []
+        )
 
         session_record = SessionRecord(
             session_id=session_id,
@@ -683,7 +688,7 @@ def respond_to_query(
             source_refs=_collect_primary_source_refs(
                 settings,
                 top_wiki_match=top_wiki_match,
-                raw_source_hits=raw_source_hits,
+                raw_source_hits=session_raw_source_hits,
                 candidate_kind=candidate_kind,
             ),
             retrieval_refs=[
