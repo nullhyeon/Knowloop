@@ -26,6 +26,7 @@ from knowloop_api.services.review import (
     ReviewPatchRequest,
     ReviewResumeSyncRequest,
     ReviewStateError,
+    SourceIntegrityError,
     approve_candidate,
     drop_review_candidate,
     get_review_candidate_detail,
@@ -172,6 +173,11 @@ def create_review_router(settings: Settings) -> APIRouter:
                 request_id=context.request_id,
                 details={"candidate_id": candidate_id},
             ) from exc
+        except SourceIntegrityError as exc:
+            raise _source_integrity_error_to_api_error(
+                exc,
+                request_id=context.request_id,
+            ) from exc
         except ReviewStateError as exc:
             raise ApiError(
                 status_code=422,
@@ -270,6 +276,11 @@ def create_review_router(settings: Settings) -> APIRouter:
                 request_id=context.request_id,
                 details={"candidate_id": candidate_id},
             ) from exc
+        except SourceIntegrityError as exc:
+            raise _source_integrity_error_to_api_error(
+                exc,
+                request_id=context.request_id,
+            ) from exc
         except ReviewStateError as exc:
             raise ApiError(
                 status_code=422,
@@ -362,4 +373,23 @@ def _candidate_state_error_to_api_error(
         message=str(exc),
         request_id=request_id,
         details={"candidate_id": candidate_id},
+    )
+
+
+def _source_integrity_error_to_api_error(
+    exc: SourceIntegrityError,
+    *,
+    request_id: str,
+) -> ApiError:
+    return ApiError(
+        status_code=422,
+        code="source_integrity_failed",
+        message=str(exc),
+        request_id=request_id,
+        details={
+            "candidate_id": exc.candidate_id,
+            "source_id": exc.source_id,
+            "ref_owner": exc.ref_owner,
+            "reason": exc.reason,
+        },
     )

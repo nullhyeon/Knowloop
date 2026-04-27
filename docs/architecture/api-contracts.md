@@ -244,6 +244,7 @@ Common error codes:
 - `forbidden_role`
 - `not_found`
 - `duplicate_action`
+- `source_integrity_failed`
 - `insufficient_verified_context`
 - `storage_busy`
 - `untrusted_context`
@@ -628,8 +629,14 @@ Rules:
 - `target_path` must match the canonical wiki path for `target_page_id`
 - `target_page_id` must use the strict `page-<domain>-<slug>` contract, where `<slug>` contains only lowercase letters, digits, and hyphens
 - when `target_page_id` already exists, it must belong to the same `course_id` and `class_id` scope as the candidate being reviewed
+- before any candidate is promoted or wiki mutation is written, every source id that would remain in final wiki `source_refs` must pass source-integrity preflight: the manifest record exists, the source belongs to the same course/class and review domain, candidate-owned refs match the manifest `source_type`, and the backing raw-source file is readable with the manifest checksum
+- source-integrity preflight failures return `422 source_integrity_failed` with `details.candidate_id`, `details.source_id`, `details.ref_owner`, and `details.reason`
+- `details.ref_owner` is `candidate` for refs owned by the approving candidate and `wiki_page` for existing refs carried forward from the target wiki page
+- `details.reason` is one of `source_ref_unresolved`, `source_file_path_invalid`, `source_file_missing`, `source_file_unreadable`, `source_scope_mismatch`, `source_domain_mismatch`, `source_type_mismatch`, or `source_checksum_mismatch`
+- fresh approve source-integrity failures happen before replay-owner state, candidate transition audit, or wiki write-back is created
 - successful approval promotes the candidate first with `candidate.wiki_sync_status = pending`, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch, marks the candidate `wiki_sync_status = synced`, and closes with `candidate_wiki_synced`
 - same `Idempotency-Key` plus the same approval payload replays safely
+- approval replay still reruns source-integrity preflight before any wiki rewrite; if raw evidence drifted after the original success, replay returns `422 source_integrity_failed` instead of writing unverified metadata
 - the approval replay contract includes a frozen patch plan fingerprint; if the candidate or wiki page drifts enough to change that plan, the retry must return `409 duplicate_action`
 - if an existing `target_page_id` drifts into another scope after a partial approval, the replay still counts as frozen-plan drift and must return `409 duplicate_action`
 - replay comparison normalizes the canonical wiki target, so omitting `target_path` or providing the canonical path replays safely
@@ -668,6 +675,7 @@ Contract:
 - `system` remains read-only in the review workflow and cannot resume wiki sync
 - candidate must already be `status = promoted` and `wiki_sync_status = pending`
 - the server reuses the stored `promotion_attempt_id` and frozen `approval_plan_fingerprint`; the canonical `wiki_sync_target_path` remains candidate-owned state and must still validate against that frozen plan during resume
+- resume-sync reruns the source-integrity preflight against the final wiki `source_refs` set before applying the pending wiki mutation; failures return `422 source_integrity_failed`
 - resume continues the existing pending promotion attempt and must not emit a second `candidate_wiki_sync_pending` audit event
 - the current candidate and wiki page must still match the frozen approval plan; if that plan drifts, the request returns `409 duplicate_action`
 - if the stored target page drifts into another scope before resume, that still counts as frozen-plan drift and must return `409 duplicate_action`

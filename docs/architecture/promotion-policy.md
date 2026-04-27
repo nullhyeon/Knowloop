@@ -193,6 +193,16 @@ formal wiki로 승격하려면 아래 조건을 모두 만족해야 한다.
 
 MVP에서는 위 7개 중 하나라도 빠지면 `promoted` 처리하지 않는다.
 
+추가로 승격 직전에는 최종 wiki metadata에 남을 모든 `source_refs`를 검증한다.
+
+- manifest record가 존재해야 한다
+- source의 `course_id`, `class_id`, domain이 candidate 검토 범위와 일치해야 한다
+- candidate가 직접 들고 있는 ref는 manifest의 `source_type`과도 일치해야 한다
+- raw-source backing file이 존재하고 읽을 수 있어야 한다
+- backing file checksum이 manifest checksum과 일치해야 한다
+
+이 preflight가 실패하면 candidate 상태 변경, replay-owner 기록, wiki write-back을 만들지 않고 승격을 거부한다.
+
 ---
 
 ## 8. 승인 정책

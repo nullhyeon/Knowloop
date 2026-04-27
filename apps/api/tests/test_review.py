@@ -38,6 +38,7 @@ from knowloop_api.services.candidates import (
 )
 from knowloop_api.services.sources import (
     SourceRegistrationInput,
+    get_source,
     register_source,
     resolve_source_path,
 )
@@ -133,8 +134,32 @@ def assert_api_error_envelope(
     if expected_message is not None:
         assert payload["error"]["message"] == expected_message
     if expected_details is not None:
-        assert payload["error"]["details"] == expected_details
+            assert payload["error"]["details"] == expected_details
     return request_id
+
+
+def assert_source_integrity_error(
+    response,
+    *,
+    expected_reason: str,
+    expected_source_id: str,
+    expected_ref_owner: str,
+    expected_candidate_id: str,
+    client_request_id: str,
+) -> None:
+    assert response.status_code == 422
+    assert_api_error_envelope(
+        response,
+        expected_code="source_integrity_failed",
+        expected_message="Promotion source integrity check failed.",
+        expected_details={
+            "candidate_id": expected_candidate_id,
+            "source_id": expected_source_id,
+            "ref_owner": expected_ref_owner,
+            "reason": expected_reason,
+        },
+        client_request_id=client_request_id,
+    )
 
 
 def assert_validation_error_contains_loc(response, expected_loc: list[object]) -> None:
@@ -924,6 +949,431 @@ def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) 
         idempotency_key="idem-fixture-approve-homework-faq",
         mutation_action="candidate_promoted",
         wiki_contract_path=review_fixture["request_body"]["target_path"],
+    )
+
+
+def test_review_approve_rejects_unresolved_source_refs_before_promotion(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    artifact_snapshot = capture_review_artifact_snapshot(
+        settings,
+        candidates=(candidate,),
+        wiki_contract_paths=(
+            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-approve-missing-source-ref",
+            "Idempotency-Key": "idem-review-approve-missing-source-ref",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert_source_integrity_error(
+        response,
+        expected_reason="source_ref_unresolved",
+        expected_source_id=candidate.source_refs[0].source_id,
+        expected_ref_owner="candidate",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-approve-missing-source-ref",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+    assert_no_review_mutation_artifacts(
+        settings,
+        candidate_id=candidate.candidate_id,
+        mutation_action="candidate_promoted",
+        idempotency_key="idem-review-approve-missing-source-ref",
+        artifact_snapshot=artifact_snapshot,
+    )
+
+
+def test_review_approve_rejects_existing_wiki_source_refs_before_writeback(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    missing_wiki_source_id = "src-legacy-missing-wiki-source"
+    written_path.write_text(
+        written_path.read_text(encoding="utf-8").replace(
+            "source_refs:\n",
+            f"source_refs:\n  - {missing_wiki_source_id}\n",
+        ),
+        encoding="utf-8",
+    )
+    artifact_snapshot = capture_review_artifact_snapshot(
+        settings,
+        candidates=(candidate,),
+        wiki_contract_paths=(
+            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-approve-existing-wiki-missing-source",
+            "Idempotency-Key": "idem-review-approve-existing-wiki-missing-source",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert_source_integrity_error(
+        response,
+        expected_reason="source_ref_unresolved",
+        expected_source_id=missing_wiki_source_id,
+        expected_ref_owner="wiki_page",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-approve-existing-wiki-missing-source",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+    assert_no_review_mutation_artifacts(
+        settings,
+        candidate_id=candidate.candidate_id,
+        mutation_action="candidate_promoted",
+        idempotency_key="idem-review-approve-existing-wiki-missing-source",
+        artifact_snapshot=artifact_snapshot,
+    )
+
+
+def test_review_approve_rejects_source_refs_without_backing_files(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    source_record = get_source(settings, candidate.source_refs[0].source_id)
+    resolve_source_path(settings, source_record.origin_path).unlink()
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    artifact_snapshot = capture_review_artifact_snapshot(
+        settings,
+        candidates=(candidate,),
+        wiki_contract_paths=(
+            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-approve-missing-source-file",
+            "Idempotency-Key": "idem-review-approve-missing-source-file",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert_source_integrity_error(
+        response,
+        expected_reason="source_file_missing",
+        expected_source_id=source_record.source_id,
+        expected_ref_owner="candidate",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-approve-missing-source-file",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+    assert_no_review_mutation_artifacts(
+        settings,
+        candidate_id=candidate.candidate_id,
+        mutation_action="candidate_promoted",
+        idempotency_key="idem-review-approve-missing-source-file",
+        artifact_snapshot=artifact_snapshot,
+    )
+
+
+def test_review_approve_rejects_source_refs_outside_candidate_scope(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    out_of_scope_source = register_source(
+        settings,
+        SourceRegistrationInput(
+            source_type=SourceType.ANNOUNCEMENT,
+            title="Homework 01 Submission Deadline",
+            content="Homework 01 is due for the other section only.",
+            mime_type="text/markdown",
+            filename="announcement-homework-deadline-other-class.md",
+        ),
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-b",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        created_at=datetime.fromisoformat("2026-04-08T10:45:00+00:00"),
+    )
+    candidate_payload = load_candidate_fixture(
+        "open-faq-homework-deadline.json"
+    ).model_dump(mode="json")
+    candidate_payload["candidate_id"] = "cand-faq-homework-deadline-out-of-scope-source"
+    candidate_payload["source_refs"] = [
+        {
+            "source_id": out_of_scope_source.source_id,
+            "source_type": out_of_scope_source.source_type.value,
+            "chunk_id": "deadline",
+        }
+    ]
+    candidate = create_candidate(
+        settings,
+        CandidateItem.model_validate(candidate_payload),
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+    )
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    artifact_snapshot = capture_review_artifact_snapshot(
+        settings,
+        candidates=(candidate,),
+        wiki_contract_paths=(
+            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-approve-source-scope-drift",
+            "Idempotency-Key": "idem-review-approve-source-scope-drift",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert_source_integrity_error(
+        response,
+        expected_reason="source_scope_mismatch",
+        expected_source_id=out_of_scope_source.source_id,
+        expected_ref_owner="candidate",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-approve-source-scope-drift",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+    assert_no_review_mutation_artifacts(
+        settings,
+        candidate_id=candidate.candidate_id,
+        mutation_action="candidate_promoted",
+        idempotency_key="idem-review-approve-source-scope-drift",
+        artifact_snapshot=artifact_snapshot,
+    )
+
+
+def test_review_approve_rejects_source_refs_with_checksum_drift(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    source_record = get_source(settings, candidate.source_refs[0].source_id)
+    resolve_source_path(settings, source_record.origin_path).write_text(
+        "tampered source content\n",
+        encoding="utf-8",
+    )
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    artifact_snapshot = capture_review_artifact_snapshot(
+        settings,
+        candidates=(candidate,),
+        wiki_contract_paths=(
+            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-approve-source-checksum-drift",
+            "Idempotency-Key": "idem-review-approve-source-checksum-drift",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert_source_integrity_error(
+        response,
+        expected_reason="source_checksum_mismatch",
+        expected_source_id=source_record.source_id,
+        expected_ref_owner="candidate",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-approve-source-checksum-drift",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+    assert_no_review_mutation_artifacts(
+        settings,
+        candidate_id=candidate.candidate_id,
+        mutation_action="candidate_promoted",
+        idempotency_key="idem-review-approve-source-checksum-drift",
+        artifact_snapshot=artifact_snapshot,
+    )
+
+
+def test_review_approve_replay_rejects_source_drift_before_wiki_rewrite(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    source_record = get_source(settings, candidate.source_refs[0].source_id)
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    first_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    source_path = resolve_source_path(settings, source_record.origin_path)
+    source_path.write_text("tampered source content before approve replay\n", encoding="utf-8")
+    wiki_snapshot = written_path.read_text(encoding="utf-8")
+    before_wiki_events = list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+
+    replay_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-approve-replay-source-checksum-drift",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert first_response.status_code == 200
+    assert_source_integrity_error(
+        replay_response,
+        expected_reason="source_checksum_mismatch",
+        expected_source_id=source_record.source_id,
+        expected_ref_owner="candidate",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-approve-replay-source-checksum-drift",
+    )
+    assert written_path.read_text(encoding="utf-8") == wiki_snapshot
+    assert get_candidate(settings, candidate.candidate_id).wiki_sync_status is WikiSyncStatus.SYNCED
+    assert before_wiki_events == list_audit_events(
+        settings,
+        entity_type="wiki_page",
+        entity_id="page-faq-homework-submission",
+        action="wiki_patch_applied",
+        idempotency_key="idem-fixture-approve-homework-faq",
+    )
+
+
+def test_review_resume_sync_rejects_source_integrity_drift_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    source_record = get_source(settings, candidate.source_refs[0].source_id)
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    approve_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    pending_candidate = get_candidate(settings, candidate.candidate_id)
+    resolve_source_path(settings, source_record.origin_path).write_text(
+        "tampered source content after approval plan freeze\n",
+        encoding="utf-8",
+    )
+    artifact_snapshot = capture_review_artifact_snapshot(
+        settings,
+        candidates=(pending_candidate,),
+        wiki_contract_paths=(
+            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+        ),
+    )
+
+    resume_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-resume-source-checksum-drift",
+            idempotency_key="idem-review-resume-source-checksum-drift",
+        ),
+        json={"resume_notes": "Resume should fail when source evidence drifted."},
+    )
+
+    assert approve_response.status_code == 500
+    assert pending_candidate.status is CandidateStatus.PROMOTED
+    assert pending_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert_source_integrity_error(
+        resume_response,
+        expected_reason="source_checksum_mismatch",
+        expected_source_id=source_record.source_id,
+        expected_ref_owner="candidate",
+        expected_candidate_id=candidate.candidate_id,
+        client_request_id="req-review-resume-source-checksum-drift",
+    )
+    assert (
+        get_candidate(settings, candidate.candidate_id).wiki_sync_status
+        is WikiSyncStatus.PENDING
+    )
+    assert_no_review_mutation_artifacts(
+        settings,
+        candidate_id=candidate.candidate_id,
+        mutation_action="candidate_wiki_sync_resumed",
+        idempotency_key="idem-review-resume-source-checksum-drift",
+        artifact_snapshot=artifact_snapshot,
     )
 
 

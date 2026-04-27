@@ -41,7 +41,13 @@ from knowloop_api.services.candidates import (
     merge_candidate,
     promote_candidate,
 )
-from knowloop_api.services.sources import SourceNotFoundError, get_source, resolve_source_path
+from knowloop_api.services.sources import (
+    SourceNotFoundError,
+    SourceStateError,
+    build_checksum,
+    get_source,
+    resolve_source_path,
+)
 from knowloop_api.services.wiki import build_wiki_page_path, get_wiki_page, load_wiki_page_from_path
 
 ACADEMIC_REVIEW_KINDS = frozenset(
@@ -74,6 +80,24 @@ REVIEWABLE_ROLES = frozenset(
 
 class ReviewStateError(ValueError):
     """Raised when a review request violates workflow expectations."""
+
+
+class SourceIntegrityError(ReviewStateError):
+    """Raised when promotion evidence cannot be verified against raw sources."""
+
+    def __init__(
+        self,
+        *,
+        reason: str,
+        source_id: str,
+        ref_owner: str,
+        candidate_id: str,
+    ) -> None:
+        super().__init__("Promotion source integrity check failed.")
+        self.reason = reason
+        self.source_id = source_id
+        self.ref_owner = ref_owner
+        self.candidate_id = candidate_id
 
 
 class ForbiddenReviewScopeError(ReviewStateError):
@@ -295,6 +319,7 @@ def approve_candidate(
         approved_by=context.actor_id,
         approved_at=approval_timestamp,
         treat_scope_drift_as_plan_drift=mutation_request is not None,
+        require_verified_source_refs=True,
     )
     approval_plan_fingerprint = _build_review_patch_fingerprint(
         settings,
@@ -418,6 +443,7 @@ def resume_candidate_sync(
         approved_by=candidate.approved_by,
         approved_at=candidate.approved_at,
         treat_scope_drift_as_plan_drift=True,
+        require_verified_source_refs=True,
     )
     current_plan_fingerprint = _build_review_patch_fingerprint(
         settings,
@@ -750,6 +776,7 @@ def _build_patch_draft(
     approved_by: str | None,
     approved_at: datetime | None,
     treat_scope_drift_as_plan_drift: bool = False,
+    require_verified_source_refs: bool = False,
 ) -> WikiPatchDraft:
     target_page_id = target_page_id or candidate.related_page_id
     if target_page_id is None:
@@ -788,11 +815,21 @@ def _build_patch_draft(
         existing_page.source_refs if existing_page is not None else [],
         [source_ref.source_id for source_ref in candidate.source_refs],
     )
+    if require_verified_source_refs:
+        _verify_wiki_metadata_source_refs(
+            settings,
+            candidate=candidate,
+            source_ids=source_ids,
+        )
     candidate_refs = _merge_unique_strings(
         existing_page.candidate_refs if existing_page is not None else [],
         [candidate.candidate_id],
     )
-    source_contents = _load_source_contents(settings, candidate)
+    source_contents = _load_source_contents(
+        settings,
+        candidate,
+        require_verified_source_refs=require_verified_source_refs,
+    )
     body_markdown, change_plan = _build_body_markdown(
         candidate=candidate,
         page_title=page_title,
@@ -1825,18 +1862,164 @@ def _resolve_target_path(
     return resolved_path
 
 
-def _load_source_contents(settings: Settings, candidate: CandidateItem) -> list[str]:
+def _load_source_contents(
+    settings: Settings,
+    candidate: CandidateItem,
+    *,
+    require_verified_source_refs: bool = False,
+) -> list[str]:
     contents: list[str] = []
     for source_ref in candidate.source_refs:
+        if require_verified_source_refs:
+            contents.append(
+                _read_verified_source_contents(
+                    settings,
+                    candidate=candidate,
+                    source_id=source_ref.source_id,
+                    ref_owner="candidate",
+                    expected_source_type=source_ref.source_type,
+                )
+            )
+            continue
         try:
             source_record = get_source(settings, source_ref.source_id)
-        except SourceNotFoundError:
+            source_path = resolve_source_path(settings, source_record.origin_path)
+            if not source_path.exists():
+                continue
+            contents.append(source_path.read_text(encoding="utf-8"))
+        except (OSError, SourceNotFoundError, SourceStateError, UnicodeDecodeError):
             continue
-        source_path = resolve_source_path(settings, source_record.origin_path)
-        if not source_path.exists():
-            continue
-        contents.append(source_path.read_text(encoding="utf-8"))
     return contents
+
+
+def _verify_wiki_metadata_source_refs(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    source_ids: list[str],
+) -> None:
+    candidate_source_types = {
+        source_ref.source_id: source_ref.source_type for source_ref in candidate.source_refs
+    }
+    for source_id in source_ids:
+        ref_owner = "candidate" if source_id in candidate_source_types else "wiki_page"
+        _read_verified_source_contents(
+            settings,
+            candidate=candidate,
+            source_id=source_id,
+            ref_owner=ref_owner,
+            expected_source_type=candidate_source_types.get(source_id),
+        )
+
+
+def _read_verified_source_contents(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    source_id: str,
+    ref_owner: str,
+    expected_source_type: str | None,
+) -> str:
+    try:
+        source_record = get_source(settings, source_id)
+    except SourceNotFoundError as exc:
+        raise SourceIntegrityError(
+            reason="source_ref_unresolved",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        ) from exc
+    try:
+        source_path = resolve_source_path(settings, source_record.origin_path)
+    except SourceStateError as exc:
+        raise SourceIntegrityError(
+            reason="source_file_path_invalid",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        ) from exc
+    if not source_path.is_file():
+        raise SourceIntegrityError(
+            reason="source_file_missing",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        )
+    try:
+        source_contents = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SourceIntegrityError(
+            reason="source_file_unreadable",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        ) from exc
+    _assert_source_ref_matches_candidate(
+        candidate,
+        source_id=source_id,
+        ref_owner=ref_owner,
+        source_record=source_record,
+        source_contents=source_contents,
+        expected_source_type=expected_source_type,
+    )
+    return source_contents
+
+
+def _raise_source_integrity_error(
+    *,
+    reason: str,
+    source_id: str,
+    ref_owner: str,
+    candidate_id: str,
+) -> None:
+    raise SourceIntegrityError(
+        reason=reason,
+        source_id=source_id,
+        ref_owner=ref_owner,
+        candidate_id=candidate_id,
+    )
+
+
+def _assert_source_ref_matches_candidate(
+    candidate: CandidateItem,
+    *,
+    source_id: str,
+    ref_owner: str,
+    source_record,
+    source_contents: str,
+    expected_source_type: str | None,
+) -> None:
+    if (
+        source_record.course_id != candidate.course_id
+        or source_record.class_id != candidate.class_id
+    ):
+        _raise_source_integrity_error(
+            reason="source_scope_mismatch",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        )
+    if source_record.domain is not _candidate_review_domain(candidate):
+        _raise_source_integrity_error(
+            reason="source_domain_mismatch",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        )
+    if expected_source_type is not None and source_record.source_type.value != expected_source_type:
+        _raise_source_integrity_error(
+            reason="source_type_mismatch",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        )
+    if build_checksum(source_contents) != source_record.checksum:
+        _raise_source_integrity_error(
+            reason="source_checksum_mismatch",
+            source_id=source_id,
+            ref_owner=ref_owner,
+            candidate_id=candidate.candidate_id,
+        )
 
 
 def _build_body_markdown(
