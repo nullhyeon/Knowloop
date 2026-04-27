@@ -27,12 +27,14 @@ from knowloop_api.core.input_limits import (
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
+    demote_applied_mutation_request_if_payload_matches,
     get_mutation_request,
     list_audit_events,
     list_mutation_requests,
     mark_mutation_request_applied,
     reclaim_stale_mutation_request,
     store_mutation_request_response_payload,
+    store_pending_mutation_request_response_payload,
 )
 from knowloop_api.db.bootstrap import bootstrap_storage
 from knowloop_api.main import create_app
@@ -363,6 +365,144 @@ def test_reclaim_stale_mutation_request_preserves_created_at_and_guards_cas(
     assert payload_owner is not None
     assert payload_owner.updated_at == payload_owner_updated_at
     assert payload_owner.response_payload == {"session_id": "ses-stale-owner-payload"}
+
+
+def test_mutation_request_recovery_cache_updates_do_not_clobber_applied_owner(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = _parse_timestamp("2026-04-10T00:00:00Z")
+    incomplete_payload = {
+        "session_id": "ses-replay-cache-cas",
+        "writeback_plan": [{"kind": "learning_note", "status": "failed"}],
+    }
+    applied_payload = {
+        "session_id": "ses-replay-cache-cas",
+        "writeback_plan": [{"kind": "learning_note", "status": "updated"}],
+    }
+    late_failure_payload = {
+        "session_id": "ses-replay-cache-cas",
+        "writeback_plan": [{"kind": "learning_note", "status": "failed"}],
+        "attempt": "late",
+    }
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-cache-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-cache-cas",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fingerprint-replay-cache-cas",
+        created_at=created_at,
+    )
+    stored_pending = store_pending_mutation_request_response_payload(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-cache-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-cache-cas",
+        updated_at=_parse_timestamp("2026-04-10T00:00:01Z"),
+        response_payload=incomplete_payload,
+    )
+    assert stored_pending is not None
+    assert stored_pending.status == "pending"
+    mark_mutation_request_applied(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-cache-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-cache-cas",
+        updated_at=_parse_timestamp("2026-04-10T00:00:02Z"),
+        response_payload=applied_payload,
+    )
+
+    assert (
+        store_pending_mutation_request_response_payload(
+            settings,
+            entity_type="query",
+            entity_id="ses-replay-cache-cas",
+            action=query_service.QUERY_MUTATION_ACTION,
+            idempotency_key="idem-replay-cache-cas",
+            updated_at=_parse_timestamp("2026-04-10T00:00:03Z"),
+            response_payload=late_failure_payload,
+        )
+        is None
+    )
+    assert (
+        demote_applied_mutation_request_if_payload_matches(
+            settings,
+            entity_type="query",
+            entity_id="ses-replay-cache-cas",
+            action=query_service.QUERY_MUTATION_ACTION,
+            idempotency_key="idem-replay-cache-cas",
+            updated_at=_parse_timestamp("2026-04-10T00:00:04Z"),
+            expected_response_payload=incomplete_payload,
+            response_payload=late_failure_payload,
+        )
+        is None
+    )
+    final_owner = get_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-cache-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-cache-cas",
+    )
+    assert final_owner is not None
+    assert final_owner.status == "applied"
+    assert final_owner.response_payload == applied_payload
+
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-demote-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-demote-cas",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fingerprint-replay-demote-cas",
+        created_at=created_at,
+    )
+    observed_incomplete_owner = mark_mutation_request_applied(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-demote-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-demote-cas",
+        updated_at=_parse_timestamp("2026-04-10T00:00:01Z"),
+        response_payload=incomplete_payload,
+    )
+    mark_mutation_request_applied(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-demote-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-demote-cas",
+        updated_at=_parse_timestamp("2026-04-10T00:00:02Z"),
+        response_payload=applied_payload,
+    )
+
+    query_service._store_incomplete_query_recovery_payload(
+        settings,
+        observed_mutation_request=observed_incomplete_owner,
+        session_id="ses-replay-demote-cas",
+        idempotency_key="idem-replay-demote-cas",
+        updated_at=_parse_timestamp("2026-04-10T00:00:03Z"),
+        response_payload=late_failure_payload,
+    )
+
+    demote_owner = get_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id="ses-replay-demote-cas",
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-replay-demote-cas",
+    )
+    assert demote_owner is not None
+    assert demote_owner.status == "applied"
+    assert demote_owner.response_payload == applied_payload
 
 
 def _assert_query_mutation_request_cached(
@@ -1463,7 +1603,7 @@ def test_recovered_query_response_is_incomplete_for_pending_status_empty_target_
     )
 
 
-def test_load_replayed_query_response_blocks_mismatched_frozen_targets_before_repair(
+def test_load_replayed_query_response_ignores_mismatched_pending_cache_before_repair(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1604,10 +1744,14 @@ def test_load_replayed_query_response_blocks_mismatched_frozen_targets_before_re
         if record.entity_id == session.session_id
         and record.idempotency_key == "idem-replay-owner-guard"
     )
-    repair_calls = {"count": 0}
+    repair_calls = {"count": 0, "candidate_target_id": None}
 
     def capture_repair(*args, **kwargs):
         repair_calls["count"] += 1
+        response = kwargs["response"]
+        repair_calls["candidate_target_id"] = next(
+            item.target_id for item in response.writeback_plan if item.kind == "candidate"
+        )
         return session
 
     monkeypatch.setattr(query_service, "_attempt_replay_artifact_ref_repair", capture_repair)
@@ -1621,7 +1765,10 @@ def test_load_replayed_query_response_blocks_mismatched_frozen_targets_before_re
     )
 
     assert loaded is None
-    assert repair_calls["count"] == 0
+    assert repair_calls == {
+        "count": 1,
+        "candidate_target_id": candidate_proposal.candidate_id,
+    }
 
 
 def test_load_replayed_query_response_requires_durable_session_state(
@@ -1687,6 +1834,20 @@ def test_load_replayed_query_response_reprojects_deterministic_payload_from_sess
 ) -> None:
     _client, settings = build_client(tmp_path)
     created_at = _parse_timestamp("2026-04-10T12:09:30Z")
+    learning_note_id = "learn-stu-kim-minji-course-calculus-1-class-calculus-1-2026-spring-a"
+    learning_proposal = query_service.LearningReplayProposal(
+        learning_note_id=learning_note_id,
+        student_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        concepts=["chain rule"],
+        gaps=["Distinguish nested functions from products."],
+        flashcards=[],
+        next_actions=["Practice two nested derivative examples."],
+        source_refs=[],
+        session_refs=["ses-replay-answer-drift"],
+        created_at=created_at,
+    ).to_learning_note()
     session = SessionRecord(
         session_id="ses-replay-answer-drift",
         role=ActorRole.STUDENT,
@@ -1703,8 +1864,9 @@ def test_load_replayed_query_response_reprojects_deterministic_payload_from_sess
                 "entity_id": "page-misconceptions-chain-rule-product-rule",
                 "reason": "matched concept page",
                 "source_refs": [],
-            }
-        ],
+                }
+            ],
+        learning_note_refs=[learning_note_id],
     )
     save_session(
         settings,
@@ -1735,8 +1897,8 @@ def test_load_replayed_query_response_reprojects_deterministic_payload_from_sess
             query_service.WritebackPlanItem(
                 kind="learning_note",
                 action="update",
-                status="generated",
-                target_id="learn-stu-kim-minji-course-calculus-1-class-calculus-1-2026-spring-a",
+                status="updated",
+                target_id=learning_note_id,
                 explanation=query_service.LEARNING_WRITEBACK_EXPLANATION,
             ),
         ],
@@ -1749,7 +1911,7 @@ def test_load_replayed_query_response_reprojects_deterministic_payload_from_sess
         response=durable_response,
         answer_basis=durable_response.answer_basis,
         idempotency_key="idem-replay-answer-drift",
-        learning_proposal=None,
+        learning_proposal=learning_proposal,
         candidate_proposal=None,
     )
     begin_mutation_request(
@@ -1841,6 +2003,133 @@ def test_load_replayed_query_response_reprojects_deterministic_payload_from_sess
         "retrieval_refs",
         "writeback_plan",
     ]
+
+
+def test_load_replayed_query_response_reprojects_pending_cache_from_session_state(
+    tmp_path: Path,
+) -> None:
+    _client, settings = build_client(tmp_path)
+    created_at = _parse_timestamp("2026-04-10T12:09:45Z")
+    session = SessionRecord(
+        session_id="ses-pending-replay-cache-drift",
+        role=ActorRole.STUDENT,
+        user_id="stu-kim-minji",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        question="When is the chain rule different from the product rule?",
+        answer="Use the chain rule for nested functions, then multiply by the inner derivative.",
+        created_at=created_at,
+        retrieval_refs=[
+            {
+                "entity_type": "wiki_page",
+                "entity_id": "page-misconceptions-chain-rule-product-rule",
+                "reason": "matched concept page",
+                "source_refs": [],
+            }
+        ],
+    )
+    save_session(
+        settings,
+        session,
+        request_id="req-pending-replay-cache-drift-seed",
+        idempotency_key="idem-pending-replay-cache-drift",
+        details=None,
+    )
+    durable_response = query_service.QueryResponse(
+        answer=session.answer,
+        answer_basis=["formal_wiki"],
+        retrieval_refs=[
+            query_service.RetrievalRef(
+                entity_type="wiki_page",
+                entity_id="page-misconceptions-chain-rule-product-rule",
+                reason="matched concept page",
+                source_refs=[],
+            )
+        ],
+        writeback_plan=[
+            query_service.WritebackPlanItem(
+                kind="session",
+                action="save",
+                status="registered",
+                target_id=session.session_id,
+                explanation=query_service.SESSION_WRITEBACK_EXPLANATION,
+            )
+        ],
+        session_id=session.session_id,
+        created_at=created_at,
+    )
+    begin_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-pending-replay-cache-drift",
+        actor_role=ActorRole.STUDENT.value,
+        actor_id="stu-kim-minji",
+        request_fingerprint="fp-pending-replay-cache-drift",
+        created_at=created_at,
+    )
+    store_pending_mutation_request_response_payload(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-pending-replay-cache-drift",
+        updated_at=created_at,
+        response_payload=query_service.QueryResponse(
+            answer="Stale cached answer from an incomplete replay owner.",
+            answer_basis=["raw_source_fallback"],
+            retrieval_refs=[
+                query_service.RetrievalRef(
+                    entity_type="raw_source",
+                    entity_id="src-stale-cache",
+                    reason="stale cache",
+                    source_refs=[],
+                )
+            ],
+            writeback_plan=[
+                query_service.WritebackPlanItem(
+                    kind="session",
+                    action="save",
+                    status="registered",
+                    target_id=session.session_id,
+                    explanation=query_service.SESSION_WRITEBACK_EXPLANATION,
+                )
+            ],
+            session_id=session.session_id,
+            created_at=created_at,
+        ).model_dump(mode="json", exclude_none=True),
+    )
+    mutation_request = next(
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session.session_id
+        and record.idempotency_key == "idem-pending-replay-cache-drift"
+    )
+
+    loaded = query_service._load_replayed_query_response(
+        mutation_request,
+        settings=settings,
+        session_id=session.session_id,
+        request_id="req-pending-replay-cache-drift-retry",
+        idempotency_key="idem-pending-replay-cache-drift",
+    )
+
+    assert loaded is not None
+    assert loaded.model_dump(mode="json") == durable_response.model_dump(mode="json")
+    owner = get_mutation_request(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key="idem-pending-replay-cache-drift",
+    )
+    assert owner is not None
+    assert owner.status == "applied"
+    assert owner.response_payload == durable_response.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
 
 
 def test_recover_candidate_writeback_item_uses_proposed_candidate_id_from_upsert_audit(
@@ -3110,7 +3399,7 @@ def test_query_endpoint_recovers_pending_idempotent_query_without_explicit_reque
     assert second.json()["data"] == first.json()["data"]
 
 
-def test_query_endpoint_recovers_pending_candidate_failure_without_stored_response(
+def test_query_endpoint_busy_for_unrepaired_candidate_failure_without_stored_response(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3164,8 +3453,22 @@ def test_query_endpoint_recovers_pending_candidate_failure_without_stored_respon
         json=body,
     )
 
-    assert second.status_code == 200
-    assert second.json()["data"] == first.json()["data"]
+    assert second.status_code == 503
+    assert second.json()["error"]["code"] == "storage_busy"
+    mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.entity_id == session_id and record.idempotency_key == headers["Idempotency-Key"]
+    ]
+    assert len(mutation_requests) == 1
+    assert mutation_requests[0].status == "pending"
+    assert mutation_requests[0].response_payload is not None
+    persisted_candidate = next(
+        item
+        for item in mutation_requests[0].response_payload["writeback_plan"]
+        if item["kind"] == "candidate"
+    )
+    assert persisted_candidate["status"] == "failed"
 
 
 def test_query_endpoint_recovers_pending_artifact_link_failure_without_stored_response(
@@ -3318,7 +3621,7 @@ def test_query_endpoint_repairs_cached_replay_artifact_links_with_stored_respons
     assert failure_state["calls"] >= 2
 
 
-def test_query_endpoint_replays_cached_response_when_artifact_repair_stays_unavailable(
+def test_query_endpoint_returns_storage_busy_when_cached_artifact_repair_stays_unavailable(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3362,8 +3665,8 @@ def test_query_endpoint_replays_cached_response_when_artifact_repair_stays_unava
         json=body,
     )
 
-    assert second.status_code == 200
-    assert second.json()["data"] == first.json()["data"]
+    assert second.status_code == 503
+    assert second.json()["error"]["code"] == "storage_busy"
     unresolved_session = get_session(settings, session_id)
     assert unresolved_session.learning_note_refs == []
     assert unresolved_session.candidate_refs == []
@@ -3374,6 +3677,7 @@ def test_query_endpoint_replays_cached_response_when_artifact_repair_stays_unava
     ]
     assert len(mutation_requests) == 1
     assert mutation_requests[0].status == "pending"
+    assert mutation_requests[0].response_payload is not None
     replay_request_id = second.json()["request_id"]
     replay_failure_audits = [
         event
@@ -3386,7 +3690,7 @@ def test_query_endpoint_replays_cached_response_when_artifact_repair_stays_unava
     assert replay_failure_audits
 
 
-def test_query_endpoint_reconstructs_response_when_artifact_repair_stays_unavailable(
+def test_query_endpoint_returns_storage_busy_when_reconstructed_artifact_repair_stays_unavailable(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3436,8 +3740,8 @@ def test_query_endpoint_reconstructs_response_when_artifact_repair_stays_unavail
         json=body,
     )
 
-    assert second.status_code == 200
-    assert second.json()["data"] == first.json()["data"]
+    assert second.status_code == 503
+    assert second.json()["error"]["code"] == "storage_busy"
     unresolved_session = get_session(settings, session_id)
     assert unresolved_session.learning_note_refs == []
     assert unresolved_session.candidate_refs == []
@@ -3448,6 +3752,7 @@ def test_query_endpoint_reconstructs_response_when_artifact_repair_stays_unavail
     ]
     assert len(mutation_requests) == 1
     assert mutation_requests[0].status == "pending"
+    assert mutation_requests[0].response_payload is not None
     replay_request_id = second.json()["request_id"]
     replay_failure_audits = [
         event
@@ -4367,6 +4672,287 @@ def test_query_endpoint_recovers_repaired_learning_writeback_after_lost_replay_p
     )
     assert third.status_code == 200
     assert third.json()["data"] == second.json()["data"]
+
+
+def test_query_endpoint_repairs_incomplete_stored_replay_payload_before_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+    failure_state = {"calls": 0}
+    original_upsert_learning_note = query_service.upsert_learning_note
+
+    def fail_once_then_recover(*args, **kwargs):
+        failure_state["calls"] += 1
+        if failure_state["calls"] == 1:
+            raise RuntimeError("learning backend unavailable")
+        return original_upsert_learning_note(*args, **kwargs)
+
+    monkeypatch.setattr(query_service, "upsert_learning_note", fail_once_then_recover)
+
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "Idempotency-Key": "idem-query-incomplete-payload-repaired",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "default",
+    }
+
+    first = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-payload-01"},
+        json=body,
+    )
+    assert first.status_code == 200
+    first_learning = next(
+        item for item in first.json()["data"]["writeback_plan"] if item["kind"] == "learning_note"
+    )
+    assert first_learning["status"] == "failed"
+
+    second = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-payload-02"},
+        json=body,
+    )
+
+    assert second.status_code == 200
+    second_learning = next(
+        item for item in second.json()["data"]["writeback_plan"] if item["kind"] == "learning_note"
+    )
+    assert second_learning["status"] == "updated"
+    assert failure_state["calls"] == 2
+    assert second.json()["data"] != first.json()["data"]
+    _assert_query_mutation_request_cached(
+        settings,
+        session_id=second.json()["data"]["session_id"],
+        idempotency_key=headers["Idempotency-Key"],
+        response_payload=second.json()["data"],
+    )
+
+
+def test_query_endpoint_repairs_incomplete_applied_replay_payload_before_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+    failure_state = {"calls": 0}
+    original_upsert_learning_note = query_service.upsert_learning_note
+
+    def fail_once_then_recover(*args, **kwargs):
+        failure_state["calls"] += 1
+        if failure_state["calls"] == 1:
+            raise RuntimeError("learning backend unavailable")
+        return original_upsert_learning_note(*args, **kwargs)
+
+    monkeypatch.setattr(query_service, "upsert_learning_note", fail_once_then_recover)
+
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "Idempotency-Key": "idem-query-incomplete-applied-payload-repaired",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "default",
+    }
+
+    first = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-applied-01"},
+        json=body,
+    )
+    assert first.status_code == 200
+    first_learning = next(
+        item for item in first.json()["data"]["writeback_plan"] if item["kind"] == "learning_note"
+    )
+    assert first_learning["status"] == "failed"
+    session = get_session(settings, first.json()["data"]["session_id"])
+    mark_mutation_request_applied(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key=headers["Idempotency-Key"],
+        updated_at=session.created_at,
+        response_payload=first.json()["data"],
+    )
+
+    second = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-applied-02"},
+        json=body,
+    )
+
+    assert second.status_code == 200
+    second_learning = next(
+        item for item in second.json()["data"]["writeback_plan"] if item["kind"] == "learning_note"
+    )
+    assert second_learning["status"] == "updated"
+    assert failure_state["calls"] == 2
+    _assert_query_mutation_request_cached(
+        settings,
+        session_id=session.session_id,
+        idempotency_key=headers["Idempotency-Key"],
+        response_payload=second.json()["data"],
+    )
+
+
+def test_query_endpoint_returns_storage_busy_when_replay_writeback_stays_incomplete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+
+    def fail_learning(*args, **kwargs):
+        raise RuntimeError("learning backend unavailable")
+
+    monkeypatch.setattr(query_service, "upsert_learning_note", fail_learning)
+
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "Idempotency-Key": "idem-query-incomplete-payload-busy",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "default",
+    }
+
+    first = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-busy-01"},
+        json=body,
+    )
+    assert first.status_code == 200
+    first_learning = next(
+        item for item in first.json()["data"]["writeback_plan"] if item["kind"] == "learning_note"
+    )
+    assert first_learning["status"] == "failed"
+
+    second = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-busy-02"},
+        json=body,
+    )
+
+    assert second.status_code == 503
+    assert second.json()["error"]["code"] == "storage_busy"
+    mutation_requests = [
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.idempotency_key == headers["Idempotency-Key"]
+    ]
+    assert len(mutation_requests) == 1
+    assert mutation_requests[0].status == "pending"
+    assert mutation_requests[0].response_payload is not None
+    persisted_learning = next(
+        item
+        for item in mutation_requests[0].response_payload["writeback_plan"]
+        if item["kind"] == "learning_note"
+    )
+    assert persisted_learning["status"] == "failed"
+
+
+def test_query_endpoint_demotes_incomplete_applied_replay_payload_to_pending(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, settings = build_client(tmp_path)
+    seed_query_runtime(settings)
+
+    def fail_learning(*args, **kwargs):
+        raise RuntimeError("learning backend unavailable")
+
+    monkeypatch.setattr(query_service, "upsert_learning_note", fail_learning)
+
+    headers = {
+        "X-Knowloop-Role": "student",
+        "X-Knowloop-Actor-Id": "stu-kim-minji",
+        "X-Knowloop-Course-Id": "course-calculus-1",
+        "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+        "X-Knowloop-Domain": "academic",
+        "Idempotency-Key": "idem-query-incomplete-applied-payload-busy",
+    }
+    body = {
+        "message": (
+            "I still do not understand when the chain rule is different "
+            "from the product rule."
+        ),
+        "attachment_source_ids": [],
+        "allow_raw_source_fallback": True,
+        "response_mode": "default",
+    }
+
+    first = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-applied-busy-01"},
+        json=body,
+    )
+    assert first.status_code == 200
+    first_learning = next(
+        item for item in first.json()["data"]["writeback_plan"] if item["kind"] == "learning_note"
+    )
+    assert first_learning["status"] == "failed"
+    session = get_session(settings, first.json()["data"]["session_id"])
+    mark_mutation_request_applied(
+        settings,
+        entity_type="query",
+        entity_id=session.session_id,
+        action=query_service.QUERY_MUTATION_ACTION,
+        idempotency_key=headers["Idempotency-Key"],
+        updated_at=session.created_at,
+        response_payload=first.json()["data"],
+    )
+
+    second = client.post(
+        "/api/v1/query/respond",
+        headers={**headers, "X-Request-Id": "req-query-incomplete-applied-busy-02"},
+        json=body,
+    )
+
+    assert second.status_code == 503
+    mutation_request = next(
+        record
+        for record in list_mutation_requests(settings, entity_type="query")
+        if record.idempotency_key == headers["Idempotency-Key"]
+    )
+    assert mutation_request.status == "pending"
+    assert mutation_request.response_payload is not None
+    persisted_learning = next(
+        item
+        for item in mutation_request.response_payload["writeback_plan"]
+        if item["kind"] == "learning_note"
+    )
+    assert persisted_learning["status"] == "failed"
 
 
 def test_query_endpoint_recovers_repaired_candidate_writeback_after_lost_replay_payload(

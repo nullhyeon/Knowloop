@@ -220,6 +220,10 @@ Rules:
 - if that owner row proves a different effective request fingerprint, `409 duplicate_action` takes precedence whether or not the owner row is stale
 - if a retry lands while the original request has only persisted the session row, the retry must finish the pending learning/candidate write-backs before caching the replay response
 - a session row that already exists while the replay-owner record is still `pending` is still visible to normal read surfaces inside the caller's role boundary, but replay acceptance is not considered complete until the matching `mutation_requests` row reaches `applied`
+- `mutation_requests.response_json` on a `pending` owner is an internal recovery cache, not an externally replayable success payload
+- successful replay may return `200` only when the owner is `applied` and the recovered durable response has terminal write-back statuses: session row saved, learning note `updated`, and candidate `open` or `updated`
+- `failed`, `pending`, `in_progress`, `queued`, and non-session `registered` write-back statuses are incomplete for replay; retries must repair them or return `503 storage_busy`
+- if an `applied` owner is found with an incomplete durable response, the server must repair the write-backs before replay; if repair still cannot complete, the owner is treated as pending recovery and the retry returns `503 storage_busy`
 - pending replay ownership uses a bounded internal lease backed by `mutation_requests.updated_at`; active work refreshes that timestamp and retries may reclaim recovery only after that lease expires
 - if the stored replay payload still cannot be recovered after bounded recovery work, the route must return `503 storage_busy` instead of a transient payload-conflict response or a partially reconstructed answer
 - reusing the same `Idempotency-Key` with a different effective request fingerprint in the same scope must fail with a conflict; if pending ownership is already provable from the replay-owner record, this `duplicate_action` outcome takes precedence even before the earlier mutation reaches `applied`

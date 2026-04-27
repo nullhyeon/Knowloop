@@ -123,7 +123,7 @@
 - [x] P0-prod Codex Builder: replace forgeable request-context headers with an auth-bound or trusted signed-header context adapter, and gate `/api/v1/context/profiles` behind explicit demo mode or authenticated access
 - [x] P1 Codex Builder: add practical request bounds for query, source registration, candidate/review decisions, attachment lists, and idempotency keys; include route-level body-size protection and regression tests
 - [x] P1 Codex Builder: make query idempotency replay recover from a mutation owner created before session persistence, including stale-owner reclaim and crash-window tests
-- [ ] P1 Codex Builder: prevent incomplete write-back mutation payloads from being returned as successful replay responses; repair, complete, or return `storage_busy` until applied
+- [x] P1 Codex Builder: prevent incomplete write-back mutation payloads from being returned as successful replay responses; repair, complete, or return `storage_busy` until applied
 - [ ] P1 Codex Builder: require candidate promotion to resolve and verify every `source_ref` against manifest scope, backing file existence, and checksum before wiki mutation
 - [ ] P1 Codex Builder: extract shared stale-lock handling for candidate and wiki locks, align lock contention errors with `storage_busy`, and add crash/stale-lock tests
 - [ ] P2 Codex Builder: fix `/api/v1/sessions/recent` pagination so `total`, `offset`, and `limit` are computed from the full visible session set instead of the initial 200/500-row window

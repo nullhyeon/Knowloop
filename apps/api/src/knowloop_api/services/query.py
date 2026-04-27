@@ -29,11 +29,13 @@ from knowloop_api.db.audit import (
     MutationRequestRecord,
     begin_mutation_request,
     create_audit_event,
+    demote_applied_mutation_request_if_payload_matches,
     get_mutation_request,
     list_audit_events,
     mark_mutation_request_applied,
     reclaim_stale_mutation_request,
     store_mutation_request_response_payload,
+    store_pending_mutation_request_response_payload,
     touch_mutation_request,
 )
 from knowloop_api.db.manifest import RawSourceRecord, list_source_records
@@ -358,6 +360,13 @@ CANDIDATE_WRITEBACK_EXPLANATION = "Captured a structured candidate for later rev
 QUERY_REPLAY_PENDING_GRACE_SECONDS = 1.0
 QUERY_REPLAY_POLL_INTERVAL_SECONDS = 0.05
 QUERY_REPLAY_HEARTBEAT_INTERVAL_SECONDS = 0.25
+INCOMPLETE_WRITEBACK_STATUSES = frozenset(
+    {"failed", "pending", "in_progress", "queued", "registered"}
+)
+TERMINAL_WRITEBACK_STATUSES_BY_KIND = {
+    "learning_note": frozenset({"updated"}),
+    "candidate": frozenset({CandidateStatus.OPEN.value, "updated"}),
+}
 
 
 class RawSourceHit(BaseModel):
@@ -863,9 +872,8 @@ def respond_to_query(
 
         if learning_proposal is not None:
             existing_learning_item = recovered_writeback_items.get("learning_note")
-            if (
-                existing_learning_item is not None
-                and existing_learning_item.status not in {"failed", "registered"}
+            if existing_learning_item is not None and _writeback_item_is_complete(
+                existing_learning_item
             ):
                 stored_learning_note_id = existing_learning_item.target_id
                 writeback_plan.append(existing_learning_item)
@@ -920,9 +928,8 @@ def respond_to_query(
 
         if candidate_proposal is not None:
             existing_candidate_item = recovered_writeback_items.get("candidate")
-            if (
-                existing_candidate_item is not None
-                and existing_candidate_item.status not in {"failed", "registered"}
+            if existing_candidate_item is not None and _writeback_item_is_complete(
+                existing_candidate_item
             ):
                 stored_candidate_id = existing_candidate_item.target_id
                 writeback_plan.append(existing_candidate_item)
@@ -1066,15 +1073,18 @@ def respond_to_query(
                     response_payload=response_payload,
                 )
             else:
-                store_mutation_request_response_payload(
+                _store_incomplete_query_recovery_payload(
                     settings,
-                    entity_type="query",
-                    entity_id=session_id,
-                    action=QUERY_MUTATION_ACTION,
+                    observed_mutation_request=mutation_request,
+                    session_id=session_id,
                     idempotency_key=context.idempotency_key,
                     updated_at=created_at,
                     response_payload=response_payload,
                 )
+                if replay_recovery_writeback:
+                    raise QueryStorageBusyError(
+                        "query replay recovery is still reconciling replay-owned write-back state"
+                    )
     return response
 
 
@@ -1087,6 +1097,40 @@ def build_candidate_id(
 ) -> str:
     timestamp = created_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"cand-{kind.value}-{class_id}-{slugify(title, max_length=12)}-{timestamp}"
+
+
+def _store_incomplete_query_recovery_payload(
+    settings: Settings,
+    *,
+    observed_mutation_request: MutationRequestRecord,
+    session_id: str,
+    idempotency_key: str | None,
+    updated_at: datetime,
+    response_payload: dict[str, object],
+) -> None:
+    if idempotency_key is None:
+        return
+    if observed_mutation_request.status == "applied":
+        demote_applied_mutation_request_if_payload_matches(
+            settings,
+            entity_type="query",
+            entity_id=session_id,
+            action=QUERY_MUTATION_ACTION,
+            idempotency_key=idempotency_key,
+            updated_at=updated_at,
+            expected_response_payload=observed_mutation_request.response_payload or {},
+            response_payload=response_payload,
+        )
+        return
+    store_pending_mutation_request_response_payload(
+        settings,
+        entity_type="query",
+        entity_id=session_id,
+        action=QUERY_MUTATION_ACTION,
+        idempotency_key=idempotency_key,
+        updated_at=updated_at,
+        response_payload=response_payload,
+    )
 
 
 def _build_query_session_id(
@@ -1240,6 +1284,23 @@ def _load_replayed_query_response(
             session=existing_session,
             idempotency_key=idempotency_key,
         )
+        session_saved_audit = _get_session_saved_audit(
+            settings,
+            session_id=existing_session.session_id,
+            idempotency_key=idempotency_key,
+        )
+        learning_proposal, candidate_proposal = _recover_saved_writeback_intent(
+            existing_session,
+            session_saved_audit=session_saved_audit,
+            idempotency_key=idempotency_key,
+        )
+        if not _recovered_query_response_is_complete(
+            replayed_response,
+            session=existing_session,
+            learning_proposal=learning_proposal,
+            candidate_proposal=candidate_proposal,
+        ):
+            return None
         return _reconcile_cached_query_response_payload(
             settings,
             cached_response=cached_response,
@@ -1248,9 +1309,10 @@ def _load_replayed_query_response(
             request_id=request_id,
             idempotency_key=idempotency_key,
         )
-    replayed_response = _align_pending_query_response_with_session_answer(
-        cached_response,
+    replayed_response = _recover_query_response_from_existing_session(
+        settings,
         session=existing_session,
+        idempotency_key=idempotency_key,
     )
     learning_proposal = None
     candidate_proposal = None
@@ -1293,7 +1355,8 @@ def _load_replayed_query_response(
             updated_at=existing_session.created_at,
             response_payload=replayed_response.model_dump(mode="json", exclude_none=True),
         )
-    return replayed_response
+        return replayed_response
+    return None
 
 
 def _wait_for_stored_query_response(
@@ -1647,16 +1710,6 @@ def _build_durable_query_response(
     )
 
 
-def _align_pending_query_response_with_session_answer(
-    response: QueryResponse,
-    *,
-    session: SessionRecord,
-) -> QueryResponse:
-    if response.answer == session.answer:
-        return response
-    return response.model_copy(update={"answer": session.answer})
-
-
 def _reconcile_cached_query_response_payload(
     settings: Settings,
     *,
@@ -1736,15 +1789,22 @@ def _recovered_query_response_is_complete(
     if [item.kind for item in response.writeback_plan] != expected_kinds:
         return False
     for item in response.writeback_plan:
-        if item.kind == "session":
-            continue
-        if item.status in {"failed", "pending", "in_progress", "queued", "registered"}:
-            return False
-        if not item.target_id.strip():
+        if not _writeback_item_is_complete(item):
             return False
     if not _response_artifact_refs_converged(session, response=response):
         return False
     return True
+
+
+def _writeback_item_is_complete(item: WritebackPlanItem) -> bool:
+    if not item.target_id.strip():
+        return False
+    if item.kind == "session":
+        return True
+    terminal_statuses = TERMINAL_WRITEBACK_STATUSES_BY_KIND.get(item.kind)
+    if terminal_statuses is None:
+        return item.status not in INCOMPLETE_WRITEBACK_STATUSES
+    return item.status in terminal_statuses
 
 
 def _replay_recovery_targets_are_frozen(
@@ -1798,12 +1858,12 @@ def _response_artifact_refs_converged(
     expected_candidate_refs = [
         item.target_id
         for item in response.writeback_plan
-        if item.kind == "candidate" and item.status not in {"failed", "pending", "in_progress"}
+        if item.kind == "candidate" and _writeback_item_is_complete(item)
     ]
     expected_learning_note_refs = [
         item.target_id
         for item in response.writeback_plan
-        if item.kind == "learning_note" and item.status not in {"failed", "pending", "in_progress"}
+        if item.kind == "learning_note" and _writeback_item_is_complete(item)
     ]
     return all(
         candidate_ref in session.candidate_refs for candidate_ref in expected_candidate_refs
@@ -1822,12 +1882,12 @@ def _repair_replayed_session_artifact_refs(
     candidate_refs = [
         item.target_id
         for item in response.writeback_plan
-        if item.kind == "candidate" and item.status != "failed"
+        if item.kind == "candidate" and _writeback_item_is_complete(item)
     ]
     learning_note_refs = [
         item.target_id
         for item in response.writeback_plan
-        if item.kind == "learning_note" and item.status != "failed"
+        if item.kind == "learning_note" and _writeback_item_is_complete(item)
     ]
     missing_candidate_refs = [
         candidate_ref
@@ -1867,12 +1927,12 @@ def _attempt_replay_artifact_ref_repair(
         candidate_refs = [
             item.target_id
             for item in response.writeback_plan
-            if item.kind == "candidate" and item.status != "failed"
+            if item.kind == "candidate" and _writeback_item_is_complete(item)
         ]
         learning_note_refs = [
             item.target_id
             for item in response.writeback_plan
-            if item.kind == "learning_note" and item.status != "failed"
+            if item.kind == "learning_note" and _writeback_item_is_complete(item)
         ]
         _record_writeback_failure(
             settings,

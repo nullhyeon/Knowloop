@@ -526,6 +526,122 @@ def store_mutation_request_response_payload(
     return record
 
 
+def store_pending_mutation_request_response_payload(
+    settings: Settings,
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    idempotency_key: str,
+    updated_at: datetime,
+    response_payload: dict[str, object],
+) -> MutationRequestRecord | None:
+    existing_record = get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    effective_updated_at = updated_at
+    if existing_record is not None and existing_record.updated_at > effective_updated_at:
+        effective_updated_at = existing_record.updated_at
+
+    timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE mutation_requests
+            SET response_json = ?, updated_at = ?
+            WHERE entity_type = ?
+              AND entity_id = ?
+              AND action = ?
+              AND idempotency_key = ?
+              AND status = 'pending'
+            """,
+            (
+                _serialize_audit_details(response_payload),
+                timestamp,
+                entity_type,
+                entity_id,
+                action,
+                idempotency_key,
+            ),
+        )
+        connection.commit()
+        if cursor.rowcount != 1:
+            return None
+
+    return get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+
+
+def demote_applied_mutation_request_if_payload_matches(
+    settings: Settings,
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    idempotency_key: str,
+    updated_at: datetime,
+    expected_response_payload: dict[str, object],
+    response_payload: dict[str, object],
+) -> MutationRequestRecord | None:
+    effective_updated_at = updated_at
+    existing_record = get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+    if existing_record is not None and existing_record.updated_at > effective_updated_at:
+        effective_updated_at = existing_record.updated_at
+
+    expected_response_json = _serialize_audit_details(expected_response_payload)
+    response_json = _serialize_audit_details(response_payload)
+    timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(settings.audit_db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE mutation_requests
+            SET status = ?, response_json = ?, updated_at = ?
+            WHERE entity_type = ?
+              AND entity_id = ?
+              AND action = ?
+              AND idempotency_key = ?
+              AND status = 'applied'
+              AND response_json = ?
+            """,
+            (
+                "pending",
+                response_json,
+                timestamp,
+                entity_type,
+                entity_id,
+                action,
+                idempotency_key,
+                expected_response_json,
+            ),
+        )
+        connection.commit()
+        if cursor.rowcount != 1:
+            return None
+
+    return get_mutation_request(
+        settings,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action,
+        idempotency_key=idempotency_key,
+    )
+
+
 def touch_mutation_request(
     settings: Settings,
     *,
