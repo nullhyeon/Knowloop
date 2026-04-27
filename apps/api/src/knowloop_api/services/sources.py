@@ -47,6 +47,7 @@ REGISTER_REQUEST_ENTITY_TYPE = "source_registration"
 REGISTER_REQUEST_ENTITY_ID = "source_store"
 REGISTER_ACTION = "source_registered"
 SOURCE_STATUS_REGISTERED = "registered"
+SOURCE_ID_UNIQUENESS_TOKEN_LENGTH = 12
 FILENAME_EXTENSION_BY_MIME_TYPE = {
     "application/json": ".json",
     "text/html": ".html",
@@ -138,6 +139,7 @@ def register_source(
     )
     requested_at = created_at or datetime.now(UTC)
     checksum = build_checksum(registration.content)
+    normalized_tags = normalize_tags(registration.tags)
     mutation_request = _begin_register_source_request(
         settings,
         source_type=registration.source_type,
@@ -150,7 +152,7 @@ def register_source(
         checksum=checksum,
         mime_type=registration.mime_type,
         filename=registration.filename,
-        tags=normalize_tags(registration.tags),
+        tags=normalized_tags,
         idempotency_key=idempotency_key,
         created_at=requested_at,
     )
@@ -184,7 +186,7 @@ def register_source(
         uploaded_by=actor_id,
         mime_type=registration.mime_type,
         filename=registration.filename,
-        tags=normalize_tags(registration.tags),
+        tags=normalized_tags,
     )
     with SOURCE_REGISTRATION_LOCK:
         replayed_source = _finalize_or_replay_register(
@@ -214,7 +216,25 @@ def register_source(
                     updated_at=datetime.now(UTC),
                 )
                 return existing_source
-            raise FileExistsError(f"source_id already exists: {source_record.source_id}")
+            source_record = _with_source_id_uniqueness_suffix(source_record)
+            existing_source = get_source_record(settings, source_record.source_id)
+            if existing_source is not None:
+                if existing_source == source_record:
+                    _ensure_source_registered_audit(
+                        settings,
+                        source_record=existing_source,
+                        actor_role=actor_role,
+                        actor_id=actor_id,
+                        request_id=request_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    _mark_register_source_applied(
+                        settings,
+                        idempotency_key=idempotency_key,
+                        updated_at=datetime.now(UTC),
+                    )
+                    return existing_source
+                raise FileExistsError(f"source_id already exists: {source_record.source_id}")
 
         source_path = resolve_source_path(settings, source_record.origin_path)
         if source_path.exists():
@@ -229,7 +249,38 @@ def register_source(
                 )
                 if recovered_source is not None:
                     return recovered_source
-                raise FileExistsError(f"source already exists: {source_record.source_id}")
+                source_record = _with_source_id_uniqueness_suffix(source_record)
+                existing_source = get_source_record(settings, source_record.source_id)
+                if existing_source is not None:
+                    if existing_source == source_record:
+                        _ensure_source_registered_audit(
+                            settings,
+                            source_record=existing_source,
+                            actor_role=actor_role,
+                            actor_id=actor_id,
+                            request_id=request_id,
+                            idempotency_key=idempotency_key,
+                        )
+                        _mark_register_source_applied(
+                            settings,
+                            idempotency_key=idempotency_key,
+                            updated_at=datetime.now(UTC),
+                        )
+                        return existing_source
+                    raise FileExistsError(f"source_id already exists: {source_record.source_id}")
+                source_path = resolve_source_path(settings, source_record.origin_path)
+                if source_path.exists():
+                    recovered_source = _recover_file_only_source(
+                        settings,
+                        source_record=source_record,
+                        actor_role=actor_role,
+                        actor_id=actor_id,
+                        request_id=request_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    if recovered_source is not None:
+                        return recovered_source
+                    raise FileExistsError(f"source already exists: {source_record.source_id}")
             if existing_source == source_record:
                 _ensure_source_registered_audit(
                     settings,
@@ -392,9 +443,12 @@ def build_source_id(
     domain: RequestDomain,
     title: str,
     created_at: datetime,
+    uniqueness_token: str | None = None,
 ) -> str:
     source_type_token = source_type.value.replace("_", "-")
     title_slug = slugify(title)
+    if uniqueness_token is not None:
+        title_slug = f"{title_slug}-{uniqueness_token}"
     timestamp = created_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     if source_type in FLEXIBLE_DOMAIN_SOURCE_TYPES:
         return (
@@ -402,6 +456,64 @@ def build_source_id(
             f"{class_id}-{title_slug}-{timestamp}"
         )
     return f"src-{source_type_token}-{class_id}-{title_slug}-{timestamp}"
+
+
+def build_source_id_uniqueness_token(
+    *,
+    course_id: str,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    checksum: str,
+    mime_type: str | None,
+    filename: str | None,
+    tags: list[str],
+    created_at: datetime,
+) -> str:
+    token_payload = {
+        "actor_id": actor_id,
+        "actor_role": actor_role.value,
+        "checksum": checksum,
+        "course_id": course_id,
+        "created_at": created_at.astimezone(UTC).isoformat(),
+        "filename": filename,
+        "mime_type": mime_type,
+        "tags": tags,
+    }
+    return _build_request_fingerprint(**token_payload)[:SOURCE_ID_UNIQUENESS_TOKEN_LENGTH]
+
+
+def _with_source_id_uniqueness_suffix(source_record: RawSourceRecord) -> RawSourceRecord:
+    uniqueness_token = build_source_id_uniqueness_token(
+        course_id=source_record.course_id,
+        actor_role=source_record.actor_role,
+        actor_id=source_record.uploaded_by,
+        checksum=source_record.checksum,
+        mime_type=source_record.mime_type,
+        filename=source_record.filename,
+        tags=source_record.tags,
+        created_at=source_record.created_at,
+    )
+    source_id = build_source_id(
+        source_record.source_type,
+        class_id=source_record.class_id,
+        domain=source_record.domain,
+        title=source_record.title,
+        created_at=source_record.created_at,
+        uniqueness_token=uniqueness_token,
+    )
+    return source_record.model_copy(
+        update={
+            "source_id": source_id,
+            "origin_path": build_origin_path(
+                source_record.source_type,
+                class_id=source_record.class_id,
+                domain=source_record.domain,
+                source_id=source_id,
+                filename=source_record.filename,
+                mime_type=source_record.mime_type,
+            ),
+        }
+    )
 
 
 def build_origin_path(

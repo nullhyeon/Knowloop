@@ -76,7 +76,7 @@ Common lifecycle values used across the MVP:
 | Validator actor | `val-<slug>` | `val-course-admin` |
 | Course | `course-<slug>` | `course-calculus-1` |
 | Class | `class-<course-slug>-<term>-<section>` | `class-calculus-1-2026-spring-a` |
-| Raw source | `src-<source-type>-<scope-token>-<slug>-<timestamp>` | `src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z` |
+| Raw source | `src-<source-type>-<scope-token>-<slug>[-<collision-token>]-<timestamp>` | `src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z` |
 | Session | `ses-<role>-<user-id>-<class-id>-<token>` | `ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-7df8a1b0c2` |
 | Candidate | `cand-<kind>-<class-id>-<slug>-<timestamp>` | `cand-misconception-class-calculus-1-2026-spring-a-chain-rule-20260408T112000Z` |
 | Wiki page | `page-<domain>-<slug>` scoped by `course_id + class_scope` | `page-faq-homework-submission` |
@@ -102,7 +102,8 @@ Raw source IDs follow the implementation rules in `services/sources.py`.
 
 - most source types use `src-<source-type>-<class-id>-<slug>-<timestamp>`
 - flexible-domain source types such as `announcement` include a short domain token before the class ID, for example `src-announcement-acad-class-calculus-1-2026-spring-a-...`
-- title slugs include a digest suffix so long titles, repeated titles, and non-ASCII titles do not collapse into the same durable ID
+- title slugs include a digest suffix so long titles and non-ASCII titles do not collapse into the same durable ID
+- if a same-title registration in the same second would collide with an existing source, registration appends a short deterministic payload fingerprint before the timestamp and stores the new source under that suffixed ID
 
 ## 5. Core Entities
 

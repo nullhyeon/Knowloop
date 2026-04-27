@@ -128,7 +128,7 @@
 - [x] P1 Codex Builder: extract shared stale-lock handling for candidate and wiki locks, align lock contention errors with `storage_busy`, and add crash/stale-lock tests
 - [x] P2 Codex Builder: fix `/api/v1/sessions/recent` pagination so `total`, `offset`, and `limit` are computed from the full visible session set instead of the initial 200/500-row window
 - [x] P2 Codex Builder: persist raw source refs on sessions only when raw fallback is part of the actual answer evidence, or split durable evidence refs from candidate trace refs
-- [ ] P2 Codex Builder: harden source ID generation so repeated same-title registrations in the same second cannot collide
+- [x] P2 Codex Builder: harden source ID generation so repeated same-title registrations in the same second cannot collide
 - [ ] P2 Codex Builder: move high-volume source, candidate, review, wiki, and maintenance list metadata toward indexed or streaming pagination instead of full-store scans before slicing
 - [ ] P2 Codex Builder: make instructor insight aggregation count beyond the current 500-session window or document the window explicitly in the API contract
 - [ ] P2 Codex Builder: centralize SQLite connection setup with consistent `busy_timeout`, `foreign_keys`, and retry/WAL policy decisions

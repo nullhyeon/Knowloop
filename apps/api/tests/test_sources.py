@@ -1531,7 +1531,7 @@ def test_source_endpoints_reject_blank_content_after_trimming(tmp_path: Path) ->
     assert response.json()["error"]["code"] == "validation_failed"
 
 
-def test_register_source_rejects_source_id_collision_with_different_extension(
+def test_register_source_uses_distinct_ids_for_same_title_same_second(
     tmp_path: Path,
 ) -> None:
     settings = build_settings(tmp_path)
@@ -1542,19 +1542,19 @@ def test_register_source_rejects_source_id_collision_with_different_extension(
         title="Week 03 Chain Rule",
         content="# Chain Rule\nMarkdown version.",
         mime_type="text/markdown",
-        filename="week-03-chain-rule.md",
+        filename="week-03-chain-rule-a.md",
         tags=["week-03", "chain-rule"],
     )
     second_registration = SourceRegistrationInput(
         source_type=SourceType.LECTURE_NOTE,
         title="Week 03 Chain Rule",
-        content="Plain text version.",
-        mime_type="text/plain",
-        filename="week-03-chain-rule.txt",
+        content="# Chain Rule\nSecond markdown version.",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule-b.md",
         tags=["week-03", "chain-rule"],
     )
 
-    stored_source = register_source(
+    first_source = register_source(
         settings,
         first_registration,
         course_id="course-calculus-1",
@@ -1563,21 +1563,25 @@ def test_register_source_rejects_source_id_collision_with_different_extension(
         actor_id="ins-calculus-team",
         created_at=created_at,
     )
-
-    with pytest.raises(FileExistsError, match="source_id already exists"):
-        register_source(
-            settings,
-            second_registration,
-            course_id="course-calculus-1",
-            class_id="class-calculus-1-2026-spring-a",
-            actor_role=ActorRole.INSTRUCTOR,
-            actor_id="ins-calculus-team",
-            created_at=created_at,
-        )
+    second_source = register_source(
+        settings,
+        second_registration,
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        created_at=created_at,
+    )
 
     manifest = load_manifest(settings)
-    assert [source.source_id for source in manifest.sources] == [stored_source.source_id]
-    assert resolve_source_path(settings, stored_source.origin_path).suffix == ".md"
+    assert first_source.source_id != second_source.source_id
+    assert first_source.origin_path != second_source.origin_path
+    assert {source.source_id for source in manifest.sources} == {
+        first_source.source_id,
+        second_source.source_id,
+    }
+    assert resolve_source_path(settings, first_source.origin_path).exists()
+    assert resolve_source_path(settings, second_source.origin_path).exists()
 
 
 def test_register_source_uses_distinct_ids_for_non_ascii_titles(tmp_path: Path) -> None:
@@ -1665,20 +1669,70 @@ def test_register_source_uses_distinct_ids_for_long_same_prefix_titles(
     assert resolve_source_path(settings, second_source.origin_path).exists()
 
 
+def test_register_source_endpoint_allows_same_title_same_second_with_distinct_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _settings = build_client(tmp_path)
+    fixed_created_at = datetime(2026, 4, 8, 10, 30, tzinfo=UTC)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            if tz is None:
+                return fixed_created_at.replace(tzinfo=None)
+            return fixed_created_at.astimezone(tz)
+
+    monkeypatch.setattr(source_service, "datetime", FrozenDatetime)
+
+    first_response = client.post(
+        "/api/v1/sources/register",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            idempotency_key="idem-endpoint-same-title-a",
+        ),
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "# Chain Rule\nFirst source.",
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule-a.md",
+        },
+    )
+    second_response = client.post(
+        "/api/v1/sources/register",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            idempotency_key="idem-endpoint-same-title-b",
+        ),
+        json={
+            "source_type": "lecture_note",
+            "title": "Week 03 Chain Rule",
+            "content": "# Chain Rule\nSecond source.",
+            "mime_type": "text/markdown",
+            "filename": "week-03-chain-rule-b.md",
+        },
+    )
+
+    first_payload = first_response.json()
+    second_payload = second_response.json()
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert first_payload["data"]["source_id"] != second_payload["data"]["source_id"]
+    assert first_payload["data"]["stored_path"] != second_payload["data"]["stored_path"]
+
+
 def test_register_source_endpoint_returns_conflict_for_non_idempotent_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _settings = build_client(tmp_path)
     fixed_source_id = "src-lecture-note-class-calculus-1-2026-spring-a-collision-20260408T103000Z"
-    original_build_source_id = source_service.build_source_id
-    calls = {"count": 0}
 
     def forced_collision(*args, **kwargs):  # noqa: ANN002, ANN003
-        calls["count"] += 1
-        if calls["count"] <= 2:
-            return fixed_source_id
-        return original_build_source_id(*args, **kwargs)
+        return fixed_source_id
 
     monkeypatch.setattr(source_service, "build_source_id", forced_collision)
 
