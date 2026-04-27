@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
@@ -11,6 +11,11 @@ from pydantic import BaseModel, Field
 
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole
+from knowloop_api.core.file_locks import (
+    FileLockBusyError,
+    acquire_file_locks,
+    release_file_locks,
+)
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -86,6 +91,10 @@ class CandidateStateError(ValueError):
     """Raised when a candidate transition is invalid."""
 
 
+class CandidateLockError(CandidateStateError):
+    """Raised when candidate storage is temporarily locked by another writer."""
+
+
 CANDIDATE_KIND_DIRECTORIES = {
     CandidateKind.MISCONCEPTION: "misconceptions",
     CandidateKind.FAQ: "faq",
@@ -104,6 +113,7 @@ CREATE_REQUEST_ENTITY_TYPE = "candidate_registration"
 CREATE_REQUEST_ENTITY_ID = "candidate_store"
 CREATE_ACTION = "candidate_created"
 UPSERT_ACTION = "candidate_signal_upserted"
+CANDIDATE_LOCK_STALE_AFTER = timedelta(minutes=5)
 
 
 def create_candidate(
@@ -1817,24 +1827,17 @@ def _write_text_atomically(path: Path, contents: str) -> None:
 
 
 def _acquire_candidate_locks(paths) -> list[Path]:
-    lock_paths: list[Path] = []
-    for path in sorted({Path(item) for item in paths}, key=str):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
-        lock_path = path.parent / f".lock-{digest}"
-        try:
-            with lock_path.open("x", encoding="utf-8") as handle:
-                handle.write(path.name)
-        except FileExistsError as exc:
-            _release_candidate_locks(lock_paths)
-            raise CandidateStateError("candidate changed during transition") from exc
-        lock_paths.append(lock_path)
-    return lock_paths
+    try:
+        return acquire_file_locks(
+            paths,
+            stale_after=CANDIDATE_LOCK_STALE_AFTER,
+        )
+    except FileLockBusyError as exc:
+        raise CandidateLockError("candidate storage is busy, retry later") from exc
 
 
 def _release_candidate_locks(lock_paths: list[Path]) -> None:
-    for lock_path in lock_paths:
-        lock_path.unlink(missing_ok=True)
+    release_file_locks(lock_paths)
 
 
 def _merge_unique_strings(base: list[str], extra: list[str]) -> list[str]:

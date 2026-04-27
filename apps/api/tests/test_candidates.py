@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -11,6 +12,7 @@ import pytest
 import knowloop_api.db.audit as audit_db
 import knowloop_api.services.candidates as candidate_service
 from knowloop_api.core.config import Settings
+from knowloop_api.core.file_locks import build_file_lock_path
 from knowloop_api.db.audit import (
     begin_mutation_request,
     build_audit_event_id,
@@ -25,6 +27,7 @@ from knowloop_api.services.candidates import (
     ActorRole,
     CandidateItem,
     CandidateKind,
+    CandidateLockError,
     CandidateNotFoundError,
     CandidateStateError,
     CandidateStatus,
@@ -1130,6 +1133,48 @@ def test_promote_candidate_recovers_duplicate_in_flight_retry(
 
     assert promoted_candidate.status is CandidateStatus.PROMOTED
     assert len(audit_events) == 1
+
+
+def test_candidate_lock_reclaims_stale_lock_for_transition(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json")
+    create_candidate(settings, candidate, actor_role=ActorRole.SYSTEM, actor_id="system-seed")
+    candidate_path = candidate_service.find_candidate_path(settings, candidate.candidate_id)
+    lock_path = build_file_lock_path(candidate_path)
+    lock_path.write_text(candidate_path.name, encoding="utf-8")
+    stale_timestamp = (
+        datetime.now(UTC)
+        - candidate_service.CANDIDATE_LOCK_STALE_AFTER
+        - timedelta(seconds=1)
+    ).timestamp()
+    os.utime(lock_path, (stale_timestamp, stale_timestamp))
+
+    promoted_candidate = promote_candidate(
+        settings,
+        candidate.candidate_id,
+        approved_by="ins-calculus-team",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        related_page_id="page-faq-homework-submission",
+    )
+
+    assert promoted_candidate.status is CandidateStatus.PROMOTED
+    assert not lock_path.exists()
+
+
+def test_candidate_lock_reports_busy_and_releases_partial_acquisitions(tmp_path: Path) -> None:
+    first_path = tmp_path / "a-candidate.json"
+    second_path = tmp_path / "b-candidate.json"
+    second_lock_path = build_file_lock_path(second_path)
+    second_lock_path.parent.mkdir(parents=True, exist_ok=True)
+    second_lock_path.write_text(second_path.name, encoding="utf-8")
+
+    with pytest.raises(CandidateLockError, match="candidate storage is busy"):
+        candidate_service._acquire_candidate_locks([first_path, second_path])
+
+    assert not build_file_lock_path(first_path).exists()
+    assert second_lock_path.exists()
 
 
 def test_promote_candidate_recovers_pending_idempotent_transition(tmp_path: Path) -> None:

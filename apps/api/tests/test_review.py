@@ -1,9 +1,10 @@
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import jsonschema
@@ -229,6 +230,17 @@ def seed_wiki_fixture(
         encoding="utf-8",
     )
     return target_path
+
+
+def write_test_lock(target_path: Path, *, stale: bool) -> Path:
+    lock_digest = hashlib.sha1(str(target_path).encode("utf-8")).hexdigest()[:12]
+    lock_path = target_path.parent / f".lock-{lock_digest}"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(target_path.name, encoding="utf-8")
+    if stale:
+        stale_timestamp = (datetime.now(UTC) - timedelta(minutes=10)).timestamp()
+        os.utime(lock_path, (stale_timestamp, stale_timestamp))
+    return lock_path
 
 
 def parse_markdown_document(contents: str) -> tuple[dict[str, object], str]:
@@ -950,6 +962,249 @@ def test_review_approve_promotes_candidate_and_writes_wiki_page(tmp_path: Path) 
         mutation_action="candidate_promoted",
         wiki_contract_path=review_fixture["request_body"]["target_path"],
     )
+
+
+def test_review_approve_reclaims_stale_candidate_lock_before_promotion(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    stale_lock_path = write_test_lock(build_candidate_path(settings, candidate), stale=True)
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-stale-candidate-lock",
+            "Idempotency-Key": "idem-review-stale-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    stored_candidate = get_candidate(settings, candidate.candidate_id)
+    assert response.status_code == 200
+    assert not stale_lock_path.exists()
+    assert stored_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+
+
+def test_review_approve_reports_storage_busy_for_active_candidate_lock(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    active_lock_path = write_test_lock(build_candidate_path(settings, candidate), stale=False)
+
+    busy_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-active-candidate-lock",
+            "Idempotency-Key": "idem-review-active-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert busy_response.status_code == 503
+    assert_api_error_envelope(
+        busy_response,
+        expected_code="storage_busy",
+        expected_details={"candidate_id": candidate.candidate_id},
+        client_request_id="req-review-active-candidate-lock",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+
+    active_lock_path.unlink()
+    retry_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-active-candidate-lock-retry",
+            "Idempotency-Key": "idem-review-active-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert retry_response.status_code == 200
+    assert get_candidate(settings, candidate.candidate_id).wiki_sync_status is WikiSyncStatus.SYNCED
+
+
+def test_review_approve_reclaims_stale_wiki_lock_before_writeback(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    stale_lock_path = write_test_lock(written_path.resolve(), stale=True)
+
+    response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-stale-wiki-lock",
+            "Idempotency-Key": "idem-review-stale-wiki-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    stored_candidate = get_candidate(settings, candidate.candidate_id)
+    assert response.status_code == 200
+    assert not stale_lock_path.exists()
+    assert stored_candidate.status is CandidateStatus.PROMOTED
+    assert stored_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+
+
+def test_review_approve_reports_storage_busy_for_active_wiki_lock(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    original_wiki_contents = written_path.read_text(encoding="utf-8")
+    active_lock_path = write_test_lock(written_path.resolve(), stale=False)
+
+    busy_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-active-wiki-lock",
+            "Idempotency-Key": "idem-review-active-wiki-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    pending_candidate = get_candidate(settings, candidate.candidate_id)
+    assert busy_response.status_code == 503
+    assert_api_error_envelope(
+        busy_response,
+        expected_code="storage_busy",
+        expected_details={"candidate_id": candidate.candidate_id},
+        client_request_id="req-review-active-wiki-lock",
+    )
+    assert pending_candidate.status is CandidateStatus.PROMOTED
+    assert pending_candidate.wiki_sync_status is WikiSyncStatus.PENDING
+    assert written_path.read_text(encoding="utf-8") == original_wiki_contents
+
+    active_lock_path.unlink()
+    retry_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-active-wiki-lock-retry",
+            "Idempotency-Key": "idem-review-active-wiki-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert retry_response.status_code == 200
+    assert get_candidate(settings, candidate.candidate_id).wiki_sync_status is WikiSyncStatus.SYNCED
+
+
+def test_review_resume_sync_reports_storage_busy_for_active_wiki_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("approve-homework-faq.json")
+    candidate = seed_candidate(settings, "open-faq-homework-deadline.json")
+    seed_source_fixture(settings, "announcement-homework-deadline.md")
+    written_path = seed_wiki_fixture(
+        settings,
+        source_filename="faq-homework-submission.seed.md",
+        target_relative_path="wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
+    )
+    original_wiki_contents = written_path.read_text(encoding="utf-8")
+
+    original_write_wiki_page = review_service._write_wiki_page
+    failed_once = {"value": False}
+
+    def flaky_write_wiki_page(path: Path, contents: str) -> None:
+        if not failed_once["value"]:
+            failed_once["value"] = True
+            raise OSError("forced wiki write failure")
+        original_write_wiki_page(path, contents)
+
+    monkeypatch.setattr(review_service, "_write_wiki_page", flaky_write_wiki_page)
+
+    approve_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/approve",
+        headers=review_fixture["request_headers"],
+        json=review_fixture["request_body"],
+    )
+    assert approve_response.status_code == 500
+    assert (
+        get_candidate(settings, candidate.candidate_id).wiki_sync_status
+        is WikiSyncStatus.PENDING
+    )
+
+    active_lock_path = write_test_lock(written_path.resolve(), stale=False)
+
+    busy_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-resume-active-wiki-lock",
+            idempotency_key="idem-review-resume-active-wiki-lock",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient wiki lock clears."},
+    )
+
+    assert busy_response.status_code == 503
+    assert_api_error_envelope(
+        busy_response,
+        expected_code="storage_busy",
+        expected_details={"candidate_id": candidate.candidate_id},
+        client_request_id="req-review-resume-active-wiki-lock",
+    )
+    assert (
+        get_candidate(settings, candidate.candidate_id).wiki_sync_status
+        is WikiSyncStatus.PENDING
+    )
+    assert written_path.read_text(encoding="utf-8") == original_wiki_contents
+
+    active_lock_path.unlink()
+    retry_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-resume-active-wiki-lock-retry",
+            idempotency_key="idem-review-resume-active-wiki-lock",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume after a transient wiki lock clears."},
+    )
+
+    assert retry_response.status_code == 200
+    assert get_candidate(settings, candidate.candidate_id).wiki_sync_status is WikiSyncStatus.SYNCED
 
 
 def test_review_approve_rejects_unresolved_source_refs_before_promotion(
@@ -3984,6 +4239,56 @@ def test_review_merge_endpoint_merges_duplicate_candidate(tmp_path: Path) -> Non
     )
 
 
+def test_review_merge_reports_storage_busy_for_active_candidate_lock(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("merge-chain-rule-duplicate.json")
+    canonical_candidate = seed_candidate(settings, "open-misconception-chain-rule.json")
+    duplicate_candidate = seed_candidate(settings, "open-misconception-chain-rule-duplicate.json")
+    duplicate_lock_path = write_test_lock(
+        build_candidate_path(settings, duplicate_candidate),
+        stale=False,
+    )
+
+    busy_response = client.post(
+        f"/api/v1/review/candidates/{duplicate_candidate.candidate_id}/merge",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-merge-active-candidate-lock",
+            "Idempotency-Key": "idem-review-merge-active-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert busy_response.status_code == 503
+    assert_api_error_envelope(
+        busy_response,
+        expected_code="storage_busy",
+        expected_details={"candidate_id": duplicate_candidate.candidate_id},
+        client_request_id="req-review-merge-active-candidate-lock",
+    )
+    assert get_candidate(settings, duplicate_candidate.candidate_id).status is CandidateStatus.OPEN
+    assert get_candidate(settings, canonical_candidate.candidate_id).status is CandidateStatus.OPEN
+
+    duplicate_lock_path.unlink()
+    retry_response = client.post(
+        f"/api/v1/review/candidates/{duplicate_candidate.candidate_id}/merge",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-merge-active-candidate-lock-retry",
+            "Idempotency-Key": "idem-review-merge-active-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert retry_response.status_code == 200
+    assert (
+        get_candidate(settings, duplicate_candidate.candidate_id).status
+        is CandidateStatus.MERGED
+    )
+
+
 def test_review_merge_returns_400_for_non_replay_state_errors(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     review_fixture = load_review_fixture("merge-chain-rule-duplicate.json")
@@ -4139,6 +4444,48 @@ def test_review_drop_endpoint_drops_candidate(tmp_path: Path) -> None:
         idempotency_key="idem-fixture-drop-low-value",
         mutation_action="candidate_dropped",
     )
+
+
+def test_review_drop_reports_storage_busy_for_active_candidate_lock(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    review_fixture = load_review_fixture("drop-low-value-candidate.json")
+    candidate = seed_candidate(settings, "open-unresolved-integral.json")
+    active_lock_path = write_test_lock(build_candidate_path(settings, candidate), stale=False)
+
+    busy_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/drop",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-drop-active-candidate-lock",
+            "Idempotency-Key": "idem-review-drop-active-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert busy_response.status_code == 503
+    assert_api_error_envelope(
+        busy_response,
+        expected_code="storage_busy",
+        expected_details={"candidate_id": candidate.candidate_id},
+        client_request_id="req-review-drop-active-candidate-lock",
+    )
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.OPEN
+
+    active_lock_path.unlink()
+    retry_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/drop",
+        headers={
+            **review_fixture["request_headers"],
+            "X-Request-Id": "req-review-drop-active-candidate-lock-retry",
+            "Idempotency-Key": "idem-review-drop-active-candidate-lock",
+        },
+        json=review_fixture["request_body"],
+    )
+
+    assert retry_response.status_code == 200
+    assert get_candidate(settings, candidate.candidate_id).status is CandidateStatus.DROPPED
 
 
 def test_review_drop_endpoint_is_idempotent_with_same_key(tmp_path: Path) -> None:

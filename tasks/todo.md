@@ -125,7 +125,7 @@
 - [x] P1 Codex Builder: make query idempotency replay recover from a mutation owner created before session persistence, including stale-owner reclaim and crash-window tests
 - [x] P1 Codex Builder: prevent incomplete write-back mutation payloads from being returned as successful replay responses; repair, complete, or return `storage_busy` until applied
 - [x] P1 Codex Builder: require candidate promotion to resolve and verify every `source_ref` against manifest scope, backing file existence, and checksum before wiki mutation
-- [ ] P1 Codex Builder: extract shared stale-lock handling for candidate and wiki locks, align lock contention errors with `storage_busy`, and add crash/stale-lock tests
+- [x] P1 Codex Builder: extract shared stale-lock handling for candidate and wiki locks, align lock contention errors with `storage_busy`, and add crash/stale-lock tests
 - [ ] P2 Codex Builder: fix `/api/v1/sessions/recent` pagination so `total`, `offset`, and `limit` are computed from the full visible session set instead of the initial 200/500-row window
 - [ ] P2 Codex Builder: persist raw source refs on sessions only when raw fallback is part of the actual answer evidence, or split durable evidence refs from candidate trace refs
 - [ ] P2 Codex Builder: harden source ID generation so repeated same-title registrations in the same second cannot collide

@@ -14,6 +14,7 @@ from knowloop_api.core.config import Settings
 from knowloop_api.core.input_limits import MAX_CANDIDATE_ID_LENGTH
 from knowloop_api.services.candidates import (
     CandidateKind,
+    CandidateLockError,
     CandidateNotFoundError,
     CandidateStateError,
     CandidateStatus,
@@ -22,6 +23,7 @@ from knowloop_api.services.review import (
     ForbiddenReviewScopeError,
     ReviewApproveRequest,
     ReviewDropRequest,
+    ReviewLockError,
     ReviewMergeRequest,
     ReviewPatchRequest,
     ReviewResumeSyncRequest,
@@ -178,6 +180,12 @@ def create_review_router(settings: Settings) -> APIRouter:
                 exc,
                 request_id=context.request_id,
             ) from exc
+        except ReviewLockError as exc:
+            raise _storage_busy_error_to_api_error(
+                exc,
+                request_id=context.request_id,
+                candidate_id=candidate_id,
+            ) from exc
         except ReviewStateError as exc:
             raise ApiError(
                 status_code=422,
@@ -281,6 +289,12 @@ def create_review_router(settings: Settings) -> APIRouter:
                 exc,
                 request_id=context.request_id,
             ) from exc
+        except ReviewLockError as exc:
+            raise _storage_busy_error_to_api_error(
+                exc,
+                request_id=context.request_id,
+                candidate_id=candidate_id,
+            ) from exc
         except ReviewStateError as exc:
             raise ApiError(
                 status_code=422,
@@ -359,6 +373,12 @@ def _candidate_state_error_to_api_error(
     request_id: str,
     candidate_id: str,
 ) -> ApiError:
+    if isinstance(exc, CandidateLockError):
+        return _storage_busy_error_to_api_error(
+            exc,
+            request_id=request_id,
+            candidate_id=candidate_id,
+        )
     if "different request" in str(exc) or "stored approval plan" in str(exc):
         return ApiError(
             status_code=409,
@@ -370,6 +390,21 @@ def _candidate_state_error_to_api_error(
     return ApiError(
         status_code=400,
         code="invalid_request",
+        message=str(exc),
+        request_id=request_id,
+        details={"candidate_id": candidate_id},
+    )
+
+
+def _storage_busy_error_to_api_error(
+    exc: Exception,
+    *,
+    request_id: str,
+    candidate_id: str,
+) -> ApiError:
+    return ApiError(
+        status_code=503,
+        code="storage_busy",
         message=str(exc),
         request_id=request_id,
         details={"candidate_id": candidate_id},

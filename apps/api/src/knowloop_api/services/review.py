@@ -11,6 +11,11 @@ from pydantic import BaseModel, Field, model_validator
 from knowloop_api.api.context import RequestContext
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain
+from knowloop_api.core.file_locks import (
+    FileLockBusyError,
+    acquire_file_lock,
+    release_file_locks,
+)
 from knowloop_api.core.frontmatter import build_frontmatter_document
 from knowloop_api.core.input_limits import (
     MAX_CANDIDATE_ID_LENGTH,
@@ -61,6 +66,7 @@ ACADEMIC_REVIEW_KINDS = frozenset(
 WIKI_SYNC_PENDING_ACTION = "candidate_wiki_sync_pending"
 WIKI_SYNC_COMPLETED_ACTION = "candidate_wiki_synced"
 RESUME_SYNC_REQUEST_ACTION = "candidate_wiki_sync_resumed"
+WIKI_LOCK_STALE_AFTER = timedelta(minutes=5)
 WIKI_DOMAIN_BY_KIND = {
     CandidateKind.FAQ: "faq",
     CandidateKind.MISCONCEPTION: "misconceptions",
@@ -80,6 +86,10 @@ REVIEWABLE_ROLES = frozenset(
 
 class ReviewStateError(ValueError):
     """Raised when a review request violates workflow expectations."""
+
+
+class ReviewLockError(ReviewStateError):
+    """Raised when wiki storage is temporarily locked by another writer."""
 
 
 class SourceIntegrityError(ReviewStateError):
@@ -1756,19 +1766,17 @@ def _apply_wiki_patch_atomically(patch_draft: WikiPatchDraft) -> None:
             raise ReviewStateError("wiki page changed before the approval patch could be applied")
         _write_wiki_page(patch_draft.target_path, patch_draft.after_markdown)
     finally:
-        lock_path.unlink(missing_ok=True)
+        release_file_locks([lock_path])
 
 
 def _acquire_wiki_lock(target_path: Path) -> Path:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha1(str(target_path).encode("utf-8")).hexdigest()[:12]
-    lock_path = target_path.parent / f".lock-{digest}"
     try:
-        with lock_path.open("x", encoding="utf-8") as handle:
-            handle.write(target_path.name)
-    except FileExistsError as exc:
-        raise ReviewStateError("wiki page is busy with another approval patch") from exc
-    return lock_path
+        return acquire_file_lock(
+            target_path,
+            stale_after=WIKI_LOCK_STALE_AFTER,
+        )
+    except FileLockBusyError as exc:
+        raise ReviewLockError("wiki storage is busy, retry later") from exc
 
 
 def _format_drop_notes(*, reason: str, drop_notes: str | None) -> str:

@@ -634,6 +634,8 @@ Rules:
 - `details.ref_owner` is `candidate` for refs owned by the approving candidate and `wiki_page` for existing refs carried forward from the target wiki page
 - `details.reason` is one of `source_ref_unresolved`, `source_file_path_invalid`, `source_file_missing`, `source_file_unreadable`, `source_scope_mismatch`, `source_domain_mismatch`, `source_type_mismatch`, or `source_checksum_mismatch`
 - fresh approve source-integrity failures happen before replay-owner state, candidate transition audit, or wiki write-back is created
+- candidate and wiki file locks older than 5 minutes are treated as crash leftovers and may be reclaimed before the approval write continues
+- active candidate or wiki file locks return `503 storage_busy`; callers should retry later with the same `Idempotency-Key`
 - successful approval promotes the candidate first with `candidate.wiki_sync_status = pending`, emits a `candidate_wiki_sync_pending` audit marker, then applies a deterministic wiki patch, marks the candidate `wiki_sync_status = synced`, and closes with `candidate_wiki_synced`
 - same `Idempotency-Key` plus the same approval payload replays safely
 - approval replay still reruns source-integrity preflight before any wiki rewrite; if raw evidence drifted after the original success, replay returns `422 source_integrity_failed` instead of writing unverified metadata
@@ -643,7 +645,7 @@ Rules:
 - same `Idempotency-Key` plus a different effective approval payload returns `409 duplicate_action`
 - retry after a partial wiki-sync failure must converge to one promoted candidate state and one final wiki patch audit chain
 - a failed approve attempt may still leave `candidate.status = promoted` with `wiki_sync_status = pending`; callers may retry with the same `Idempotency-Key`, or they may use the dedicated `resume-sync` endpoint to continue the stored promotion attempt with a fresh request key
-- these partial failures currently surface as `500 internal_error` until the original idempotent approval either converges or is explicitly superseded
+- internal persistence or I/O partial failures that are not represented as validation, frozen-plan drift, source-integrity, duplicate-action, or storage-lock errors currently surface as `500 internal_error` until the original idempotent approval either converges or is explicitly superseded
 - the wiki-sync audit chain carries structured `details` for `candidate_wiki_sync_pending`, `wiki_patch_applied`, and `candidate_wiki_synced` with `candidate_id`, `promotion_attempt_id`, and `approval_plan_fingerprint`; retries must converge onto that frozen chain instead of creating a second attempt identity
 
 Response body inside `data`:
@@ -676,6 +678,7 @@ Contract:
 - candidate must already be `status = promoted` and `wiki_sync_status = pending`
 - the server reuses the stored `promotion_attempt_id` and frozen `approval_plan_fingerprint`; the canonical `wiki_sync_target_path` remains candidate-owned state and must still validate against that frozen plan during resume
 - resume-sync reruns the source-integrity preflight against the final wiki `source_refs` set before applying the pending wiki mutation; failures return `422 source_integrity_failed`
+- candidate and wiki file locks older than 5 minutes are treated as crash leftovers and may be reclaimed; active lock contention returns `503 storage_busy`
 - resume continues the existing pending promotion attempt and must not emit a second `candidate_wiki_sync_pending` audit event
 - the current candidate and wiki page must still match the frozen approval plan; if that plan drifts, the request returns `409 duplicate_action`
 - if the stored target page drifts into another scope before resume, that still counts as frozen-plan drift and must return `409 duplicate_action`
@@ -719,6 +722,7 @@ Rules:
 - merge stays inside the same course/class scope
 - `operator` is not allowed to merge candidates in the MVP review flow
 - `system` is not allowed to merge candidates in the MVP review flow
+- candidate file locks older than 5 minutes are treated as crash leftovers and may be reclaimed; active lock contention returns `503 storage_busy`
 - merge replay identity is anchored to the original target candidate meaning, not only its ID; `title`, `summary`, and `related_page_id` drift make the replay a different request
 - same `Idempotency-Key` plus the same merge payload replays safely
 - same `Idempotency-Key` plus a different merge payload returns `409 duplicate_action`
@@ -750,6 +754,7 @@ Rules:
 - drop is a status transition, not a delete
 - `operator` is not allowed to drop candidates in the MVP review flow
 - `system` is not allowed to drop candidates in the MVP review flow
+- candidate file locks older than 5 minutes are treated as crash leftovers and may be reclaimed; active lock contention returns `503 storage_busy`
 - the drop audit record must preserve `reason` as structured metadata as well as human-readable notes
 - same `Idempotency-Key` plus the same drop payload replays safely
 - same `Idempotency-Key` plus a different drop payload returns `409 duplicate_action`
