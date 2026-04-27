@@ -10,8 +10,6 @@ from knowloop_api.core.contracts import ActorRole
 from knowloop_api.services.sessions import (
     SessionRecord,
     _session_from_row,
-    list_recent_sessions,
-    list_sessions_for_class,
 )
 
 STOPWORDS = {
@@ -116,50 +114,74 @@ def list_recent_session_hits(
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[SessionSearchHit], int]:
-    sessions = _load_visible_sessions(
+    sessions, total = _list_visible_recent_sessions(
         settings,
         role=role,
         actor_id=actor_id,
         course_id=course_id,
         class_id=class_id,
+        limit=limit,
+        offset=offset,
     )
-    ordered_sessions = sorted(
-        sessions,
-        key=lambda session: (session.created_at, session.session_id),
-        reverse=True,
-    )
-    total = len(ordered_sessions)
     return [
         _build_search_hit(session, viewer_role=role)
-        for session in ordered_sessions[offset : offset + limit]
+        for session in sessions
     ], total
 
 
-def _load_visible_sessions(
+def _list_visible_recent_sessions(
     settings: Settings,
     *,
     role: ActorRole,
     actor_id: str,
     course_id: str,
     class_id: str,
-) -> list[SessionRecord]:
-    if role in {ActorRole.STUDENT, ActorRole.OPERATOR}:
-        return list_recent_sessions(
-            settings,
-            user_id=actor_id,
-            class_id=class_id,
-            course_id=course_id,
-            limit=200,
-        )
-    if role is ActorRole.INSTRUCTOR:
-        return list_sessions_for_class(
-            settings,
-            class_id=class_id,
-            course_id=course_id,
-            role=ActorRole.STUDENT,
-            limit=500,
-        )
-    raise ForbiddenSessionSearchError("This role cannot access the session search routes.")
+    limit: int,
+    offset: int,
+) -> tuple[list[SessionRecord], int]:
+    filter_clause, base_parameters = _build_scope_filter(
+        role=role,
+        actor_id=actor_id,
+        course_id=course_id,
+        class_id=class_id,
+    )
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM sessions AS s
+            WHERE {filter_clause}
+            """,
+            base_parameters,
+        ).fetchone()
+        rows = connection.execute(
+            f"""
+            SELECT
+                s.session_id,
+                s.role,
+                s.user_id,
+                s.class_id,
+                s.course_id,
+                s.question,
+                s.answer,
+                s.created_at,
+                s.tags_json,
+                s.source_refs_json,
+                s.retrieval_refs_json,
+                s.candidate_refs_json,
+                s.learning_note_refs_json,
+                s.replay_intent_json
+            FROM sessions AS s
+            WHERE {filter_clause}
+            ORDER BY s.created_at DESC, s.session_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*base_parameters, limit, offset],
+        ).fetchall()
+
+    total = int(count_row[0] if count_row is not None else 0)
+    return [_session_from_row(row) for row in rows], total
 
 
 def _build_search_hit(

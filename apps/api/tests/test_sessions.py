@@ -3,7 +3,7 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -65,6 +65,62 @@ def seed_session_runtime(settings: Settings) -> None:
     ):
         for session in load_session_fixture(filename):
             save_session(settings, session, request_id="req-seed-session-search")
+
+
+def build_session_row(
+    *,
+    session_id: str,
+    role: ActorRole,
+    user_id: str,
+    class_id: str = "class-calculus-1-2026-spring-a",
+    course_id: str = "course-calculus-1",
+    question: str,
+    answer: str,
+    created_at: datetime,
+    tags: list[str] | None = None,
+) -> tuple[object, ...]:
+    return (
+        session_id,
+        role.value,
+        user_id,
+        class_id,
+        course_id,
+        question,
+        answer,
+        created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        json.dumps(tags or [], ensure_ascii=False),
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "null",
+    )
+
+
+def insert_session_rows(settings: Settings, rows: list[tuple[object, ...]]) -> None:
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO sessions (
+                session_id,
+                role,
+                user_id,
+                class_id,
+                course_id,
+                question,
+                answer,
+                created_at,
+                tags_json,
+                source_refs_json,
+                retrieval_refs_json,
+                candidate_refs_json,
+                learning_note_refs_json,
+                replay_intent_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        connection.commit()
 
 
 def test_student_session_search_returns_only_own_history_with_previews(tmp_path: Path) -> None:
@@ -150,6 +206,100 @@ def test_instructor_recent_sessions_remain_redacted(tmp_path: Path) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["meta"]["total"] == 4
+    assert {item["visibility"] for item in payload["data"]} == {"class_redacted"}
+    assert all(item["question_preview"] is None for item in payload["data"])
+    assert all(item["answer_preview"] is None for item in payload["data"])
+
+
+def test_student_recent_sessions_total_and_offset_are_not_capped(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    base_created_at = datetime(2026, 4, 13, 9, 0, tzinfo=UTC)
+
+    insert_session_rows(
+        settings,
+        [
+            build_session_row(
+                session_id=f"ses-student-recent-window-{index:03d}",
+                role=ActorRole.STUDENT,
+                user_id="stu-kim-minji",
+                question=f"Recent calculus question {index}",
+                answer="Stored to verify recent pagination.",
+                created_at=base_created_at + timedelta(seconds=index),
+                tags=["recent"],
+            )
+            for index in range(205)
+        ],
+    )
+
+    response = client.get(
+        "/api/v1/sessions/recent?limit=5&offset=200",
+        headers=build_headers(
+            role="student",
+            actor_id="stu-kim-minji",
+            request_id="req-student-recent-window",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"] == {
+        "limit": 5,
+        "offset": 200,
+        "total": 205,
+    }
+    assert [item["session_id"] for item in payload["data"]] == [
+        "ses-student-recent-window-004",
+        "ses-student-recent-window-003",
+        "ses-student-recent-window-002",
+        "ses-student-recent-window-001",
+        "ses-student-recent-window-000",
+    ]
+
+
+def test_instructor_recent_sessions_total_and_offset_are_not_capped(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    base_created_at = datetime(2026, 4, 13, 10, 0, tzinfo=UTC)
+
+    insert_session_rows(
+        settings,
+        [
+            build_session_row(
+                session_id=f"ses-student-class-recent-window-{index:03d}",
+                role=ActorRole.STUDENT,
+                user_id=f"stu-recent-{index:03d}",
+                question=f"Class recent calculus question {index}",
+                answer="Stored to verify instructor recent pagination.",
+                created_at=base_created_at + timedelta(seconds=index),
+                tags=["recent"],
+            )
+            for index in range(505)
+        ],
+    )
+
+    response = client.get(
+        "/api/v1/sessions/recent?limit=5&offset=500",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-instructor-recent-window",
+            domain="academic",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"] == {
+        "limit": 5,
+        "offset": 500,
+        "total": 505,
+    }
+    assert [item["session_id"] for item in payload["data"]] == [
+        "ses-student-class-recent-window-004",
+        "ses-student-class-recent-window-003",
+        "ses-student-class-recent-window-002",
+        "ses-student-class-recent-window-001",
+        "ses-student-class-recent-window-000",
+    ]
     assert {item["visibility"] for item in payload["data"]} == {"class_redacted"}
     assert all(item["question_preview"] is None for item in payload["data"])
     assert all(item["answer_preview"] is None for item in payload["data"])
