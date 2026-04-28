@@ -134,3 +134,21 @@
 - [x] P2 Codex Builder: centralize SQLite connection setup with consistent `busy_timeout`, `foreign_keys`, and retry/WAL policy decisions
 - [x] P3 Codex Builder: resolve `GET /api/v1/sources` filter contract drift by either implementing `course_id`, `class_id`, and `domain` query filters or updating docs to define context-derived scope only
 - [x] P3 Codex Builder: refresh stale backend docs in `apps/api/README.md` and `SPEC.md` so completed query, validation, maintenance, and promotion behavior is no longer described as future work
+
+## Post-Backend Logic Hardening Backlog
+
+- [x] P1 Codex Builder: sanitize learning console `session_refs` against the trusted student/course/class scope before rendering notes, cards, confusion signals, and recent session previews
+- [ ] P1 Codex Builder: make wiki CAS conflicts during approval recoverable so a promoted candidate cannot be stranded in `pending` sync state after target-page drift
+- [ ] P1 Codex Builder: revalidate source registration collision and path state after durable source/manifest lock acquisition for multi-worker safety
+- [ ] P2 Codex Builder: validate candidate IDs before glob/path lookup so wildcard or traversal-like IDs cannot produce ambiguous candidate reads
+- [ ] P2 Codex Builder: write formal wiki pages atomically under the existing wiki lock
+- [ ] P2 Codex Builder: detect raw-source backing-file checksum drift in maintenance reports
+- [ ] P2 Codex Builder: validate session IDs before session export path construction and SQLite persistence
+- [ ] P2 Codex Builder: filter learning note `source_refs` against manifest scope before rendering the student learning console
+- [ ] P2 Codex Builder: add per-note lock or CAS retry around learning note upserts to avoid lost concurrent writes
+- [ ] P2 Codex Builder: verify or recreate owned SQLite FTS trigger definitions during bootstrap/readiness
+- [ ] P2 Codex Builder: avoid exposing student-identifying raw `session_id` values in instructor-redacted session search hits
+- [ ] P3 Codex Builder: handle stale source-lock unlink failures as `storage_busy` instead of surfacing internal errors
+- [ ] P3 Codex Builder: add max-length bounds for session search `q`, wiki search `q`, and wiki `page_id`
+- [ ] P3 Codex Builder: make review `available_actions` kind-aware so non-promotable candidates do not advertise `approve`
+- [ ] P3 Codex Builder: escape SQLite LIKE wildcards in session-search fallback queries

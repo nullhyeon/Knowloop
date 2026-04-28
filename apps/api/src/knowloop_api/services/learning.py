@@ -139,6 +139,13 @@ def get_learning_note(
         return None
 
     metadata, notes_body = parse_frontmatter_document(notes_path.read_text(encoding="utf-8"))
+    if not _metadata_matches_learning_scope(
+        metadata,
+        student_id=student_id,
+        course_id=course_id,
+        class_id=class_id,
+    ):
+        return None
     summary, concepts = _parse_notes_body(notes_body)
     gaps = (
         _parse_bullet_markdown(gaps_path.read_text(encoding="utf-8")) if gaps_path.exists() else []
@@ -206,30 +213,47 @@ def build_learning_console_payload(
             )
         )
 
-    related_wiki = _build_related_wiki_links(
+    visible_session_refs = _filter_learning_session_refs(
         settings,
-        note=note,
+        note.session_refs,
+        student_id=student_id,
         course_id=course_id,
         class_id=class_id,
     )
-    confusion_signals = _build_confusion_signals(note)
-    learning_notes = _build_learning_note_cards(settings, note)
-    gaps = _build_gap_cards(note)
-    next_actions = _build_next_action_items(note)
-    recent_sessions = _build_recent_sessions(settings, note)
+    visible_note = note.model_copy(
+        update={
+            "learning_note_id": build_learning_note_id(student_id, course_id, class_id),
+            "student_id": student_id,
+            "course_id": course_id,
+            "class_id": class_id,
+            "session_refs": visible_session_refs,
+        }
+    )
+
+    related_wiki = _build_related_wiki_links(
+        settings,
+        note=visible_note,
+        course_id=course_id,
+        class_id=class_id,
+    )
+    confusion_signals = _build_confusion_signals(visible_note)
+    learning_notes = _build_learning_note_cards(settings, visible_note)
+    gaps = _build_gap_cards(visible_note)
+    next_actions = _build_next_action_items(visible_note)
+    recent_sessions = _build_recent_sessions(settings, visible_note)
 
     return LearningConsolePayload(
         summary=LearningSummary(
-            concept_count=len(note.concepts),
+            concept_count=len(visible_note.concepts),
             confusion_signal_count=len(confusion_signals),
             gap_count=len(gaps),
             next_action_count=len(next_actions),
-            session_ref_count=len(note.session_refs),
-            source_ref_count=len(note.source_refs),
+            session_ref_count=len(visible_note.session_refs),
+            source_ref_count=len(visible_note.source_refs),
             related_wiki_count=len(related_wiki),
-            updated_at=_serialize_timestamp(note.updated_at or note.created_at),
+            updated_at=_serialize_timestamp(visible_note.updated_at or visible_note.created_at),
         ),
-        learning_note=note,
+        learning_note=visible_note,
         confusion_signals=confusion_signals,
         learning_notes=learning_notes,
         gaps=gaps,
@@ -297,6 +321,52 @@ def build_learning_note_id(student_id: str, course_id: str, class_id: str) -> st
     normalized_course = course_id.removeprefix("course-")
     normalized_class = class_id.removeprefix("class-")
     return f"learn-{student_id}-{normalized_course}-{normalized_class}"
+
+
+def _metadata_matches_learning_scope(
+    metadata: dict[str, object],
+    *,
+    student_id: str,
+    course_id: str,
+    class_id: str,
+) -> bool:
+    expected_scope = {
+        "student_id": student_id,
+        "course_id": course_id,
+        "class_id": class_id,
+    }
+    return all(
+        metadata.get(field) is None or str(metadata[field]) == expected
+        for field, expected in expected_scope.items()
+    )
+
+
+def _filter_learning_session_refs(
+    settings: Settings,
+    session_refs: list[str],
+    *,
+    student_id: str,
+    course_id: str,
+    class_id: str,
+) -> list[str]:
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for session_id in session_refs:
+        if session_id in seen:
+            continue
+        try:
+            session = get_session(settings, session_id)
+        except Exception:
+            continue
+        if (
+            session.role == ActorRole.STUDENT
+            and session.user_id == student_id
+            and session.course_id == course_id
+            and session.class_id == class_id
+        ):
+            filtered.append(session_id)
+            seen.add(session_id)
+    return filtered
 
 
 def build_learning_directory(
