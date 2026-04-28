@@ -360,6 +360,7 @@ Source ID notes:
 - flexible-domain source types such as `announcement` include an explicit domain token in the durable `source_id`
 - title slugs carry a digest suffix to avoid collisions from long or non-ASCII titles
 - if the base ID is already used by a different same-title source in the same second, registration appends a short deterministic payload fingerprint before the timestamp instead of rejecting the second source
+- source registration revalidates the manifest entry and backing file state after acquiring the durable source/manifest locks; if another worker filled the base path during the race window, the request replays an idempotent match or retries with the deterministic suffix path instead of overwriting the existing source
 
 ### `GET /api/v1/sources`
 

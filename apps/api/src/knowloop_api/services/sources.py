@@ -114,6 +114,11 @@ class SourceLockError(SourceStateError):
     """Raised when source storage is temporarily locked by another writer."""
 
 
+class _SourceRegistrationRetry(Exception):
+    def __init__(self, source_record: RawSourceRecord) -> None:
+        self.source_record = source_record
+
+
 def register_source(
     settings: Settings,
     registration: SourceRegistrationInput,
@@ -299,29 +304,58 @@ def register_source(
                 return existing_source
             raise FileExistsError(f"source already exists: {source_record.source_id}")
 
-        _apply_source_transaction(
-            settings,
-            source_record=source_record,
-            content=registration.content,
-            persist_audit=lambda: create_audit_event(
-                settings,
-                entity_type="source",
-                entity_id=source_record.source_id,
-                action=REGISTER_ACTION,
-                actor_role=actor_role.value,
-                actor_id=actor_id,
-                to_status=source_record.status,
-                request_id=request_id,
-                idempotency_key=idempotency_key,
-                created_at=registered_at,
-            ),
-            mark_applied=lambda: _mark_register_source_applied(
-                settings,
-                idempotency_key=idempotency_key,
-                updated_at=registered_at,
-            ),
-        )
-        return source_record
+        for _attempt in range(2):
+            transaction_source_record = source_record
+
+            def revalidate_after_lock(
+                current_source: RawSourceRecord = transaction_source_record,
+            ) -> RawSourceRecord | None:
+                return _revalidate_source_registration_after_lock(
+                    settings,
+                    source_record=current_source,
+                    registration=registration,
+                    mutation_request=mutation_request,
+                    actor_role=actor_role,
+                    actor_id=actor_id,
+                    request_id=request_id,
+                    idempotency_key=idempotency_key,
+                )
+
+            def persist_registration_audit(
+                current_source: RawSourceRecord = transaction_source_record,
+            ) -> None:
+                create_audit_event(
+                    settings,
+                    entity_type="source",
+                    entity_id=current_source.source_id,
+                    action=REGISTER_ACTION,
+                    actor_role=actor_role.value,
+                    actor_id=actor_id,
+                    to_status=current_source.status,
+                    request_id=request_id,
+                    idempotency_key=idempotency_key,
+                    created_at=registered_at,
+                )
+
+            try:
+                applied_source = _apply_source_transaction(
+                    settings,
+                    source_record=transaction_source_record,
+                    content=registration.content,
+                    revalidate_after_lock=revalidate_after_lock,
+                    persist_audit=persist_registration_audit,
+                    mark_applied=lambda: _mark_register_source_applied(
+                        settings,
+                        idempotency_key=idempotency_key,
+                        updated_at=registered_at,
+                    ),
+                )
+            except _SourceRegistrationRetry as retry:
+                source_record = retry.source_record
+                continue
+            return applied_source or transaction_source_record
+
+        raise FileExistsError(f"source already exists: {source_record.source_id}")
 
 
 def get_source(settings: Settings, source_id: str) -> RawSourceRecord:
@@ -594,13 +628,19 @@ def _apply_source_transaction(
     *,
     source_record: RawSourceRecord,
     content: str,
+    revalidate_after_lock=None,
     persist_audit,
     mark_applied=None,
-) -> None:
+) -> RawSourceRecord | None:
     source_path = resolve_source_path(settings, source_record.origin_path)
     manifest_path = build_manifest_path(settings)
     lock_paths = _acquire_locks([source_path, manifest_path])
     try:
+        if revalidate_after_lock is not None:
+            revalidated_source = revalidate_after_lock()
+            if revalidated_source is not None:
+                return revalidated_source
+
         source_snapshot = source_path.read_text(encoding="utf-8") if source_path.exists() else None
         manifest_snapshot = (
             manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else None
@@ -618,6 +658,85 @@ def _apply_source_transaction(
             mark_applied()
     finally:
         _release_locks(lock_paths)
+    return None
+
+
+def _revalidate_source_registration_after_lock(
+    settings: Settings,
+    *,
+    source_record: RawSourceRecord,
+    registration: SourceRegistrationInput,
+    mutation_request,
+    actor_role: ActorRole,
+    actor_id: str | None,
+    request_id: str | None,
+    idempotency_key: str | None,
+) -> RawSourceRecord | None:
+    replayed_source = _finalize_or_replay_register(
+        settings,
+        mutation_request=mutation_request,
+        idempotency_key=idempotency_key,
+        registration=registration,
+        actor_id=actor_id,
+    )
+    if replayed_source is not None:
+        return replayed_source
+
+    source_path = resolve_source_path(settings, source_record.origin_path)
+    existing_source = get_source_record(settings, source_record.source_id)
+    if existing_source is not None:
+        if existing_source != source_record:
+            _retry_source_registration_with_suffix_or_conflict(source_record)
+        if not source_path.exists():
+            return None
+        if not source_path.is_file():
+            raise SourceStateError("stored source does not match the idempotent request")
+        if build_checksum(source_path.read_text(encoding="utf-8")) != source_record.checksum:
+            raise SourceStateError("stored source does not match the idempotent request")
+        _ensure_source_registered_audit(
+            settings,
+            source_record=existing_source,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        _mark_register_source_applied(
+            settings,
+            idempotency_key=idempotency_key,
+            updated_at=datetime.now(UTC),
+        )
+        return existing_source
+
+    if not source_path.exists():
+        return None
+    if source_path.is_file() and build_checksum(source_path.read_text(encoding="utf-8")) == (
+        source_record.checksum
+    ):
+        upsert_source_record(settings, source_record)
+        _ensure_source_registered_audit(
+            settings,
+            source_record=source_record,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        _mark_register_source_applied(
+            settings,
+            idempotency_key=idempotency_key,
+            updated_at=datetime.now(UTC),
+        )
+        return source_record
+
+    _retry_source_registration_with_suffix_or_conflict(source_record)
+
+
+def _retry_source_registration_with_suffix_or_conflict(source_record: RawSourceRecord) -> None:
+    retry_source_record = _with_source_id_uniqueness_suffix(source_record)
+    if retry_source_record.source_id != source_record.source_id:
+        raise _SourceRegistrationRetry(retry_source_record)
+    raise FileExistsError(f"source already exists: {source_record.source_id}")
 
 
 def _restore_snapshot(path: Path, snapshot: str | None) -> None:

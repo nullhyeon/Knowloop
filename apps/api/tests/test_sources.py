@@ -1663,6 +1663,241 @@ def test_register_source_uses_distinct_ids_for_same_title_same_second(
     assert resolve_source_path(settings, second_source.origin_path).exists()
 
 
+def test_register_source_rechecks_file_conflict_after_durable_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = datetime(2026, 4, 8, 10, 30, tzinfo=UTC)
+    registration = SourceRegistrationInput(
+        source_type=SourceType.LECTURE_NOTE,
+        title="Week 03 Chain Rule",
+        content="# Chain Rule\nWorker B content.",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+    )
+    original_acquire_locks = source_service._acquire_locks
+    conflicting_content = "# Chain Rule\nWorker A content."
+    injected = {"done": False}
+
+    def inject_file_after_lock(paths):  # noqa: ANN001
+        lock_paths = original_acquire_locks(paths)
+        if not injected["done"]:
+            source_paths = [Path(path) for path in paths if Path(path).name != "manifest.json"]
+            source_path = source_paths[0]
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(conflicting_content, encoding="utf-8")
+            injected["done"] = True
+        return lock_paths
+
+    monkeypatch.setattr(source_service, "_acquire_locks", inject_file_after_lock)
+
+    source = register_source(
+        settings,
+        registration,
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        idempotency_key="idem-source-durable-path-race",
+        created_at=created_at,
+    )
+    base_source_id = source_service.build_source_id(
+        SourceType.LECTURE_NOTE,
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        title="Week 03 Chain Rule",
+        created_at=created_at,
+    )
+    base_origin_path = source_service.build_origin_path(
+        SourceType.LECTURE_NOTE,
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        source_id=base_source_id,
+        filename="week-03-chain-rule.md",
+        mime_type="text/markdown",
+    )
+    base_source_path = resolve_source_path(settings, base_origin_path)
+
+    assert source.source_id != base_source_id
+    assert base_source_path.read_text(encoding="utf-8") == conflicting_content
+    assert resolve_source_path(settings, source.origin_path).read_text(encoding="utf-8") == (
+        registration.content
+    )
+    assert {item.source_id for item in load_manifest(settings).sources} == {source.source_id}
+
+
+def test_register_source_rechecks_manifest_collision_after_durable_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = datetime(2026, 4, 8, 10, 30, tzinfo=UTC)
+    registration = SourceRegistrationInput(
+        source_type=SourceType.LECTURE_NOTE,
+        title="Week 03 Chain Rule",
+        content="# Chain Rule\nWorker B content.",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+    )
+    base_source_id = source_service.build_source_id(
+        SourceType.LECTURE_NOTE,
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        title="Week 03 Chain Rule",
+        created_at=created_at,
+    )
+    base_origin_path = source_service.build_origin_path(
+        SourceType.LECTURE_NOTE,
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        source_id=base_source_id,
+        filename="week-03-chain-rule.md",
+        mime_type="text/markdown",
+    )
+    conflicting_content = "# Chain Rule\nWorker A content."
+    conflicting_source = source_service.RawSourceRecord(
+        source_id=base_source_id,
+        source_type=SourceType.LECTURE_NOTE,
+        domain=RequestDomain.ACADEMIC,
+        title="Week 03 Chain Rule",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        actor_role=ActorRole.INSTRUCTOR,
+        created_at=created_at,
+        origin_path=base_origin_path,
+        checksum=source_service.build_checksum(conflicting_content),
+        status=source_service.SOURCE_STATUS_REGISTERED,
+        uploaded_by="ins-other-worker",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+        tags=[],
+    )
+    original_acquire_locks = source_service._acquire_locks
+    injected = {"done": False}
+
+    def inject_manifest_after_lock(paths):  # noqa: ANN001
+        lock_paths = original_acquire_locks(paths)
+        if not injected["done"]:
+            source_path = resolve_source_path(settings, conflicting_source.origin_path)
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(conflicting_content, encoding="utf-8")
+            source_service.upsert_source_record(settings, conflicting_source)
+            injected["done"] = True
+        return lock_paths
+
+    monkeypatch.setattr(source_service, "_acquire_locks", inject_manifest_after_lock)
+
+    source = register_source(
+        settings,
+        registration,
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        idempotency_key="idem-source-durable-manifest-race",
+        created_at=created_at,
+    )
+    base_source_path = resolve_source_path(settings, base_origin_path)
+
+    assert source.source_id != base_source_id
+    assert base_source_path.read_text(encoding="utf-8") == conflicting_content
+    assert resolve_source_path(settings, source.origin_path).read_text(encoding="utf-8") == (
+        registration.content
+    )
+    assert {item.source_id for item in load_manifest(settings).sources} == {
+        conflicting_source.source_id,
+        source.source_id,
+    }
+
+
+def test_register_source_reports_conflict_when_suffix_path_changes_after_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+    created_at = datetime(2026, 4, 8, 10, 30, tzinfo=UTC)
+    registration = SourceRegistrationInput(
+        source_type=SourceType.LECTURE_NOTE,
+        title="Week 03 Chain Rule",
+        content="# Chain Rule\nWorker B content.",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+    )
+    base_source_id = source_service.build_source_id(
+        SourceType.LECTURE_NOTE,
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        title="Week 03 Chain Rule",
+        created_at=created_at,
+    )
+    base_source = source_service.RawSourceRecord(
+        source_id=base_source_id,
+        source_type=SourceType.LECTURE_NOTE,
+        domain=RequestDomain.ACADEMIC,
+        title="Week 03 Chain Rule",
+        class_id="class-calculus-1-2026-spring-a",
+        course_id="course-calculus-1",
+        actor_role=ActorRole.INSTRUCTOR,
+        created_at=created_at,
+        origin_path=source_service.build_origin_path(
+            SourceType.LECTURE_NOTE,
+            class_id="class-calculus-1-2026-spring-a",
+            domain=RequestDomain.ACADEMIC,
+            source_id=base_source_id,
+            filename="week-03-chain-rule.md",
+            mime_type="text/markdown",
+        ),
+        checksum=source_service.build_checksum(registration.content),
+        status=source_service.SOURCE_STATUS_REGISTERED,
+        uploaded_by="ins-calculus-team",
+        mime_type="text/markdown",
+        filename="week-03-chain-rule.md",
+        tags=[],
+    )
+    suffix_source = source_service._with_source_id_uniqueness_suffix(base_source)
+    base_source_path = resolve_source_path(settings, base_source.origin_path)
+    suffix_source_path = resolve_source_path(settings, suffix_source.origin_path)
+    conflict_by_path = {
+        base_source_path: "# Chain Rule\nWorker A base content.",
+        suffix_source_path: "# Chain Rule\nWorker C suffix content.",
+    }
+    injected_paths: set[Path] = set()
+    original_acquire_locks = source_service._acquire_locks
+
+    def inject_conflict_after_lock(paths):  # noqa: ANN001
+        lock_paths = original_acquire_locks(paths)
+        for path in paths:
+            source_path = Path(path)
+            if source_path not in conflict_by_path or source_path in injected_paths:
+                continue
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(conflict_by_path[source_path], encoding="utf-8")
+            injected_paths.add(source_path)
+        return lock_paths
+
+    monkeypatch.setattr(source_service, "_acquire_locks", inject_conflict_after_lock)
+
+    with pytest.raises(FileExistsError, match="source already exists"):
+        register_source(
+            settings,
+            registration,
+            course_id="course-calculus-1",
+            class_id="class-calculus-1-2026-spring-a",
+            actor_role=ActorRole.INSTRUCTOR,
+            actor_id="ins-calculus-team",
+            idempotency_key="idem-source-durable-suffix-conflict",
+            created_at=created_at,
+        )
+
+    assert base_source_path.read_text(encoding="utf-8") == conflict_by_path[base_source_path]
+    assert suffix_source_path.read_text(encoding="utf-8") == conflict_by_path[suffix_source_path]
+    assert load_manifest(settings).sources == []
+
+
 def test_register_source_uses_distinct_ids_for_non_ascii_titles(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     bootstrap_storage(settings)
