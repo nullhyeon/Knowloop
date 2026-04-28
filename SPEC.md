@@ -4,34 +4,33 @@
 
 Build the backend core for Knowloop, an education-focused memory OS that converts educational interactions into persistent, queryable knowledge layers.
 
-The current slice is still not the full product. The harness and runtime foundation already exist. The current priority is to turn the locked planning set into executable backend contracts:
+The backend MVP core is implemented enough for frontend work to begin. The current priority is to keep the executable backend contracts accurate while frontend integration and production hardening proceed:
 
-- bootstrap `sessions.db` and `audit.db`
-- implement repository-safe fixture seeding
-- align storage and APIs with the planning documents
-- consolidate the running `query -> session -> candidate -> review` flow
+- preserve reproducible bootstrap for `sessions.db`, `audit.db`, and manifest storage, plus service-owned raw source, candidate, wiki, learning, maintenance, and fixture data layers
+- keep storage and APIs aligned with the planning documents
+- maintain the running `query -> session -> candidate -> review -> wiki/learning` flow
 - keep the dedicated `wiki` read surface stable
 - keep the instructor insight surface aggregated and privacy-safe
 - keep the session search surface role-aware and redaction-safe
-- add a frontend-ready context bootstrap adapter so UI clients can resolve demo personas without handcrafting every `X-Knowloop-*` header
+- support the frontend-ready context bootstrap adapter for local demo personas
 - require production deployments to use a trusted signed-context adapter instead of accepting forgeable role/scope headers
 - keep the maintenance report surface actionable and deterministic
-- add a reproducible offline backend smoke suite plus an opt-in live LLM smoke so the pre-frontend API state can be verified without ambiguity
+- keep the reproducible offline backend smoke suite and opt-in live LLM smoke current
 - document operational runbook and handoff expectations for the current backend state
-- strengthen query fixture coverage around answer basis, retrieval refs, and write-back outputs
-- support declarative follow-up and error query fixtures with setup validation and without hardcoding runtime-only IDs
-- tighten candidate-to-wiki promotion replay coverage across approve, merge, and drop mutations
+- preserve query fixture coverage around answer basis, retrieval refs, replay recovery, and write-back outputs
+- preserve declarative follow-up and error query fixtures with setup validation
+- preserve candidate-to-wiki promotion replay coverage across approve, merge, and drop mutations
 
-Primary users for the current slice:
+Primary users for this backend spec:
 
 - AI coding agents working in the repo
 - the human owner coordinating backend delivery
 
 Success at this stage means:
 
-- the planning documents have been converted into code-facing contracts
+- the planning documents and backend docs match the implemented code-facing contracts
 - storage bootstrap is reproducible
-- fixture-based tests can drive the first backend slices
+- fixture-based tests and smoke scripts verify the backend surface
 - the API can evolve from stable route and schema contracts without breaking the review, wiki, instructor, session-search, and maintenance workflows
 
 ## Tech Stack
@@ -87,7 +86,7 @@ tasks/                    Living implementation plan and todo list
 
 ## Planning Contracts To Follow
 
-All backend work in the current slice must follow these documents before guessing:
+All backend work must follow these documents before guessing:
 
 - `docs/README.md`
 - `docs/architecture/data-contracts.md`
@@ -119,22 +118,16 @@ Conventions:
 ## Testing Strategy
 
 - `pytest` for unit and integration tests
-- start with app boot and contract tests
-- add storage bootstrap and fixture seeding tests before implementing richer ingestion logic
 - every backend slice should add or update tests
 
-Current minimum bar:
-
-- API process boots
-- `/healthz` responds
-- `/api/v1/system/health` responds
-
-Current slice verification bar:
+Current verification bar:
 
 - `sessions.db` bootstrap can run on a clean workspace
 - `audit.db` bootstrap can run on a clean workspace
 - fixture directories and seed inputs are repository-safe
 - storage helpers respect the ID and metadata contracts from docs
+- health and readiness endpoints respond at both top-level and versioned system routes
+- context, source registration, query, search, review, wiki, runtime status, and maintenance routes are covered by integration tests
 - the offline smoke suite proves representative context, source registration, query, search, review, wiki, runtime status, and maintenance routes together
 - the optional live LLM smoke verifies the OpenAI rewrite path with local runtime settings
 - public API boundaries enforce bounded request bodies, idempotency headers, and high-volume text/list fields before storage writes
@@ -163,18 +156,24 @@ Current slice verification bar:
 
 ## Success Criteria
 
-- [ ] `.agents/skills`, `.agents/agents`, and `.agents/references` are present
-- [ ] `AGENTS.md` and `GEMINI.md` are configured for Codex and Gemini
-- [ ] backend scaffold exists under `apps/api`
-- [ ] backend bootstrap, test, and lint commands are documented and runnable
-- [ ] initial backend tests pass
-- [ ] `tasks/plan.md` and `tasks/todo.md` define the next backend slices
-- [ ] planning contract docs are reflected in `schemas/`
-- [ ] fixture catalog is reflected in `data/fixtures/`
-- [ ] storage bootstrap can be verified from fixture-driven tests
+- [x] `.agents/skills`, `.agents/agents`, and `.agents/references` are present
+- [x] `AGENTS.md` and `GEMINI.md` are configured for Codex and Gemini
+- [x] backend scaffold exists under `apps/api`
+- [x] backend bootstrap, test, and lint commands are documented and runnable
+- [x] backend tests pass
+- [x] `tasks/plan.md` and `tasks/todo.md` define the backend slices
+- [x] planning contract docs are reflected in `schemas/`
+- [x] fixture catalog is reflected in `data/fixtures/`
+- [x] storage bootstrap is verified from fixture-driven tests
+
+## Resolved Backend Decisions
+
+- Raw sources are owned by the manifest record plus backing file on disk.
+- Sessions and audit/mutation state are owned by SQLite.
+- Candidate metadata is owned by JSON files in candidate storage.
+- Wiki pages are owned by Markdown files under `data/wiki`.
+- Promotion rules are enforced in the review service using the architecture and promotion-policy docs as the contract source.
 
 ## Open Questions
 
-- Which persistence layer should own candidate metadata first: plain files, SQLite tables, or a hybrid file-plus-index approach?
-- Should promotion rules live in code, config, or markdown policy files?
 - Which external identity provider or session model should replace the signed-context adapter when Knowloop moves beyond MVP deployment boundaries?
