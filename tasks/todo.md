@@ -130,7 +130,7 @@
 - [x] P2 Codex Builder: persist raw source refs on sessions only when raw fallback is part of the actual answer evidence, or split durable evidence refs from candidate trace refs
 - [x] P2 Codex Builder: harden source ID generation so repeated same-title registrations in the same second cannot collide
 - [x] P2 Codex Builder: move high-volume source, candidate, review, wiki, and maintenance list metadata toward indexed or streaming pagination instead of full-store scans before slicing
-- [ ] P2 Codex Builder: make instructor insight aggregation count beyond the current 500-session window or document the window explicitly in the API contract
+- [x] P2 Codex Builder: make instructor insight aggregation count beyond the current 500-session window or document the window explicitly in the API contract
 - [ ] P2 Codex Builder: centralize SQLite connection setup with consistent `busy_timeout`, `foreign_keys`, and retry/WAL policy decisions
 - [ ] P3 Codex Builder: resolve `GET /api/v1/sources` filter contract drift by either implementing `course_id`, `class_id`, and `domain` query filters or updating docs to define context-derived scope only
 - [ ] P3 Codex Builder: refresh stale backend docs in `apps/api/README.md` and `SPEC.md` so completed query, validation, maintenance, and promotion behavior is no longer described as future work

@@ -15,7 +15,13 @@ from knowloop_api.services.candidates import (
     list_candidates,
 )
 from knowloop_api.services.learning import LearningNote, get_learning_note
-from knowloop_api.services.sessions import SessionRecord, list_sessions_for_class
+from knowloop_api.services.sessions import (
+    SessionInsightRow,
+    SessionRecord,
+    list_session_insight_rows_for_class,
+)
+
+InsightSession = SessionInsightRow | SessionRecord
 
 ACADEMIC_INSIGHT_KINDS = frozenset(
     {
@@ -134,18 +140,26 @@ def list_candidate_patterns(
     kind: CandidateKind | None = None,
     limit: int = 20,
     offset: int = 0,
-    session_records: list[SessionRecord] | None = None,
+    session_records: list[InsightSession] | None = None,
     open_candidates: list[CandidateItem] | None = None,
 ) -> tuple[list[InsightPattern], int]:
-    sessions = session_records or _load_student_sessions(
-        settings,
-        course_id=course_id,
-        class_id=class_id,
+    sessions = (
+        session_records
+        if session_records is not None
+        else _load_student_sessions(
+            settings,
+            course_id=course_id,
+            class_id=class_id,
+        )
     )
-    candidates = open_candidates or _load_open_academic_candidates(
-        settings,
-        course_id=course_id,
-        class_id=class_id,
+    candidates = (
+        open_candidates
+        if open_candidates is not None
+        else _load_open_academic_candidates(
+            settings,
+            course_id=course_id,
+            class_id=class_id,
+        )
     )
     if kind is not None:
         candidates = [candidate for candidate in candidates if candidate.kind is kind]
@@ -170,11 +184,11 @@ def list_candidate_patterns(
         aggregate.candidate_ids.append(candidate.candidate_id)
         aggregate.latest_created_at = max(aggregate.latest_created_at, candidate.created_at)
         aggregate.max_confidence = max(aggregate.max_confidence, candidate.confidence)
-        aggregate.session_ids.update(candidate.session_refs)
         aggregate.tags.update(candidate.tags)
         for session_id in candidate.session_refs:
             session = session_map.get(session_id)
             if session is not None:
+                aggregate.session_ids.add(session.session_id)
                 aggregate.student_ids.add(session.user_id)
 
     patterns = [
@@ -212,13 +226,12 @@ def _load_student_sessions(
     *,
     course_id: str,
     class_id: str,
-) -> list[SessionRecord]:
-    return list_sessions_for_class(
+) -> list[SessionInsightRow]:
+    return list_session_insight_rows_for_class(
         settings,
         class_id=class_id,
         course_id=course_id,
         role=ActorRole.STUDENT,
-        limit=500,
     )
 
 
@@ -267,7 +280,7 @@ def _build_candidate_counts(candidates: list[CandidateItem]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _build_topic_summary(sessions: list[SessionRecord]) -> list[InsightTopic]:
+def _build_topic_summary(sessions: list[InsightSession]) -> list[InsightTopic]:
     counts: dict[str, tuple[int, set[str]]] = {}
     for session in sessions:
         seen_topics: set[str] = set()

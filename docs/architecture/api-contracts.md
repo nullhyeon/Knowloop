@@ -845,6 +845,7 @@ Rules:
 - response is aggregate-first and does not expose raw student question text
 - insight data is limited to academic student sessions, academic candidates, and learning-note aggregates within the current course/class scope
 - operations-domain sessions and operations candidates are excluded from the instructor surface
+- session-derived counts and topic summaries are computed from all scoped academic student session metadata, not from a recent-session display window
 
 Response body inside `data`:
 
@@ -878,6 +879,7 @@ Query parameters:
 Rules:
 
 - patterns group related open academic candidates instead of returning the review inbox shape directly
+- pattern pagination is applied after grouping all visible scoped academic candidates, and candidate `session_refs` resolve against the full scoped academic student-session metadata set
 
 Response body inside `data`:
 

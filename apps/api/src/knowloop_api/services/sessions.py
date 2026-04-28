@@ -35,6 +35,12 @@ class SessionRecord(BaseModel):
     replay_intent: dict[str, object] | None = None
 
 
+class SessionInsightRow(BaseModel):
+    session_id: str
+    user_id: str
+    tags: list[str] = Field(default_factory=list)
+
+
 class SessionNotFoundError(FileNotFoundError):
     """Raised when a session cannot be found in storage."""
 
@@ -307,6 +313,45 @@ def list_sessions_for_class(
         ).fetchall()
 
     return [_session_from_row(row) for row in rows]
+
+
+def list_session_insight_rows_for_class(
+    settings: Settings,
+    *,
+    class_id: str,
+    course_id: str,
+    role: ActorRole | None = None,
+) -> list[SessionInsightRow]:
+    parameters: list[object] = [class_id, course_id]
+    role_clause = ""
+    if role is not None:
+        role_clause = " AND role = ?"
+        parameters.append(role.value)
+
+    with sqlite3.connect(settings.sessions_db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT
+                session_id,
+                user_id,
+                tags_json
+            FROM sessions
+            WHERE class_id = ?
+              AND course_id = ?
+              {role_clause}
+            ORDER BY created_at DESC, session_id DESC
+            """,
+            parameters,
+        ).fetchall()
+
+    return [
+        SessionInsightRow(
+            session_id=str(row[0]),
+            user_id=str(row[1]),
+            tags=json.loads(str(row[2])),
+        )
+        for row in rows
+    ]
 
 
 def update_session_artifact_refs(

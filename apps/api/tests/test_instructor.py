@@ -227,6 +227,132 @@ def test_instructor_patterns_endpoint_supports_kind_filter_and_pagination(tmp_pa
     assert payload["data"][0]["session_count"] == 2
 
 
+def test_instructor_overview_counts_beyond_recent_session_window(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    bootstrap_storage(settings)
+    base_created_at = datetime(2026, 4, 8, 9, 0, tzinfo=UTC)
+
+    for index in range(501):
+        student_id = f"stu-overview-window-{index:03d}"
+        save_session(
+            settings,
+            SessionRecord(
+                session_id=f"ses-student-overview-window-{index:03d}",
+                role=ActorRole.STUDENT,
+                user_id=student_id,
+                class_id="class-calculus-1-2026-spring-a",
+                course_id="course-calculus-1",
+                question=f"Question {index}",
+                answer=f"Answer {index}",
+                created_at=base_created_at.replace(minute=index % 60, second=index // 60),
+                tags=["chain-rule"],
+            ),
+            request_id=f"req-seed-overview-window-{index:03d}",
+        )
+
+    response = client.get(
+        "/api/v1/instructor/insights/overview",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-instructor-overview-window",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["student_session_count"] == 501
+    assert payload["unique_student_count"] == 501
+    assert payload["top_topics"][0] == {
+        "topic": "chain-rule",
+        "session_count": 501,
+        "student_count": 501,
+    }
+
+
+def test_instructor_patterns_resolve_session_refs_beyond_recent_window(
+    tmp_path: Path,
+) -> None:
+    client, settings = build_client(tmp_path)
+    bootstrap_storage(settings)
+    base_created_at = datetime(2026, 4, 8, 9, 0, tzinfo=UTC)
+    oldest_session_id = "ses-student-pattern-window-000"
+
+    for index in range(501):
+        save_session(
+            settings,
+            SessionRecord(
+                session_id=f"ses-student-pattern-window-{index:03d}",
+                role=ActorRole.STUDENT,
+                user_id=f"stu-pattern-window-{index:03d}",
+                class_id="class-calculus-1-2026-spring-a",
+                course_id="course-calculus-1",
+                question=f"Question {index}",
+                answer=f"Answer {index}",
+                created_at=base_created_at.replace(minute=index % 60, second=index // 60),
+                tags=["chain-rule"],
+            ),
+            request_id=f"req-seed-pattern-window-{index:03d}",
+        )
+
+    foreign_session_id = "ses-student-pattern-window-foreign"
+    save_session(
+        settings,
+        SessionRecord(
+            session_id=foreign_session_id,
+            role=ActorRole.STUDENT,
+            user_id="stu-pattern-window-foreign",
+            class_id="class-calculus-1-2026-spring-b",
+            course_id="course-calculus-1",
+            question="Out-of-scope question",
+            answer="Out-of-scope answer",
+            created_at=datetime(2026, 4, 8, 12, 10, tzinfo=UTC),
+            tags=["chain-rule"],
+        ),
+        request_id="req-seed-pattern-window-foreign",
+    )
+
+    candidate = load_candidate_fixture("open-faq-homework-deadline.json").model_copy(
+        update={
+            "candidate_id": (
+                "cand-faq-class-calculus-1-2026-spring-a-pattern-window-20260408T120000Z"
+            ),
+            "title": "Pattern window FAQ",
+            "summary": "A pattern that references the oldest class session.",
+            "session_refs": [
+                oldest_session_id,
+                "ses-student-pattern-window-missing",
+                foreign_session_id,
+            ],
+            "created_at": datetime(2026, 4, 8, 12, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 4, 8, 12, 0, tzinfo=UTC),
+        }
+    )
+    create_candidate(
+        settings,
+        candidate,
+        actor_role=ActorRole.SYSTEM,
+        actor_id="system-seed",
+        request_id="req-seed-pattern-window-candidate",
+    )
+
+    response = client.get(
+        "/api/v1/instructor/insights/patterns?kind=faq",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-instructor-pattern-window",
+            domain="academic",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 1
+    assert payload["data"][0]["session_count"] == 1
+    assert payload["data"][0]["student_count"] == 1
+
+
 def test_instructor_insight_endpoints_reject_non_instructor_roles(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     seed_instructor_runtime(settings)
