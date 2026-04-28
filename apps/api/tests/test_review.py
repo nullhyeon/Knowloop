@@ -523,6 +523,52 @@ def test_review_candidate_list_orders_by_candidate_updated_at(tmp_path: Path) ->
     ]
 
 
+def test_review_candidate_list_builds_payloads_only_for_requested_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.review as review_service
+
+    client, settings = build_client(tmp_path)
+    for index in range(5):
+        candidate = load_candidate_fixture("open-faq-homework-deadline.json").model_copy(
+            update={
+                "candidate_id": (
+                    "cand-faq-class-calculus-1-2026-spring-a-"
+                    f"bounded-page-{index}-20260408T10{index:02d}00Z"
+                ),
+                "title": f"Bounded page candidate {index}",
+                "created_at": datetime(2026, 4, 8, 10, index, tzinfo=UTC),
+                "updated_at": datetime(2026, 4, 8, 10, index, tzinfo=UTC),
+            }
+        )
+        create_candidate(settings, candidate, actor_role=ActorRole.SYSTEM, actor_id="system-seed")
+
+    original_candidate_to_payload = review_service.candidate_to_payload
+    payload_calls = {"count": 0}
+
+    def counting_candidate_to_payload(candidate):  # noqa: ANN001
+        payload_calls["count"] += 1
+        return original_candidate_to_payload(candidate)
+
+    monkeypatch.setattr(review_service, "candidate_to_payload", counting_candidate_to_payload)
+
+    response = client.get(
+        "/api/v1/review/candidates?limit=2&offset=1",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-review-list-bounded-page",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 5
+    assert len(payload["data"]) == 2
+    assert payload_calls["count"] == 2
+
+
 def test_review_candidate_detail_returns_audit_history_and_actions(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     candidate = seed_candidate(settings, "open-faq-homework-deadline.json")

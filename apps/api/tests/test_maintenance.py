@@ -1630,6 +1630,57 @@ def test_maintenance_report_surfaces_binary_corrupted_wiki_file(tmp_path: Path) 
     assert payload["summary"]["wiki_layout_issues"] == 1
 
 
+def test_maintenance_report_surfaces_corrupted_wiki_body(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    seed_maintenance_runtime(settings)
+
+    corrupted_path = (
+        settings.data_root
+        / "wiki"
+        / "faq"
+        / "class-calculus-1-2026-spring-a"
+        / "body-corrupted-page.md"
+    )
+    corrupted_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupted_path.write_bytes(
+        b"""---
+page_id: page-faq-body-corrupted
+domain: faq
+title: Body Corrupted Page
+course_id: course-calculus-1
+class_scope: class-calculus-1-2026-spring-a
+updated_at: 2026-04-08T10:45:00Z
+source_refs: []
+candidate_refs: []
+summary: Valid metadata with a corrupted body.
+---
+
+"""
+        + b"\xff\xfe\x81"
+    )
+
+    response = client.get(
+        "/api/v1/maintenance/report",
+        headers=build_headers(
+            role="validator",
+            actor_id="val-course-admin",
+            request_id="req-maintenance-report-corrupted-wiki-body",
+            domain="review",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    matching_checks = [
+        check
+        for check in payload["checks"]
+        if check["code"] == "invalid_wiki_page_metadata"
+        and check["entity_id"] == "page-faq-body-corrupted"
+    ]
+    assert len(matching_checks) == 1
+    assert payload["summary"]["wiki_layout_issues"] == 1
+
+
 def test_wiki_file_path_class_scope_prefers_deepest_wiki_segment(tmp_path: Path) -> None:
     path = (
         tmp_path

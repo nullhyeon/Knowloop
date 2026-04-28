@@ -211,6 +211,39 @@ def test_system_review_domain_can_list_academic_and_operations_pages(tmp_path: P
     }
 
 
+def test_wiki_list_without_query_uses_metadata_only_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.services.wiki as wiki_service
+
+    client, settings = build_client(tmp_path)
+    seed_fixture_pack(settings)
+    full_page_loads = {"count": 0}
+    original_load_wiki_page = wiki_service._load_wiki_page
+
+    def counting_load_wiki_page(path):  # noqa: ANN001
+        full_page_loads["count"] += 1
+        return original_load_wiki_page(path)
+
+    monkeypatch.setattr(wiki_service, "_load_wiki_page", counting_load_wiki_page)
+
+    response = client.get(
+        "/api/v1/wiki/pages?limit=2&offset=1",
+        headers=build_headers(
+            role="validator",
+            actor_id="val-course-admin",
+            request_id="req-wiki-list-metadata-only",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["total"] == 4
+    assert len(payload["data"]) == 2
+    assert full_page_loads["count"] == 0
+
+
 @pytest.mark.smoke
 def test_wiki_detail_returns_page_body_for_visible_page(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
@@ -392,14 +425,14 @@ def test_wiki_list_skips_unreadable_page_file(
         / "class-calculus-1-2026-spring-a"
         / "homework-submission.md"
     )
-    original_load = wiki_service._load_wiki_page
+    original_load = wiki_service._load_wiki_page_metadata
 
     def flaky_load(path: Path):  # noqa: ANN202
         if path.resolve() == unreadable_path.resolve():
             raise PermissionError("forced wiki read failure")
         return original_load(path)
 
-    monkeypatch.setattr(wiki_service, "_load_wiki_page", flaky_load)
+    monkeypatch.setattr(wiki_service, "_load_wiki_page_metadata", flaky_load)
 
     response = client.get(
         "/api/v1/wiki/pages",

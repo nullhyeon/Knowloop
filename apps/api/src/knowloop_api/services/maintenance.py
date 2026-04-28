@@ -14,13 +14,14 @@ from knowloop_api.core.frontmatter import parse_frontmatter_document
 from knowloop_api.db.manifest import load_manifest
 from knowloop_api.services.candidates import (
     CandidateStatus,
-    list_candidates,
+    iter_candidates,
 )
 from knowloop_api.services.sources import resolve_source_path
 from knowloop_api.services.wiki import (
     WikiPage,
     build_wiki_page_path,
     load_wiki_page_from_path,
+    load_wiki_page_metadata_from_path,
 )
 
 SEVERITY_ERROR = "error"
@@ -231,7 +232,7 @@ def _collect_stale_candidate_checks(
 ) -> list[MaintenanceCheck]:
     threshold = now - timedelta(days=stale_candidate_days)
     checks: list[MaintenanceCheck] = []
-    for candidate in list_candidates(
+    for candidate in iter_candidates(
         settings,
         status=CandidateStatus.OPEN,
         class_id=class_id,
@@ -269,7 +270,7 @@ def _collect_orphan_wiki_candidate_checks(
 ) -> list[MaintenanceCheck]:
     candidate_ids = {
         candidate.candidate_id
-        for candidate in list_candidates(settings, class_id=class_id)
+        for candidate in iter_candidates(settings, class_id=class_id)
         if candidate.course_id == course_id
     }
     checks: list[MaintenanceCheck] = []
@@ -412,7 +413,7 @@ def _load_scoped_wiki_pages(
             continue
         for path in sorted(scoped_root.glob("*.md")):
             try:
-                page = load_wiki_page_from_path(path)
+                page = load_wiki_page_metadata_from_path(path)
                 canonical_path = build_wiki_page_path(
                     settings,
                     domain=page.domain,
@@ -567,7 +568,7 @@ def _read_wiki_frontmatter_metadata(path: Path) -> dict[str, object]:
     try:
         contents = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
-        return {}
+        return _read_wiki_frontmatter_metadata_prefix(path)
     try:
         metadata, _ = parse_frontmatter_document(contents)
     except ValueError:
@@ -577,6 +578,32 @@ def _read_wiki_frontmatter_metadata(path: Path) -> dict[str, object]:
     if contents.startswith("---"):
         return _parse_partial_frontmatter_metadata(contents)
     return metadata
+
+
+def _read_wiki_frontmatter_metadata_prefix(path: Path) -> dict[str, object]:
+    try:
+        with path.open("rb") as handle:
+            first_line = handle.readline()
+            if first_line.strip() != b"---":
+                return {}
+            frontmatter_lines = [first_line]
+            for line in handle:
+                frontmatter_lines.append(line)
+                if line.strip() == b"---":
+                    break
+            else:
+                return {}
+        contents = b"".join(frontmatter_lines).decode("utf-8")
+    except (OSError, UnicodeError):
+        return {}
+
+    try:
+        metadata, _ = parse_frontmatter_document(contents)
+    except ValueError:
+        return _parse_partial_frontmatter_metadata(contents)
+    if metadata:
+        return metadata
+    return _parse_partial_frontmatter_metadata(contents)
 
 
 def _wiki_file_belongs_to_scope(

@@ -1301,6 +1301,44 @@ def test_sources_list_and_detail_respect_role_scope(tmp_path: Path) -> None:
     assert detail_response.json()["error"]["code"] == "forbidden_scope"
 
 
+def test_source_list_paginates_after_scoped_ordering(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    for index in range(4):
+        register_source(
+            settings,
+            SourceRegistrationInput(
+                source_type=SourceType.LECTURE_NOTE,
+                title=f"Week {index:02d} Chain Rule",
+                content=f"# Chain Rule\nPagination note {index}.",
+                mime_type="text/markdown",
+                filename=f"week-{index:02d}-chain-rule.md",
+                tags=["chain-rule"],
+            ),
+            course_id="course-calculus-1",
+            class_id="class-calculus-1-2026-spring-a",
+            actor_role=ActorRole.INSTRUCTOR,
+            actor_id="ins-calculus-team",
+            created_at=datetime(2026, 4, 8, 10, index, tzinfo=UTC),
+        )
+
+    response = client.get(
+        "/api/v1/sources?limit=2&offset=1",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-list-sources-pagination",
+        ),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"] == {"limit": 2, "offset": 1, "total": 4}
+    assert [item["title"] for item in payload["data"]] == [
+        "Week 02 Chain Rule",
+        "Week 01 Chain Rule",
+    ]
+
+
 def test_source_endpoints_require_request_context_headers(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 

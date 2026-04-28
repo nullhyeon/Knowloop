@@ -41,7 +41,7 @@ from knowloop_api.services.candidates import (
     WikiSyncStatus,
     drop_candidate,
     get_candidate,
-    list_candidates,
+    list_candidates_page,
     mark_candidate_wiki_synced,
     merge_candidate,
     promote_candidate,
@@ -192,19 +192,19 @@ def list_review_candidates(
     offset: int = 0,
 ) -> tuple[list[dict[str, object]], int]:
     _assert_review_role(context)
-    visible_candidates = [
-        candidate_to_payload(candidate)
-        for candidate in list_candidates(
-            settings,
-            kind=kind,
-            status=status,
-            class_id=context.class_id,
-        )
-        if _is_candidate_visible(candidate, context=context)
-        and candidate.course_id == context.course_id
-    ]
-    total = len(visible_candidates)
-    return visible_candidates[offset : offset + limit], total
+    candidates, total = list_candidates_page(
+        settings,
+        kind=kind,
+        status=status,
+        class_id=context.class_id,
+        limit=limit,
+        offset=offset,
+        predicate=lambda candidate: (
+            _is_candidate_visible(candidate, context=context)
+            and candidate.course_id == context.course_id
+        ),
+    )
+    return [candidate_to_payload(candidate) for candidate in candidates], total
 
 
 def get_review_candidate_detail(

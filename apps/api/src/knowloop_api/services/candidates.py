@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -16,6 +17,7 @@ from knowloop_api.core.file_locks import (
     acquire_file_locks,
     release_file_locks,
 )
+from knowloop_api.core.pagination import collect_descending_page
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -336,31 +338,72 @@ def list_candidates(
     status: CandidateStatus | None = None,
     class_id: str | None = None,
 ) -> list[CandidateItem]:
-    candidate_root = settings.data_root / "candidate"
-    if not candidate_root.exists():
-        return []
-
-    candidates = [
-        _load_candidate_file(path)
-        for path in _iter_candidate_paths(
-            candidate_root,
-            kind=kind,
-            class_id=class_id,
-        )
-    ]
-
-    if kind is not None:
-        candidates = [candidate for candidate in candidates if candidate.kind is kind]
-    if status is not None:
-        candidates = [candidate for candidate in candidates if candidate.status is status]
-    if class_id is not None:
-        candidates = [candidate for candidate in candidates if candidate.class_id == class_id]
-
     return sorted(
-        candidates,
-        key=lambda candidate: (candidate.updated_at, candidate.created_at, candidate.candidate_id),
+        iter_candidates(
+            settings,
+            kind=kind,
+            status=status,
+            class_id=class_id,
+        ),
+        key=_candidate_sort_key,
         reverse=True,
     )
+
+
+def list_candidates_page(
+    settings: Settings,
+    *,
+    kind: CandidateKind | None = None,
+    status: CandidateStatus | None = None,
+    class_id: str | None = None,
+    limit: int,
+    offset: int = 0,
+    predicate: Callable[[CandidateItem], bool] | None = None,
+) -> tuple[list[CandidateItem], int]:
+    candidates = iter_candidates(
+        settings,
+        kind=kind,
+        status=status,
+        class_id=class_id,
+    )
+    if predicate is not None:
+        candidates = (candidate for candidate in candidates if predicate(candidate))
+    return collect_descending_page(
+        candidates,
+        key=_candidate_sort_key,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def iter_candidates(
+    settings: Settings,
+    *,
+    kind: CandidateKind | None = None,
+    status: CandidateStatus | None = None,
+    class_id: str | None = None,
+) -> Iterator[CandidateItem]:
+    candidate_root = settings.data_root / "candidate"
+    if not candidate_root.exists():
+        return
+
+    for path in _iter_candidate_paths(
+        candidate_root,
+        kind=kind,
+        class_id=class_id,
+    ):
+        candidate = _load_candidate_file(path)
+        if kind is not None and candidate.kind is not kind:
+            continue
+        if status is not None and candidate.status is not status:
+            continue
+        if class_id is not None and candidate.class_id != class_id:
+            continue
+        yield candidate
+
+
+def _candidate_sort_key(candidate: CandidateItem) -> tuple[datetime, datetime, str]:
+    return candidate.updated_at, candidate.created_at, candidate.candidate_id
 
 
 def _iter_candidate_paths(
@@ -368,8 +411,7 @@ def _iter_candidate_paths(
     *,
     kind: CandidateKind | None,
     class_id: str | None,
-) -> list[Path]:
-    paths: list[Path] = []
+) -> Iterator[Path]:
     for root, pattern in _build_candidate_search_scopes(
         candidate_root,
         kind=kind,
@@ -377,8 +419,7 @@ def _iter_candidate_paths(
     ):
         if not root.exists():
             continue
-        paths.extend(sorted(root.glob(pattern)))
-    return paths
+        yield from sorted(root.glob(pattern))
 
 
 def _build_candidate_search_scopes(

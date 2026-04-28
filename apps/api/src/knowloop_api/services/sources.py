@@ -29,6 +29,7 @@ from knowloop_api.core.input_limits import (
     MAX_SOURCE_TAGS,
     MAX_SOURCE_TITLE_LENGTH,
 )
+from knowloop_api.core.pagination import collect_descending_page
 from knowloop_api.db.audit import (
     begin_mutation_request,
     create_audit_event,
@@ -342,42 +343,51 @@ def list_sources(
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[RawSourceRecord], int]:
-    filtered_sources = [
-        source
-        for source in list_source_records(settings)
-        if source.course_id == course_id and source.class_id == class_id
-    ]
-    if actor_role is not None:
-        filtered_sources = [
-            source
-            for source in filtered_sources
-            if is_source_visible_to_role(
-                source,
-                actor_role=actor_role,
-                requested_domain=requested_domain,
-            )
-        ]
-    if source_type is not None:
-        filtered_sources = [
-            source for source in filtered_sources if source.source_type is source_type
-        ]
-    if q is not None and q.strip():
-        query = q.strip().lower()
-        filtered_sources = [
-            source
-            for source in filtered_sources
-            if query in source.title.lower()
+    return collect_descending_page(
+        _iter_visible_source_records(
+            settings,
+            course_id=course_id,
+            class_id=class_id,
+            actor_role=actor_role,
+            requested_domain=requested_domain,
+            source_type=source_type,
+            q=q,
+        ),
+        key=lambda source: (source.created_at, source.source_id),
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _iter_visible_source_records(
+    settings: Settings,
+    *,
+    course_id: str,
+    class_id: str,
+    actor_role: ActorRole | None,
+    requested_domain: RequestDomain | None,
+    source_type: SourceType | None,
+    q: str | None,
+):
+    query = q.strip().lower() if q is not None and q.strip() else None
+    for source in list_source_records(settings):
+        if source.course_id != course_id or source.class_id != class_id:
+            continue
+        if actor_role is not None and not is_source_visible_to_role(
+            source,
+            actor_role=actor_role,
+            requested_domain=requested_domain,
+        ):
+            continue
+        if source_type is not None and source.source_type is not source_type:
+            continue
+        if query is not None and not (
+            query in source.title.lower()
             or query in (source.filename or "").lower()
             or any(query in tag.lower() for tag in source.tags)
-        ]
-
-    filtered_sources = sorted(
-        filtered_sources,
-        key=lambda source: (source.created_at, source.source_id),
-        reverse=True,
-    )
-    total = len(filtered_sources)
-    return filtered_sources[offset : offset + limit], total
+        ):
+            continue
+        yield source
 
 
 def resolve_source_path(settings: Settings, origin_path: str | Path) -> Path:

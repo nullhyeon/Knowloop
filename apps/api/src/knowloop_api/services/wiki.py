@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole, RequestDomain
 from knowloop_api.core.frontmatter import parse_frontmatter_document
+from knowloop_api.core.pagination import collect_descending_page
 
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 STOPWORDS = {
@@ -164,18 +166,88 @@ def list_wiki_pages(settings: Settings) -> list[WikiPage]:
     if not wiki_root.exists():
         return []
 
-    pages: list[WikiPage] = []
-    for path in sorted(wiki_root.glob("**/*.md")):
+    return list(
+        _iter_wiki_pages_from_paths(
+            settings,
+            sorted(wiki_root.glob("**/*.md")),
+            include_body=True,
+        )
+    )
+
+
+def _collect_visible_wiki_pages(
+    settings: Settings,
+    *,
+    role: ActorRole,
+    course_id: str,
+    class_id: str,
+    requested_domain: RequestDomain | None,
+) -> list[WikiPage]:
+    return list(
+        _iter_visible_wiki_pages(
+            settings,
+            role=role,
+            course_id=course_id,
+            class_id=class_id,
+            requested_domain=requested_domain,
+            include_body=True,
+        )
+    )
+
+
+def _iter_visible_wiki_pages(
+    settings: Settings,
+    *,
+    role: ActorRole,
+    course_id: str,
+    class_id: str,
+    requested_domain: RequestDomain | None,
+    include_body: bool,
+) -> Iterator[WikiPage]:
+    allowed_domains = _visible_wiki_domains(role, requested_domain=requested_domain)
+    for page in _iter_wiki_pages_from_paths(
+        settings,
+        _iter_visible_wiki_paths(settings, allowed_domains=allowed_domains, class_id=class_id),
+        include_body=include_body,
+    ):
+        if (
+            page.course_id == course_id
+            and page.class_scope == class_id
+            and page.domain in allowed_domains
+        ):
+            yield page
+
+
+def _iter_visible_wiki_paths(
+    settings: Settings,
+    *,
+    allowed_domains: set[str],
+    class_id: str,
+) -> Iterator[Path]:
+    wiki_root = settings.data_root / "wiki"
+    for domain in sorted(allowed_domains):
+        scoped_root = wiki_root / domain / class_id
+        if not scoped_root.is_dir():
+            continue
+        yield from sorted(scoped_root.glob("*.md"))
+
+
+def _iter_wiki_pages_from_paths(
+    settings: Settings,
+    paths: Iterable[Path],
+    *,
+    include_body: bool,
+) -> Iterator[WikiPage]:
+    for path in paths:
         if path.name.startswith("."):
             continue
         try:
-            page = _load_wiki_page(path)
+            page = _load_wiki_page(path) if include_body else _load_wiki_page_metadata(path)
             if not _is_canonical_wiki_page_path(settings, page=page, path=path):
                 continue
         except (KeyError, OSError, ValueError):
             continue
-        pages.append(page)
-    return pages
+        yield page
 
 
 def search_wiki_pages(
@@ -209,26 +281,32 @@ def list_visible_wiki_pages(
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[WikiPage], int]:
-    visible_pages = _collect_visible_wiki_pages(
-        settings,
-        role=role,
-        course_id=course_id,
-        class_id=class_id,
-        requested_domain=requested_domain,
-    )
-
     normalized_query = (query or "").strip()
     if normalized_query:
-        visible_pages = [match.page for match in _rank_wiki_pages(visible_pages, query=query)]
-    else:
-        visible_pages = sorted(
-            visible_pages,
-            key=lambda page: (page.updated_at, page.page_id),
-            reverse=True,
+        visible_pages = _collect_visible_wiki_pages(
+            settings,
+            role=role,
+            course_id=course_id,
+            class_id=class_id,
+            requested_domain=requested_domain,
         )
+        visible_pages = [match.page for match in _rank_wiki_pages(visible_pages, query=query)]
+        total = len(visible_pages)
+        return visible_pages[offset : offset + limit], total
 
-    total = len(visible_pages)
-    return visible_pages[offset : offset + limit], total
+    return collect_descending_page(
+        _iter_visible_wiki_pages(
+            settings,
+            role=role,
+            course_id=course_id,
+            class_id=class_id,
+            requested_domain=requested_domain,
+            include_body=False,
+        ),
+        key=lambda page: (page.updated_at, page.page_id),
+        limit=limit,
+        offset=offset,
+    )
 
 
 def get_visible_wiki_page(
@@ -251,24 +329,6 @@ def get_visible_wiki_page(
     if page.domain not in _visible_wiki_domains(role, requested_domain=requested_domain):
         raise ForbiddenWikiScopeError("Wiki page is outside the current role boundary.")
     return page
-
-
-def _collect_visible_wiki_pages(
-    settings: Settings,
-    *,
-    role: ActorRole,
-    course_id: str,
-    class_id: str,
-    requested_domain: RequestDomain | None,
-) -> list[WikiPage]:
-    allowed_domains = _visible_wiki_domains(role, requested_domain=requested_domain)
-    return [
-        page
-        for page in list_wiki_pages(settings)
-        if page.course_id == course_id
-        and page.class_scope == class_id
-        and page.domain in allowed_domains
-    ]
 
 
 def _visible_wiki_domains(
@@ -313,6 +373,20 @@ def _rank_wiki_pages(pages: list[WikiPage], *, query: str) -> list[WikiPageMatch
 
 def _load_wiki_page(path: Path) -> WikiPage:
     metadata, body = parse_frontmatter_document(path.read_text(encoding="utf-8"))
+    return _build_wiki_page_from_metadata(metadata, body=body, path=path)
+
+
+def _load_wiki_page_metadata(path: Path) -> WikiPage:
+    metadata = _read_frontmatter_metadata_only(path)
+    return _build_wiki_page_from_metadata(metadata, body="", path=path)
+
+
+def _build_wiki_page_from_metadata(
+    metadata: dict[str, object],
+    *,
+    body: str,
+    path: Path,
+) -> WikiPage:
     return WikiPage(
         page_id=str(metadata["page_id"]),
         domain=str(metadata["domain"]),
@@ -328,8 +402,28 @@ def _load_wiki_page(path: Path) -> WikiPage:
     )
 
 
+def _read_frontmatter_metadata_only(path: Path) -> dict[str, object]:
+    with path.open(encoding="utf-8") as handle:
+        first_line = handle.readline()
+        if first_line.strip() != "---":
+            return {}
+        frontmatter_lines: list[str] = ["---"]
+        for line in handle:
+            frontmatter_lines.append(line.rstrip("\n"))
+            if line.strip() == "---":
+                break
+        else:
+            return {}
+    metadata, _body = parse_frontmatter_document("\n".join(frontmatter_lines) + "\n")
+    return metadata
+
+
 def load_wiki_page_from_path(path: Path) -> WikiPage:
     return _load_wiki_page(path)
+
+
+def load_wiki_page_metadata_from_path(path: Path) -> WikiPage:
+    return _load_wiki_page_metadata(path)
 
 
 def _is_canonical_wiki_page_path(
