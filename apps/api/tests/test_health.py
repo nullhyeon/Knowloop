@@ -10,7 +10,10 @@ from fastapi.testclient import TestClient
 
 from knowloop_api.core.config import Settings
 from knowloop_api.db.bootstrap import bootstrap_storage, build_storage_readiness_payload
+from knowloop_api.db.sqlite import SQLITE_BUSY_TIMEOUT_MS, connect_sqlite
 from knowloop_api.main import create_app
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def build_settings(tmp_path: Path) -> Settings:
@@ -632,6 +635,60 @@ def test_storage_bootstrap_migrates_legacy_storage_columns(tmp_path: Path) -> No
         "created_at",
         "updated_at",
     }.issubset(read_table_columns(settings.audit_db_path, "mutation_requests"))
+
+
+def test_sqlite_connection_helper_applies_runtime_policy(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    bootstrap_storage(settings)
+
+    for database_path in (settings.sessions_db_path, settings.audit_db_path):
+        with connect_sqlite(database_path) as connection:
+            assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            assert (
+                connection.execute("PRAGMA busy_timeout").fetchone()[0]
+                == SQLITE_BUSY_TIMEOUT_MS
+            )
+            assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_sqlite_connection_helper_passes_timeout_to_driver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import knowloop_api.db.sqlite as sqlite_db
+
+    database_path = tmp_path / "meta" / "timeout.db"
+    captured = {}
+    original_connect = sqlite_db.sqlite3.connect
+
+    def recording_connect(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        captured["path"] = path
+        captured["timeout"] = kwargs.get("timeout")
+        return original_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite_db.sqlite3, "connect", recording_connect)
+
+    with connect_sqlite(database_path, apply_journal_mode=False):
+        pass
+
+    assert captured == {
+        "path": database_path,
+        "timeout": SQLITE_BUSY_TIMEOUT_MS / 1_000,
+    }
+
+
+def test_application_sqlite_connections_use_centralized_helper() -> None:
+    source_root = REPO_ROOT / "apps" / "api" / "src" / "knowloop_api"
+    allowed_direct_connect_file = source_root / "db" / "sqlite.py"
+    offenders = []
+
+    for path in source_root.rglob("*.py"):
+        if path == allowed_direct_connect_file:
+            continue
+        if "sqlite3.connect(" in path.read_text(encoding="utf-8"):
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
+
+    assert offenders == []
 
 
 def test_settings_derive_storage_paths_from_data_root(tmp_path: Path) -> None:

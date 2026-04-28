@@ -5,6 +5,7 @@ from pathlib import Path
 
 from knowloop_api.core.config import Settings
 from knowloop_api.db.manifest import ensure_manifest_exists, manifest_status
+from knowloop_api.db.sqlite import connect_sqlite
 
 SESSIONS_SCHEMA_STATEMENTS = [
     """
@@ -297,9 +298,7 @@ def build_storage_readiness_payload(settings: Settings) -> dict[str, object]:
 
 
 def _bootstrap_sqlite_database(path: Path, statements: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA foreign_keys = ON")
+    with connect_sqlite(path) as connection:
         for statement in statements:
             connection.execute(statement)
         _ensure_table_columns(
@@ -340,7 +339,7 @@ def _status_for_database(
         if not set(table_columns).issubset(existing_tables):
             return "missing"
 
-        with sqlite3.connect(path) as connection:
+        with connect_sqlite(path) as connection:
             for table_name, required_columns in table_columns.items():
                 if not required_columns.issubset(_fetch_table_columns(connection, table_name)):
                     return "missing"
@@ -357,7 +356,7 @@ def _status_for_database(
 
 
 def _fetch_table_names(path: Path) -> set[str]:
-    with sqlite3.connect(path) as connection:
+    with connect_sqlite(path) as connection:
         rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
 
     return {row[0] for row in rows}

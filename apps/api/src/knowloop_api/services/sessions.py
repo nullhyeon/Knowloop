@@ -15,6 +15,7 @@ from knowloop_api.core.contracts import (
     validate_course_id,
 )
 from knowloop_api.db.audit import create_audit_event, list_audit_events
+from knowloop_api.db.sqlite import connect_sqlite
 from knowloop_api.services.candidates import SourceRef
 
 
@@ -58,7 +59,7 @@ def save_session(
     validate_course_id(session.course_id)
     validate_class_id(session.class_id)
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         existing_row = connection.execute(
             """
             SELECT
@@ -201,7 +202,7 @@ def _ensure_session_saved_audit(
 
 
 def get_session(settings: Settings, session_id: str) -> SessionRecord:
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         row = connection.execute(
             """
             SELECT
@@ -238,7 +239,7 @@ def list_recent_sessions(
     course_id: str,
     limit: int = 5,
 ) -> list[SessionRecord]:
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         rows = connection.execute(
             """
             SELECT
@@ -284,7 +285,7 @@ def list_sessions_for_class(
         parameters.append(role.value)
     parameters.append(limit)
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         rows = connection.execute(
             f"""
             SELECT
@@ -328,7 +329,7 @@ def list_session_insight_rows_for_class(
         role_clause = " AND role = ?"
         parameters.append(role.value)
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         rows = connection.execute(
             f"""
             SELECT
@@ -372,7 +373,7 @@ def update_session_artifact_refs(
         }
     )
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         connection.execute(
             """
             UPDATE sessions
@@ -400,7 +401,7 @@ def update_session_replay_intent(
     session = get_session(settings, session_id)
     updated_session = session.model_copy(update={"replay_intent": replay_intent})
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         connection.execute(
             """
             UPDATE sessions

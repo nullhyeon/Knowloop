@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from enum import StrEnum
 
 from pydantic import BaseModel
 
 from knowloop_api.core.config import Settings
 from knowloop_api.core.contracts import ActorRole
+from knowloop_api.db.sqlite import connect_sqlite
 from knowloop_api.services.sessions import (
     SessionRecord,
     _session_from_row,
@@ -146,7 +146,7 @@ def _list_visible_recent_sessions(
         class_id=class_id,
     )
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         count_row = connection.execute(
             f"""
             SELECT COUNT(*)
@@ -276,7 +276,7 @@ def _search_visible_sessions_with_index(
         class_id=class_id,
     )
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         count_row = connection.execute(
             f"""
             SELECT COUNT(*)
@@ -349,7 +349,7 @@ def _search_visible_sessions_fallback(
     )
     like_pattern = f"%{normalized_query}%"
 
-    with sqlite3.connect(settings.sessions_db_path) as connection:
+    with connect_sqlite(settings.sessions_db_path) as connection:
         count_row = connection.execute(
             f"""
             SELECT COUNT(*)

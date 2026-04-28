@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel
 
 from knowloop_api.core.config import Settings
+from knowloop_api.db.sqlite import connect_sqlite
 
 
 class AuditEventRecord(BaseModel):
@@ -72,7 +73,7 @@ def create_audit_event(
         created_at=event_timestamp,
     )
 
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         for _attempt in range(5):
             try:
                 _insert_audit_event(connection, event)
@@ -150,7 +151,7 @@ def list_audit_events(
 
     query += " ORDER BY created_at DESC, event_id DESC"
 
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         rows = connection.execute(query, parameters).fetchall()
 
     return [
@@ -174,7 +175,7 @@ def list_audit_events(
 
 
 def get_audit_event(settings: Settings, event_id: str) -> AuditEventRecord | None:
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         row = connection.execute(
             """
             SELECT
@@ -224,7 +225,7 @@ def update_audit_event_details(
     details: dict[str, object],
 ) -> AuditEventRecord | None:
     serialized_details = _serialize_audit_details(details)
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         connection.execute(
             """
             UPDATE audit_events
@@ -246,7 +247,7 @@ def get_mutation_request(
     action: str,
     idempotency_key: str,
 ) -> MutationRequestRecord | None:
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         row = connection.execute(
             """
             SELECT
@@ -336,7 +337,7 @@ def list_mutation_requests(
 
     query += " ORDER BY created_at DESC, idempotency_key DESC"
 
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         rows = connection.execute(query, parameters).fetchall()
 
     return [
@@ -370,7 +371,7 @@ def begin_mutation_request(
     created_at: datetime,
 ) -> MutationRequestRecord:
     timestamp = created_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         connection.execute(
             """
             INSERT OR IGNORE INTO mutation_requests (
@@ -437,7 +438,7 @@ def mark_mutation_request_applied(
         effective_updated_at = existing_record.updated_at
 
     timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         connection.execute(
             """
             UPDATE mutation_requests
@@ -493,7 +494,7 @@ def store_mutation_request_response_payload(
         effective_updated_at = existing_record.updated_at
 
     timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         connection.execute(
             """
             UPDATE mutation_requests
@@ -548,7 +549,7 @@ def store_pending_mutation_request_response_payload(
         effective_updated_at = existing_record.updated_at
 
     timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         cursor = connection.execute(
             """
             UPDATE mutation_requests
@@ -606,7 +607,7 @@ def demote_applied_mutation_request_if_payload_matches(
     expected_response_json = _serialize_audit_details(expected_response_payload)
     response_json = _serialize_audit_details(response_payload)
     timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         cursor = connection.execute(
             """
             UPDATE mutation_requests
@@ -663,7 +664,7 @@ def touch_mutation_request(
         effective_updated_at = existing_record.updated_at
 
     timestamp = effective_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         connection.execute(
             """
             UPDATE mutation_requests
@@ -708,7 +709,7 @@ def reclaim_stale_mutation_request(
 ) -> MutationRequestRecord | None:
     cutoff_timestamp = cutoff_updated_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     reclaimed_timestamp = reclaimed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(settings.audit_db_path) as connection:
+    with connect_sqlite(settings.audit_db_path) as connection:
         cursor = connection.execute(
             """
             UPDATE mutation_requests

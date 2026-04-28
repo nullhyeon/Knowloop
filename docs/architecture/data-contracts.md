@@ -474,6 +474,8 @@ Rules:
 - A learning note is scoped to `student + course + class`, not to the entire student profile.
 - Query writes may enrich a session with `candidate_refs` or `learning_note_refs` after the initial session row is saved.
 - Open candidates are never treated as formal truth.
+- Application SQLite access goes through the shared connection helper, which applies `foreign_keys=ON`, a 5 second SQLite busy timeout, and WAL journal mode for file-backed runtime databases.
+- There is no generic application-level SQLite retry loop in the MVP; idempotent replay and stale-owner recovery remain workflow-specific so non-idempotent write sequences are not silently re-run.
 
 ## 10. Change Control
 
