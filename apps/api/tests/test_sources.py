@@ -1301,6 +1301,47 @@ def test_sources_list_and_detail_respect_role_scope(tmp_path: Path) -> None:
     assert detail_response.json()["error"]["code"] == "forbidden_scope"
 
 
+def test_source_list_rejects_query_scope_overrides(tmp_path: Path) -> None:
+    client, settings = build_client(tmp_path)
+    register_source(
+        settings,
+        SourceRegistrationInput(
+            source_type=SourceType.LECTURE_NOTE,
+            title="Week 03 Chain Rule",
+            content="# Chain Rule\nAcademic content.",
+            mime_type="text/markdown",
+            filename="week-03-chain-rule.md",
+            tags=["week-03", "chain-rule"],
+        ),
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        actor_role=ActorRole.INSTRUCTOR,
+        actor_id="ins-calculus-team",
+        created_at=datetime(2026, 4, 8, 10, 30, tzinfo=UTC),
+    )
+
+    response = client.get(
+        "/api/v1/sources",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-list-sources-scope-query",
+        ),
+        params={
+            "course_id": "course-other",
+            "class_id": "class-other",
+            "domain": "operations",
+        },
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["error"]["code"] == "validation_failed"
+    assert payload["error"]["details"] == {
+        "query_parameters": ["class_id", "course_id", "domain"]
+    }
+
+
 def test_source_list_paginates_after_scoped_ordering(tmp_path: Path) -> None:
     client, settings = build_client(tmp_path)
     for index in range(4):

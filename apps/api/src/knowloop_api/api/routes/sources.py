@@ -134,6 +134,9 @@ def create_sources_router(settings: Settings) -> APIRouter:
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
         offset: Annotated[int, Query(ge=0)] = 0,
         q: Annotated[str | None, Query(max_length=MAX_SOURCE_SEARCH_QUERY_LENGTH)] = None,
+        course_id: Annotated[str | None, Query(include_in_schema=False)] = None,
+        class_id: Annotated[str | None, Query(include_in_schema=False)] = None,
+        domain: Annotated[str | None, Query(include_in_schema=False)] = None,
     ) -> dict[str, Any]:
         if context.role not in {
             ActorRole.INSTRUCTOR,
@@ -147,6 +150,27 @@ def create_sources_router(settings: Settings) -> APIRouter:
                 message="This role cannot browse raw sources.",
                 request_id=context.request_id,
                 details={"role": context.role.value},
+            )
+
+        context_scope_query_parameters = sorted(
+            parameter
+            for parameter, value in {
+                "course_id": course_id,
+                "class_id": class_id,
+                "domain": domain,
+            }.items()
+            if value is not None
+        )
+        if context_scope_query_parameters:
+            raise ApiError(
+                status_code=422,
+                code="validation_failed",
+                message=(
+                    "Source list scope is derived from the request context, "
+                    "not query parameters."
+                ),
+                request_id=context.request_id,
+                details={"query_parameters": context_scope_query_parameters},
             )
 
         if source_type is not None and not is_source_type_allowed_for_role(

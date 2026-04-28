@@ -29,10 +29,11 @@ Show what raw materials exist and how they connect to downstream knowledge objec
 ## Required UI Elements
 
 - source table
-- filters by source type, domain, status
+- filters by source type and text search
 - register source action
 - source detail panel
 - scope badges
+- domain and status metadata badges
 - linked object summary where available
 
 ## States

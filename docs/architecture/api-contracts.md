@@ -376,6 +376,7 @@ Supported query parameters:
 Scope notes:
 
 - `course_id`, `class_id`, and `domain` are derived from the request context, not accepted as public query parameters
+- requests that include `course_id`, `class_id`, or `domain` query parameters are rejected with `validation_failed`
 
 ### `GET /api/v1/sources/{source_id}`
 
