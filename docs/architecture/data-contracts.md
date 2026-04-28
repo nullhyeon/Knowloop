@@ -206,7 +206,7 @@ Interpretation notes:
   services still see the canonical shape; the on-disk rewrite is best-effort and may be
   retried later if the first normalization write fails
 - `promotion_attempt_id` is the server-owned identity for one approval attempt
-- `wiki_sync_target_path` and `approval_plan_fingerprint` freeze the exact wiki patch plan that may later be resumed
+- `wiki_sync_target_path` and `approval_plan_fingerprint` store the pending wiki patch plan that may later be resumed; if no wiki patch has been applied yet, resume-sync may refresh the fingerprint to recover same-scope wiki body drift without creating a second promotion attempt
 - `wiki_sync_status = pending` means the candidate is promoted but the wiki sync still needs the dedicated resume path to finish
 
 Canonical store:

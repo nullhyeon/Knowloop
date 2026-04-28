@@ -648,7 +648,7 @@ Rules:
 - retry after a partial wiki-sync failure must converge to one promoted candidate state and one final wiki patch audit chain
 - a failed approve attempt may still leave `candidate.status = promoted` with `wiki_sync_status = pending`; callers may retry with the same `Idempotency-Key`, or they may use the dedicated `resume-sync` endpoint to continue the stored promotion attempt with a fresh request key
 - internal persistence or I/O partial failures that are not represented as validation, frozen-plan drift, source-integrity, duplicate-action, or storage-lock errors currently surface as `500 internal_error` until the original idempotent approval either converges or is explicitly superseded
-- the wiki-sync audit chain carries structured `details` for `candidate_wiki_sync_pending`, `wiki_patch_applied`, and `candidate_wiki_synced` with `candidate_id`, `promotion_attempt_id`, and `approval_plan_fingerprint`; retries must converge onto that frozen chain instead of creating a second attempt identity
+- the wiki-sync audit chain carries structured `details` for `candidate_wiki_sync_pending`, `wiki_patch_applied`, and `candidate_wiki_synced` with `candidate_id`, `promotion_attempt_id`, and `approval_plan_fingerprint`; retries must converge onto one chain instead of creating a second attempt identity
 
 Response body inside `data`:
 
@@ -678,11 +678,12 @@ Contract:
 - `operator` remains read-only in the MVP review flow and cannot resume wiki sync
 - `system` remains read-only in the review workflow and cannot resume wiki sync
 - candidate must already be `status = promoted` and `wiki_sync_status = pending`
-- the server reuses the stored `promotion_attempt_id` and frozen `approval_plan_fingerprint`; the canonical `wiki_sync_target_path` remains candidate-owned state and must still validate against that frozen plan during resume
+- the server reuses the stored `promotion_attempt_id` and stored `approval_plan_fingerprint`; the canonical `wiki_sync_target_path` remains candidate-owned state and must still validate against the pending plan during resume
 - resume-sync reruns the source-integrity preflight against the final wiki `source_refs` set before applying the pending wiki mutation; failures return `422 source_integrity_failed`
 - candidate and wiki file locks older than 5 minutes are treated as crash leftovers and may be reclaimed; active lock contention returns `503 storage_busy`
 - resume continues the existing pending promotion attempt and must not emit a second `candidate_wiki_sync_pending` audit event
-- the current candidate and wiki page must still match the frozen approval plan; if that plan drifts, the request returns `409 duplicate_action`
+- if a pending attempt has no `wiki_patch_applied` or `candidate_wiki_synced` audit yet, same-scope wiki body drift may be recovered by refreshing the stored `approval_plan_fingerprint` and updating the single pending audit details before applying the current patch plan
+- after any wiki patch or synced marker exists for the promotion attempt, the current candidate and wiki page must still match the frozen approval plan; if that plan drifts, the request returns `409 duplicate_action`
 - if the stored target page drifts into another scope before resume, that still counts as frozen-plan drift and must return `409 duplicate_action`
 - unlike `approve`, `resume-sync` may use a fresh `Idempotency-Key` because it resumes a server-owned promotion attempt rather than creating a new approval plan
 - a fresh `resume-sync` key that fails frozen-plan validation, scope validation, or cross-course validation must not persist a new replay-owner mutation record for that rejected attempt

@@ -67,6 +67,7 @@ candidate는 다음 상태 중 하나를 가진다.
 - 단, approval plan이 고정된 뒤 wiki 반영이 중단되면 `candidate.status = promoted` 이면서 `wiki_sync_status = pending` 인 중간 상태가 잠시 존재할 수 있다
 - 이 경우에는 새로운 approve를 만드는 대신 전용 `resume-sync` 경로로 같은 promotion attempt를 이어서 마무리한다
 - `resume-sync`는 기존 pending 상태를 완료하는 동작이므로 새로운 `candidate_wiki_sync_pending` audit를 추가로 만들지 않는다
+- 아직 wiki patch가 적용되지 않은 pending 시도에서 같은 scope의 wiki 본문만 drift된 경우에는 `resume-sync`가 현재 본문 기준으로 plan fingerprint를 갱신하고 단일 audit chain을 유지한 채 마무리할 수 있다
 
 ### merged
 - 더 적절한 기존 candidate에 병합된 상태

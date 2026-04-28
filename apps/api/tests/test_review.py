@@ -3665,7 +3665,7 @@ def test_review_resume_sync_rejects_reused_idempotency_key_with_different_payloa
     )
 
 
-def test_review_resume_sync_returns_duplicate_action_when_stored_plan_drifts(
+def test_review_resume_sync_refreshes_plan_when_wiki_body_drifts_before_patch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3706,59 +3706,89 @@ def test_review_resume_sync_returns_duplicate_action_when_stored_plan_drifts(
         ),
         encoding="utf-8",
     )
-    artifact_snapshot = capture_review_artifact_snapshot(
-        settings,
-        candidates=(get_candidate(settings, candidate.candidate_id),),
-        wiki_contract_paths=(
-            "data/wiki/faq/class-calculus-1-2026-spring-a/homework-submission.md",
-        ),
-    )
+    drifted_wiki_contents = written_path.read_text(encoding="utf-8")
 
     resume_response = client.post(
         f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
         headers=build_headers(
             role="instructor",
             actor_id="ins-calculus-team",
-            request_id="req-fixture-resume-homework-faq-drift",
-            idempotency_key="idem-fixture-resume-homework-faq-drift",
+            request_id="req-fixture-resume-homework-faq-plan-refresh",
+            idempotency_key="idem-fixture-resume-homework-faq-plan-refresh",
             domain="academic",
         ),
-        json={"resume_notes": "Resume the frozen approval plan after the write failure."},
+        json={"resume_notes": "Resume the current wiki plan after the body drift."},
     )
 
     stored_candidate = get_candidate(settings, candidate.candidate_id)
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action="candidate_wiki_sync_pending",
+    )
     synced_events = list_audit_events(
         settings,
         entity_type="candidate",
         entity_id=candidate.candidate_id,
         action="candidate_wiki_synced",
-        idempotency_key="idem-fixture-resume-homework-faq-drift",
+        idempotency_key="idem-fixture-resume-homework-faq-plan-refresh",
     )
     wiki_audit = list_audit_events(
         settings,
         entity_type="wiki_page",
         entity_id="page-faq-homework-submission",
         action="wiki_patch_applied",
-        idempotency_key="idem-fixture-resume-homework-faq-drift",
+        idempotency_key="idem-fixture-resume-homework-faq-plan-refresh",
+    )
+    final_metadata, final_body = parse_markdown_document(
+        written_path.read_text(encoding="utf-8")
     )
 
-    assert resume_response.status_code == 409
-    assert_api_error_envelope(
-        resume_response,
-        expected_code="duplicate_action",
-        client_request_id="req-fixture-resume-homework-faq-drift",
-    )
+    assert resume_response.status_code == 200
+    payload = resume_response.json()["data"]
+    assert payload["candidate"]["wiki_sync_status"] == "synced"
     assert stored_candidate.status is CandidateStatus.PROMOTED
-    assert stored_candidate.wiki_sync_status is WikiSyncStatus.PENDING
-    assert synced_events == []
-    assert wiki_audit == []
-    assert_no_review_mutation_artifacts(
-        settings,
-        candidate_id=candidate.candidate_id,
-        mutation_action="candidate_wiki_sync_resumed",
-        idempotency_key="idem-fixture-resume-homework-faq-drift",
-        artifact_snapshot=artifact_snapshot,
+    assert stored_candidate.wiki_sync_status is WikiSyncStatus.SYNCED
+    assert stored_candidate.approval_plan_fingerprint is not None
+    assert len(pending_events) == 1
+    assert len(synced_events) == 1
+    assert len(wiki_audit) == 1
+    assert pending_events[0].details == synced_events[0].details
+    assert wiki_audit[0].details == synced_events[0].details
+    assert (
+        pending_events[0].details["approval_plan_fingerprint"]
+        == stored_candidate.approval_plan_fingerprint
     )
+    assert final_metadata["candidate_refs"] == [candidate.candidate_id]
+    assert "course forum" in final_body
+    assert written_path.read_text(encoding="utf-8") != drifted_wiki_contents
+
+    replay_response = client.post(
+        f"/api/v1/review/candidates/{candidate.candidate_id}/resume-sync",
+        headers=build_headers(
+            role="instructor",
+            actor_id="ins-calculus-team",
+            request_id="req-fixture-resume-homework-faq-plan-refresh-replay",
+            idempotency_key="idem-fixture-resume-homework-faq-plan-refresh",
+            domain="academic",
+        ),
+        json={"resume_notes": "Resume the current wiki plan after the body drift."},
+    )
+
+    assert replay_response.status_code == 200
+    replay_payload = replay_response.json()["data"]
+    assert replay_payload["candidate"]["wiki_sync_status"] == "synced"
+    assert replay_payload["wiki_page"]["updated_at"] == payload["wiki_page"]["updated_at"]
+    assert len(
+        list_audit_events(
+            settings,
+            entity_type="wiki_page",
+            entity_id="page-faq-homework-submission",
+            action="wiki_patch_applied",
+            idempotency_key="idem-fixture-resume-homework-faq-plan-refresh",
+        )
+    ) == 1
 
 
 def test_review_resume_sync_returns_duplicate_action_when_target_page_drifts_out_of_scope(

@@ -45,6 +45,7 @@ from knowloop_api.services.candidates import (
     mark_candidate_wiki_synced,
     merge_candidate,
     promote_candidate,
+    refresh_candidate_wiki_sync_plan,
 )
 from knowloop_api.services.sources import (
     SourceNotFoundError,
@@ -401,22 +402,18 @@ def resume_candidate_sync(
                 raise CandidateStateError(
                     "stored resumed candidate is missing a frozen replay contract"
                 )
-            resume_request_fingerprint = _build_resume_sync_request_fingerprint(
+        if stored_resume_contract is not None:
+            if mutation_request.request_fingerprint != resume_request_fingerprint:
+                raise CandidateStateError("idempotency_key already exists for a different request")
+            replayed_response = _finalize_or_replay_resume_sync(
+                settings,
+                mutation_request=mutation_request,
                 candidate=candidate,
                 context=context,
                 notes=payload.resume_notes,
             )
-        if mutation_request.request_fingerprint != resume_request_fingerprint:
-            raise CandidateStateError("idempotency_key already exists for a different request")
-        replayed_response = _finalize_or_replay_resume_sync(
-            settings,
-            mutation_request=mutation_request,
-            candidate=candidate,
-            context=context,
-            notes=payload.resume_notes,
-        )
-        if replayed_response is not None:
-            return replayed_response
+            if replayed_response is not None:
+                return replayed_response
 
     _assert_action_allowed(candidate, context=context, action="resume_sync")
     if candidate.related_page_id is None:
@@ -428,11 +425,6 @@ def resume_candidate_sync(
     if candidate.promotion_attempt_id is None:
         raise ReviewStateError("pending candidate is missing promotion_attempt_id")
 
-    resume_request_fingerprint = _build_resume_sync_request_fingerprint(
-        candidate=candidate,
-        context=context,
-        notes=payload.resume_notes,
-    )
     if candidate.status is not CandidateStatus.PROMOTED:
         raise ReviewStateError("candidate sync resume requires a promoted candidate")
     if candidate.wiki_sync_status is not WikiSyncStatus.PENDING:
@@ -460,9 +452,52 @@ def resume_candidate_sync(
         patch_draft=patch_draft,
     )
     if current_plan_fingerprint != resume_contract["approval_plan_fingerprint"]:
-        raise CandidateStateError(
-            "pending candidate sync no longer matches the stored approval plan"
+        if not _can_refresh_pending_wiki_sync_plan(
+            settings,
+            candidate=candidate,
+            target_page_id=patch_draft.target_page_id,
+            promotion_attempt_id=resume_contract["promotion_attempt_id"],
+        ):
+            raise CandidateStateError(
+                "pending candidate sync no longer matches the stored approval plan"
+            )
+        previous_approval_plan_fingerprint = resume_contract["approval_plan_fingerprint"]
+        resume_contract = _build_resume_sync_contract(
+            promotion_attempt_id=resume_contract["promotion_attempt_id"],
+            approval_plan_fingerprint=current_plan_fingerprint,
         )
+        candidate = refresh_candidate_wiki_sync_plan(
+            settings,
+            candidate.candidate_id,
+            approval_plan_fingerprint=current_plan_fingerprint,
+            target_path=_as_data_relative_path(settings, patch_draft.target_path),
+            current_candidate_snapshot=candidate,
+        )
+        _refresh_candidate_wiki_sync_pending_audit_details(
+            settings,
+            candidate=candidate,
+            previous_approval_plan_fingerprint=previous_approval_plan_fingerprint,
+        )
+
+    resume_request_fingerprint = _build_resume_sync_request_fingerprint_from_contract(
+        candidate_id=candidate.candidate_id,
+        context=context,
+        promotion_attempt_id=resume_contract["promotion_attempt_id"],
+        approval_plan_fingerprint=resume_contract["approval_plan_fingerprint"],
+        notes=payload.resume_notes,
+    )
+    if mutation_request is not None:
+        if mutation_request.request_fingerprint != resume_request_fingerprint:
+            raise CandidateStateError("idempotency_key already exists for a different request")
+        replayed_response = _finalize_or_replay_resume_sync(
+            settings,
+            mutation_request=mutation_request,
+            candidate=candidate,
+            context=context,
+            notes=payload.resume_notes,
+        )
+        if replayed_response is not None:
+            return replayed_response
 
     if mutation_request is None:
         mutation_request = begin_mutation_request(
@@ -988,27 +1023,6 @@ def _build_review_patch_fingerprint(
 def _build_promotion_attempt_id(*, candidate_id: str, approved_at: datetime) -> str:
     timestamp = approved_at.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     return f"pat-{candidate_id}-{timestamp}"
-
-
-def _build_resume_sync_request_fingerprint(
-    *,
-    candidate: CandidateItem,
-    context: RequestContext,
-    notes: str | None,
-) -> str:
-    if candidate.promotion_attempt_id is None:
-        raise ReviewStateError("pending candidate is missing promotion_attempt_id")
-    if candidate.approval_plan_fingerprint is None:
-        raise ReviewStateError("pending candidate is missing approval_plan_fingerprint")
-    return _build_review_request_fingerprint(
-        candidate_id=candidate.candidate_id,
-        action=RESUME_SYNC_REQUEST_ACTION,
-        actor_role=context.role.value,
-        actor_id=context.actor_id,
-        promotion_attempt_id=candidate.promotion_attempt_id,
-        approval_plan_fingerprint=candidate.approval_plan_fingerprint,
-        notes=notes,
-    )
 
 
 def _build_resume_sync_request_fingerprint_from_contract(
@@ -1709,6 +1723,116 @@ def _resolve_resume_sync_contract(
     return _build_resume_sync_contract(
         promotion_attempt_id=candidate.promotion_attempt_id,
         approval_plan_fingerprint=candidate.approval_plan_fingerprint,
+    )
+
+
+def _can_refresh_pending_wiki_sync_plan(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    target_page_id: str,
+    promotion_attempt_id: str,
+) -> bool:
+    if candidate.status is not CandidateStatus.PROMOTED:
+        return False
+    if candidate.wiki_sync_status is not WikiSyncStatus.PENDING:
+        return False
+    if _has_wiki_sync_event_for_attempt(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=WIKI_SYNC_COMPLETED_ACTION,
+        candidate_id=candidate.candidate_id,
+        promotion_attempt_id=promotion_attempt_id,
+    ):
+        return False
+    return not _has_wiki_sync_event_for_attempt(
+        settings,
+        entity_type="wiki_page",
+        entity_id=target_page_id,
+        action="wiki_patch_applied",
+        candidate_id=candidate.candidate_id,
+        promotion_attempt_id=promotion_attempt_id,
+    )
+
+
+def _has_wiki_sync_event_for_attempt(
+    settings: Settings,
+    *,
+    entity_type: str,
+    entity_id: str,
+    action: str,
+    candidate_id: str,
+    promotion_attempt_id: str,
+) -> bool:
+    return any(
+        _wiki_sync_event_matches_attempt(
+            event.details,
+            candidate_id=candidate_id,
+            promotion_attempt_id=promotion_attempt_id,
+        )
+        for event in list_audit_events(
+            settings,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action=action,
+        )
+    )
+
+
+def _refresh_candidate_wiki_sync_pending_audit_details(
+    settings: Settings,
+    *,
+    candidate: CandidateItem,
+    previous_approval_plan_fingerprint: str,
+) -> None:
+    if candidate.promotion_attempt_id is None:
+        raise ReviewStateError("pending candidate is missing promotion_attempt_id")
+    if candidate.approval_plan_fingerprint is None:
+        raise ReviewStateError("pending candidate is missing approval_plan_fingerprint")
+
+    refreshed_details = _require_wiki_sync_audit_details(
+        candidate_id=candidate.candidate_id,
+        promotion_attempt_id=candidate.promotion_attempt_id,
+        approval_plan_fingerprint=candidate.approval_plan_fingerprint,
+    )
+    pending_events = list_audit_events(
+        settings,
+        entity_type="candidate",
+        entity_id=candidate.candidate_id,
+        action=WIKI_SYNC_PENDING_ACTION,
+    )
+    matching_events = [
+        event
+        for event in pending_events
+        if _wiki_sync_event_matches_attempt(
+            event.details,
+            candidate_id=candidate.candidate_id,
+            promotion_attempt_id=candidate.promotion_attempt_id,
+        )
+        and isinstance(event.details, dict)
+        and event.details.get("approval_plan_fingerprint")
+        == previous_approval_plan_fingerprint
+    ]
+    if len(matching_events) == 1:
+        update_audit_event_details(
+            settings,
+            event_id=matching_events[0].event_id,
+            details=refreshed_details,
+        )
+
+
+def _wiki_sync_event_matches_attempt(
+    details: dict[str, object] | None,
+    *,
+    candidate_id: str,
+    promotion_attempt_id: str,
+) -> bool:
+    if not isinstance(details, dict):
+        return False
+    return (
+        details.get("candidate_id") == candidate_id
+        and details.get("promotion_attempt_id") == promotion_attempt_id
     )
 
 

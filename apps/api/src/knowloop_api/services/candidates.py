@@ -890,6 +890,40 @@ def mark_candidate_wiki_synced(
     return updated_candidate
 
 
+def refresh_candidate_wiki_sync_plan(
+    settings: Settings,
+    candidate_id: str,
+    *,
+    approval_plan_fingerprint: str,
+    target_path: str | None = None,
+    refreshed_at: datetime | None = None,
+    current_candidate_snapshot: CandidateItem | None = None,
+) -> CandidateItem:
+    current_candidate = current_candidate_snapshot or get_candidate(settings, candidate_id)
+    if current_candidate.status is not CandidateStatus.PROMOTED:
+        raise CandidateStateError("only promoted candidates can refresh wiki sync plan")
+    if current_candidate.wiki_sync_status is not WikiSyncStatus.PENDING:
+        raise CandidateStateError("only pending wiki sync plans can be refreshed")
+    if current_candidate.promotion_attempt_id is None:
+        raise CandidateStateError("pending candidate is missing promotion_attempt_id")
+
+    effective_refreshed_at = refreshed_at or datetime.now(UTC)
+    updated_candidate = current_candidate.model_copy(
+        update={
+            "approval_plan_fingerprint": approval_plan_fingerprint,
+            "wiki_sync_target_path": target_path or current_candidate.wiki_sync_target_path,
+            "updated_at": effective_refreshed_at,
+        }
+    )
+    candidate_path = find_candidate_path(settings, candidate_id)
+    _apply_candidate_transaction(
+        {candidate_path: updated_candidate},
+        expected_current={candidate_path: current_candidate},
+        persist_audit=lambda: None,
+    )
+    return updated_candidate
+
+
 def build_candidate_path(settings: Settings, candidate: CandidateItem) -> Path:
     kind_directory = CANDIDATE_KIND_DIRECTORIES[candidate.kind]
     return (
