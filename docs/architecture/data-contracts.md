@@ -440,7 +440,7 @@ Layer responsibilities:
 - `wiki/`: formal verified Markdown pages
 - `learning/`: student-scoped learning support files
 - `meta/`: manifest, scoped maintenance reports, and SQLite databases
-- `fixtures/`: repository-safe test and demo seeds
+- `fixtures/`: repository-safe test seeds and expected snapshots
 
 ## 8. Authority Rules
 

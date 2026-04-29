@@ -12,7 +12,7 @@ The backend MVP core is implemented enough for frontend work to begin. The curre
 - keep the dedicated `wiki` read surface stable
 - keep the instructor insight surface aggregated and privacy-safe
 - keep the session search surface role-aware and redaction-safe
-- support the frontend-ready context bootstrap adapter for local demo personas
+- keep request-context bootstrap aligned to explicit or signed production headers
 - require production deployments to use a trusted signed-context adapter instead of accepting forgeable role/scope headers
 - keep the maintenance report surface actionable and deterministic
 - keep the reproducible offline backend smoke suite and opt-in live LLM smoke current

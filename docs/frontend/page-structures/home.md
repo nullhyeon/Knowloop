@@ -146,12 +146,12 @@ This section should feel calm and precise, not defensive.
 ## Required Data
 
 The page itself may use static explanatory copy.
-The entry buttons must map to canonical sample profiles already supported by the context bootstrap flow.
+The entry buttons must hand off to authenticated or signed context setup.
 
 Expected target behavior:
 
-- student sample button deep-links into a seeded student profile
-- instructor sample button deep-links into a seeded instructor profile
+- role entry routes must resolve context through the service context contract
+- static sample profile deep-links are not part of the production flow
 
 ---
 
@@ -167,7 +167,6 @@ Expected target behavior:
 Optional:
 
 - compact footer note
-- "이미 준비된 샘플 데이터로 바로 체험할 수 있습니다" notice
 
 ---
 

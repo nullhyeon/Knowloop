@@ -14,16 +14,16 @@ Knowloop routes make authorization decisions from request context: role, actor, 
 class, and domain. The MVP originally accepted those fields directly from
 `X-Knowloop-*` headers so fixture-driven backend and frontend work could move quickly.
 
-That header contract is useful for local demos, but it is not a production security
-boundary. A caller that can set those headers can forge instructor, validator, or system
-scope.
+That header contract is useful for local development, but it is not a production
+security boundary. A caller that can set those headers can forge instructor,
+validator, or system scope.
 
 ## Decision
 
 Keep the internal `RequestContext` shape and route-level role/domain policies, but make
 the request-context boundary configurable:
 
-- `context_trust_mode=legacy_headers` remains the development and local demo mode.
+- `context_trust_mode=legacy_headers` remains the development mode.
 - `context_trust_mode=signed` requires `X-Knowloop-Context-Timestamp` and
   `X-Knowloop-Context-Signature`.
 - Production settings must use signed mode and must provide `trusted_context_secret`.
@@ -34,8 +34,9 @@ the request-context boundary configurable:
   accepted only within a fixed 30-second skew window.
 - `X-Request-Id` and `Idempotency-Key` stay outside the signature because they are
   tracing and replay controls, not authorization inputs.
-- Demo profile lookup and `GET /api/v1/context/profiles` are available only when
-  `demo_context_profiles_enabled=true`.
+- Demo profile lookup and `GET /api/v1/context/profiles` are removed from the
+  runtime contract. Clients must send explicit context headers, and production
+  deployments must sign them.
 
 ## Consequences
 
@@ -43,7 +44,7 @@ the request-context boundary configurable:
 
 - production deployments no longer accept forgeable role and scope headers by default
 - existing route, service, and storage code can continue using `RequestContext`
-- local fixture and demo workflows remain available in explicit demo/development mode
+- local fixture workflows remain available without exposing a profile registry
 - a future full authentication layer can replace the signed adapter without changing
   downstream domain policies
 
@@ -51,7 +52,7 @@ the request-context boundary configurable:
 
 - clients in signed mode need a trusted upstream signer or test helper
 - invalid context now fails before route-specific authorization checks
-- demo profile behavior is no longer a public unauthenticated contract outside demo mode
+- development clients must provide the full context header bundle instead of a profile id
 
 ## Follow-Up
 

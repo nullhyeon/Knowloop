@@ -24,4 +24,4 @@ Do not commit:
 - `wiki/` promoted knowledge artifacts
 - `learning/` student-specific learning outputs
 - `meta/` manifests, scoped maintenance status, and local database files
-- `fixtures/` synthetic inputs and expected snapshots for tests and demos
+- `fixtures/` synthetic inputs and expected snapshots for tests

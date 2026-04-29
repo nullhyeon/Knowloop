@@ -1,4 +1,4 @@
-﻿{
+{
   "learning_note_id": "learn-stu-kim-minji-calculus-1-calculus-1-2026-spring-a",
   "student_id": "stu-kim-minji",
   "course_id": "course-calculus-1",
@@ -9,14 +9,14 @@
     "composition"
   ],
   "gaps": [
-    "연쇄법칙과 곱의 미분법을 식의 구조 기준으로 먼저 구분하기",
-    "substitution이 항상 가능한 것은 아니라는 점을 later units 기준으로 다시 확인하기"
+    "Distinguish chain-rule and product-rule expressions by the expression structure first.",
+    "Recheck substitution boundaries before applying the method across later units."
   ],
   "next_actions": [
-    "연쇄법칙 위키 페이지를 다시 읽고 nested structure 예제를 두 개 직접 구분해 보기",
-    "다음 Ask에서 substitution boundary를 예시와 함께 다시 질문해 보기"
+    "Review the chain-rule wiki page and classify two nested-structure examples.",
+    "Ask a follow-up question with examples before applying substitution broadly."
   ],
-  "summary": "민지는 규칙 자체보다 어떤 식에서 어떤 rule을 먼저 적용해야 하는지 판단하는 단계에서 반복적으로 막히고 있습니다.",
+  "summary": "The student repeatedly needs help deciding which rule applies before executing the derivative steps.",
   "source_refs": [
     {
       "source_id": "src-lecture-note-class-calculus-1-2026-spring-a-week-03-20260408T103000Z",

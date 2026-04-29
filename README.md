@@ -140,30 +140,15 @@ Knowloop는 `결정론적 로직`과 `생성형 AI`를 분리합니다.
 - `/maintenance`
 - `/insights`
 
-즉 현재 데모는 mock 화면이 아니라, 실제 API와 demo seed 데이터 위에서 동작하는 MVP 상태입니다.
+현재 표면은 실제 API 계약 위에서 동작해야 하며, 정적 demo seed/profile 흐름은 운영 계약에서 제거되었습니다.
 
 ---
 
-## 데모 시작 방법
+## 서비스 시작 방식
 
-첫 시작 화면(`/`)에서 바로 두 가지 샘플 동선을 체험할 수 있습니다.
-
-- `학생용 샘플 데이터로 시작`
-- `교강사용 샘플 데이터로 시작`
-
-샘플 프로필:
-- `student-minji`
-- `instructor-calculus-team`
-
-학생 동선:
-- `/ask`
-- `/learning`
-- `/wiki`
-
-교강사 동선:
-- `/insights`
-- `/review`
-- `/wiki`
+프론트엔드는 운영 환경에서 인증 또는 trusted signed-context adapter를 통해
+역할, actor, course, class, domain을 설정한 뒤 각 surface로 진입해야 합니다.
+`X-Knowloop-Profile-Id` 기반 샘플 프로필 전환은 더 이상 런타임 계약이 아닙니다.
 
 ---
 
@@ -191,11 +176,6 @@ Knowloop는 현재 backend-first MVP로, 파일 기반 지식 저장과 SQLite �
 - wiki: `data/wiki`
 - learning: `data/learning`
 - audit / manifest / maintenance: `data/meta`
-
-배포용 데모 데이터는 별도 data root로 주입할 수 있습니다.
-
-예:
-- `data/demo-runtime`
 
 ---
 
@@ -239,25 +219,6 @@ cd Knowloop\apps\web
 npm run lint
 npm run build
 ```
-
----
-
-## 데모 데이터 주입
-
-배포용 또는 로컬 데모용으로 sample runtime 데이터를 별도 data root에 주입할 수 있습니다.
-
-예:
-
-```powershell
-cd Knowloop
-.\scripts\seed-demo-data.ps1 -DataRoot .\data\demo-runtime -AllowReset
-```
-
-주의:
-- demo seed는 파괴적 reset을 수행하므로, `demo`, `sample`, `sandbox`가 포함된 분리된 data root를 사용해야 합니다.
-- 실제 실행 환경에서는 `KNOWLOOP_DATA_ROOT`를 해당 demo root로 맞춰야 샘플 데이터가 반영됩니다.
-
----
 
 ## 문서
 

@@ -163,7 +163,7 @@ Primary UX requirements:
 Primary backend dependency:
 
 - none required for the informational sections
-- sample-start buttons must link into the existing context bootstrap flow using canonical sample profiles
+- product entry must hand off to an authenticated or signed context flow, not static sample profiles
 
 Current implementation note:
 
@@ -174,12 +174,11 @@ Current implementation note:
 
 Purpose:
 
-- establish current role, profile, course, class, and domain
+- establish current role, course, class, and domain
 - make the user feel they are entering a structured workspace, not a blank app
 
 Primary backend dependency:
 
-- `GET /api/v1/context/profiles`
 - `GET /api/v1/context/self`
 
 ### 6.3 `/ask`

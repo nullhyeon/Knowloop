@@ -23,11 +23,6 @@ from knowloop_api.core.contracts import (
     validate_course_id,
 )
 from knowloop_api.core.input_limits import MAX_IDEMPOTENCY_KEY_LENGTH
-from knowloop_api.services.context_profiles import (
-    ContextProfile,
-    ContextProfileNotFoundError,
-    get_context_profile,
-)
 
 
 class RequestContext(BaseModel):
@@ -73,7 +68,6 @@ CONTEXT_SIGNATURE_PREFIX = "v1="
 CONTEXT_SIGNATURE_PAYLOAD_VERSION = "knowloop-context-v1"
 CONTEXT_SIGNATURE_MAX_FUTURE_SKEW_SECONDS = 30
 CONTEXT_SIGNATURE_HEADERS = (
-    "X-Knowloop-Profile-Id",
     "X-Knowloop-Role",
     "X-Knowloop-Actor-Id",
     "X-Knowloop-Course-Id",
@@ -171,7 +165,6 @@ ROUTE_DOMAIN_POLICIES = {
 
 def get_request_context(
     request: Request,
-    knowloop_profile_id: str | None = Header(None, alias="X-Knowloop-Profile-Id"),
     knowloop_role: str | None = Header(None, alias="X-Knowloop-Role"),
     knowloop_actor_id: str | None = Header(None, alias="X-Knowloop-Actor-Id"),
     knowloop_course_id: str | None = Header(None, alias="X-Knowloop-Course-Id"),
@@ -184,7 +177,6 @@ def get_request_context(
     _assert_request_context_trusted(request, get_server_request_id(request))
     context = _build_request_context(
         request=request,
-        knowloop_profile_id=knowloop_profile_id,
         knowloop_role=knowloop_role,
         knowloop_actor_id=knowloop_actor_id,
         knowloop_course_id=knowloop_course_id,
@@ -200,7 +192,6 @@ def get_request_context(
 
 def get_public_query_request_context(
     request: Request,
-    knowloop_profile_id: str | None = Header(None, alias="X-Knowloop-Profile-Id"),
     knowloop_role: str | None = Header(None, alias="X-Knowloop-Role"),
     knowloop_actor_id: str | None = Header(None, alias="X-Knowloop-Actor-Id"),
     knowloop_course_id: str | None = Header(None, alias="X-Knowloop-Course-Id"),
@@ -213,7 +204,6 @@ def get_public_query_request_context(
     _assert_request_context_trusted(request, get_server_request_id(request))
     context = _build_request_context(
         request=request,
-        knowloop_profile_id=knowloop_profile_id,
         knowloop_role=knowloop_role,
         knowloop_actor_id=knowloop_actor_id,
         knowloop_course_id=knowloop_course_id,
@@ -514,14 +504,6 @@ def _get_request_settings(request: Request) -> Settings:
 
 def _assert_request_context_trusted(request: Request, request_id: str) -> None:
     settings = _get_request_settings(request)
-    profile_id = _read_optional_single_header(request, "X-Knowloop-Profile-Id", request_id)
-    if profile_id and not settings.demo_context_profiles_enabled:
-        raise ApiError(
-            status_code=403,
-            code="demo_profiles_disabled",
-            message="Context profiles are disabled outside explicit demo mode.",
-            request_id=request_id,
-        )
     if settings.context_trust_mode != "signed":
         return
     _assert_signed_context_headers(request, settings, request_id)
@@ -583,22 +565,6 @@ def _assert_signed_context_headers(
     )
     if not hmac.compare_digest(signature, f"{CONTEXT_SIGNATURE_PREFIX}{expected_signature}"):
         raise _invalid_context_signature_error(request_id, details={"adapter": "signed_headers"})
-
-
-def _read_optional_single_header(
-    request: Request,
-    header_name: str,
-    request_id: str,
-) -> str | None:
-    raw_values = request.headers.getlist(header_name)
-    if not raw_values:
-        return None
-    return _normalize_trusted_context_header_value(
-        header_name=header_name,
-        raw_values=raw_values,
-        request_id=request_id,
-        allow_empty=True,
-    )
 
 
 def _read_required_single_header(request: Request, header_name: str, request_id: str) -> str:
@@ -670,86 +636,9 @@ def _invalid_context_signature_error(
     )
 
 
-def _resolve_context_profile(
-    *,
-    request: Request,
-    profile_id: str | None,
-    request_id: str,
-) -> ContextProfile | None:
-    normalized_profile_id = profile_id.strip() if isinstance(profile_id, str) else None
-    if not normalized_profile_id:
-        return None
-
-    try:
-        return get_context_profile(_get_request_settings(request), normalized_profile_id)
-    except ContextProfileNotFoundError as exc:
-        raise ApiError(
-            status_code=422,
-            code="validation_failed",
-            message="Unknown X-Knowloop-Profile-Id value.",
-            request_id=request_id,
-            details={"profile_id": normalized_profile_id},
-        ) from exc
-
-
-def _resolve_context_fields_from_headers_or_profile(
-    *,
-    profile: ContextProfile | None,
-    knowloop_role: str | None,
-    knowloop_actor_id: str | None,
-    knowloop_course_id: str | None,
-    knowloop_class_id: str | None,
-    knowloop_domain: str | None,
-    request_id: str,
-) -> dict[str, str | None]:
-    if profile is None:
-        return {
-            "role": knowloop_role,
-            "actor_id": knowloop_actor_id,
-            "course_id": knowloop_course_id,
-            "class_id": knowloop_class_id,
-            "domain": knowloop_domain,
-        }
-
-    profile_values = {
-        "role": profile.role.value,
-        "actor_id": profile.actor_id,
-        "course_id": profile.course_id,
-        "class_id": profile.class_id,
-        "domain": profile.domain.value,
-    }
-    provided_values = {
-        "role": knowloop_role,
-        "actor_id": knowloop_actor_id,
-        "course_id": knowloop_course_id,
-        "class_id": knowloop_class_id,
-        "domain": knowloop_domain,
-    }
-
-    conflicts = [
-        key
-        for key, value in provided_values.items()
-        if value is not None and value.strip() and value.strip() != profile_values[key]
-    ]
-    if conflicts:
-        raise ApiError(
-            status_code=422,
-            code="validation_failed",
-            message="X-Knowloop-Profile-Id conflicts with explicit Knowloop context headers.",
-            request_id=request_id,
-            details={
-                "profile_id": profile.profile_id,
-                "conflicting_fields": conflicts,
-            },
-        )
-
-    return profile_values
-
-
 def _build_request_context(
     *,
     request: Request,
-    knowloop_profile_id: str | None,
     knowloop_role: str | None,
     knowloop_actor_id: str | None,
     knowloop_course_id: str | None,
@@ -759,20 +648,14 @@ def _build_request_context(
     idempotency_key: str | None,
     preserve_omitted_domain: bool,
 ) -> RequestContext:
-    profile = _resolve_context_profile(
-        request=request,
-        profile_id=knowloop_profile_id,
-        request_id=resolved_request_id,
-    )
-    resolved_fields = _resolve_context_fields_from_headers_or_profile(
-        profile=profile,
-        knowloop_role=knowloop_role,
-        knowloop_actor_id=knowloop_actor_id,
-        knowloop_course_id=knowloop_course_id,
-        knowloop_class_id=knowloop_class_id,
-        knowloop_domain=knowloop_domain,
-        request_id=resolved_request_id,
-    )
+    del request
+    resolved_fields = {
+        "role": knowloop_role,
+        "actor_id": knowloop_actor_id,
+        "course_id": knowloop_course_id,
+        "class_id": knowloop_class_id,
+        "domain": knowloop_domain,
+    }
     missing_headers = [
         header_name
         for header_name, value in (
@@ -818,8 +701,6 @@ def _build_request_context(
                 request_id=resolved_request_id,
                 details={"domain": resolved_domain_value},
             ) from exc
-        if profile is not None:
-            domain_was_explicit = False
 
     try:
         actor_id = validate_actor_id(resolved_fields["actor_id"], actor_role=role)
@@ -841,8 +722,6 @@ def _build_request_context(
         ) from exc
 
     return RequestContext(
-        profile_id=profile.profile_id if profile is not None else None,
-        profile_label=profile.label if profile is not None else None,
         role=role,
         actor_id=actor_id,
         course_id=course_id,

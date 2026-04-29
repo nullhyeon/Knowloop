@@ -2264,8 +2264,6 @@ def _extract_sentences(contents: str) -> list[str]:
 
 
 def _derive_page_title(candidate: CandidateItem) -> str:
-    if candidate.kind is CandidateKind.FAQ and "homework" in candidate.title.lower():
-        return "Homework Submission"
     return candidate.title
 
 

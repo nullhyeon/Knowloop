@@ -25,57 +25,51 @@ def build_client(tmp_path: Path) -> tuple[TestClient, Settings]:
     return TestClient(create_app(settings), raise_server_exceptions=False), settings
 
 
-def test_context_profiles_endpoint_lists_demo_profiles(tmp_path: Path) -> None:
-    client, _settings = build_client(tmp_path)
-
-    response = client.get("/api/v1/context/profiles")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["meta"]["total"] >= 4
-    assert {item["profile_id"] for item in payload["data"]}.issuperset(
-        {
-            "student-minji",
-            "instructor-calculus-team",
-            "operator-academic-office",
-            "validator-course-admin",
-        }
-    )
-
-
 @pytest.mark.smoke
-def test_context_self_endpoint_resolves_profile_header(tmp_path: Path) -> None:
+def test_context_self_endpoint_resolves_explicit_headers(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 
     response = client.get(
         "/api/v1/context/self",
-        headers={"X-Knowloop-Profile-Id": "student-minji"},
+        headers={
+            "X-Knowloop-Role": "student",
+            "X-Knowloop-Actor-Id": "stu-kim-minji",
+            "X-Knowloop-Course-Id": "course-calculus-1",
+            "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+            "X-Knowloop-Domain": "academic",
+        },
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["meta"]["context_source"] == "profile"
+    assert payload["meta"]["context_source"] == "headers"
     assert payload["data"] == {
-        "profile_id": "student-minji",
-        "profile_label": "학생 샘플 · 민지",
+        "profile_id": None,
+        "profile_label": None,
         "role": "student",
         "actor_id": "stu-kim-minji",
-        "course_id": "course-calculus-1",
-        "class_id": "class-calculus-1-2026-spring-a",
-        "domain": "academic",
-        "domain_was_explicit": False,
+            "course_id": "course-calculus-1",
+            "class_id": "class-calculus-1-2026-spring-a",
+            "domain": "academic",
+            "domain_was_explicit": True,
     }
 
 
 @pytest.mark.smoke
-def test_profile_header_can_access_scoped_routes_without_verbose_context_headers(
+def test_explicit_context_headers_can_access_scoped_routes(
     tmp_path: Path,
 ) -> None:
     client, _settings = build_client(tmp_path)
 
     response = client.get(
         "/api/v1/sources",
-        headers={"X-Knowloop-Profile-Id": "instructor-calculus-team"},
+        headers={
+            "X-Knowloop-Role": "instructor",
+            "X-Knowloop-Actor-Id": "ins-calculus-team",
+            "X-Knowloop-Course-Id": "course-calculus-1",
+            "X-Knowloop-Class-Id": "class-calculus-1-2026-spring-a",
+            "X-Knowloop-Domain": "academic",
+        },
     )
 
     assert response.status_code == 200
@@ -84,25 +78,34 @@ def test_profile_header_can_access_scoped_routes_without_verbose_context_headers
     assert payload["request_id"].startswith("req-")
 
 
-def test_profile_header_conflict_with_explicit_headers_returns_validation_error(
-    tmp_path: Path,
-) -> None:
+def test_context_profiles_endpoint_is_not_registered(tmp_path: Path) -> None:
+    client, _settings = build_client(tmp_path)
+
+    response = client.get("/api/v1/context/profiles")
+
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["error"]["code"] == "not_found"
+
+
+def test_profile_header_no_longer_resolves_context(tmp_path: Path) -> None:
     client, _settings = build_client(tmp_path)
 
     response = client.get(
         "/api/v1/context/self",
-        headers={
-            "X-Knowloop-Profile-Id": "student-minji",
-            "X-Knowloop-Role": "instructor",
-        },
+        headers={"X-Knowloop-Profile-Id": "student-minji"},
     )
 
     assert response.status_code == 422
     payload = response.json()
-    assert payload["error"]["code"] == "validation_failed"
+    assert payload["error"]["code"] == "missing_context"
     assert payload["error"]["details"] == {
-        "profile_id": "student-minji",
-        "conflicting_fields": ["role"],
+        "missing_headers": [
+            "X-Knowloop-Role",
+            "X-Knowloop-Actor-Id",
+            "X-Knowloop-Course-Id",
+            "X-Knowloop-Class-Id",
+        ],
     }
 
 
@@ -206,7 +209,6 @@ def signed_context_headers(
             method.upper(),
             path,
             resolved_timestamp,
-            "x-knowloop-profile-id:",
             f"x-knowloop-role:{role}",
             f"x-knowloop-actor-id:{actor_id}",
             f"x-knowloop-course-id:{course_id}",
@@ -351,9 +353,7 @@ def test_signed_context_mode_rejects_path_mismatch(tmp_path: Path) -> None:
     assert payload["error"]["details"] == {"adapter": "signed_headers"}
 
 
-def test_signed_context_mode_accepts_signed_profile_headers_in_demo_mode(
-    tmp_path: Path,
-) -> None:
+def test_signed_context_mode_does_not_resolve_profile_only_headers(tmp_path: Path) -> None:
     timestamp = str(int(time.time()))
     payload = "\n".join(
         [
@@ -361,7 +361,6 @@ def test_signed_context_mode_accepts_signed_profile_headers_in_demo_mode(
             "GET",
             "/api/v1/context/self",
             timestamp,
-            "x-knowloop-profile-id:student-minji",
             "x-knowloop-role:",
             "x-knowloop-actor-id:",
             "x-knowloop-course-id:",
@@ -389,41 +388,17 @@ def test_signed_context_mode_accepts_signed_profile_headers_in_demo_mode(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 422
     payload = response.json()
-    assert payload["meta"]["context_source"] == "profile"
-    assert payload["data"]["profile_id"] == "student-minji"
-
-
-def test_signed_context_mode_blocks_demo_profile_registry(tmp_path: Path) -> None:
-    client, _settings = build_signed_client(
-        tmp_path,
-        context_trust_mode="signed",
-        trusted_context_secret=SIGNED_CONTEXT_SECRET,
-        demo_context_profiles_enabled=False,
-    )
-
-    response = client.get("/api/v1/context/profiles")
-
-    assert response.status_code == 403
-    payload = response.json()
-    assert payload["error"]["code"] == "demo_profiles_disabled"
-
-
-def test_profile_header_is_rejected_when_demo_profiles_are_disabled(tmp_path: Path) -> None:
-    client, _settings = build_signed_client(
-        tmp_path,
-        demo_context_profiles_enabled=False,
-    )
-
-    response = client.get(
-        "/api/v1/context/self",
-        headers={"X-Knowloop-Profile-Id": "student-minji"},
-    )
-
-    assert response.status_code == 403
-    payload = response.json()
-    assert payload["error"]["code"] == "demo_profiles_disabled"
+    assert payload["error"]["code"] == "missing_context"
+    assert payload["error"]["details"] == {
+        "missing_headers": [
+            "X-Knowloop-Role",
+            "X-Knowloop-Actor-Id",
+            "X-Knowloop-Course-Id",
+            "X-Knowloop-Class-Id",
+        ],
+    }
 
 
 def test_production_settings_require_signed_context_mode(tmp_path: Path) -> None:
@@ -448,15 +423,4 @@ def test_production_settings_accept_signed_context_defaults(tmp_path: Path) -> N
         trusted_context_secret=SIGNED_CONTEXT_SECRET,
     )
 
-    assert settings.demo_context_profiles_enabled is False
-
-
-def test_production_settings_reject_demo_profile_mode(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="demo_context_profiles_enabled"):
-        build_signed_settings(
-            tmp_path,
-            app_env="production",
-            context_trust_mode="signed",
-            trusted_context_secret=SIGNED_CONTEXT_SECRET,
-            demo_context_profiles_enabled=True,
-        )
+    assert settings.context_trust_mode == "signed"

@@ -15,7 +15,7 @@ uv run ruff check .
 
 - FastAPI runtime with health and readiness endpoints
 - storage bootstrap for `data_root`, manifest, `sessions.db`, and `audit.db`, with service-owned raw source, candidate, wiki, learning, and maintenance storage layers
-- signed or legacy-demo request context resolution for role, actor, course, class, and domain scope
+- signed or legacy development request context resolution for role, actor, course, class, and domain scope
 - raw source registration and scoped source browsing
 - session persistence, recent listing, role-aware search, and instructor insight aggregation
 - query response orchestration with replay-safe idempotency, retrieval references, session write-back, candidate creation, and learning-note enrichment

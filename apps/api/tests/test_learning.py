@@ -55,7 +55,7 @@ def load_json_fixture(path: Path) -> object:
 
 def seed_learning_note_fixture(settings: Settings) -> LearningNote:
     payload = load_json_fixture(
-        FIXTURE_ROOT / "demo" / "learning" / "student-minji-learning-note.json"
+        FIXTURE_ROOT / "learning" / "student-minji-learning-note.json"
     )
     assert isinstance(payload, dict)
     note = LearningNote.model_validate(payload).model_copy(
@@ -107,7 +107,7 @@ def _seed_wiki_fixture(
     target_path = settings.data_root / Path(target_relative_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(
-        (FIXTURE_ROOT / "demo" / "wiki" / fixture_name).read_text(encoding="utf-8-sig"),
+        (FIXTURE_ROOT / "wiki" / fixture_name).read_text(encoding="utf-8-sig"),
         encoding="utf-8",
     )
 
@@ -151,9 +151,9 @@ def test_student_learning_self_returns_structured_console_snapshot(
         "confusion_signal_count": 2,
         "gap_count": 2,
         "next_action_count": 2,
-        "session_ref_count": 3,
+        "session_ref_count": 2,
         "source_ref_count": 2,
-        "related_wiki_count": 2,
+        "related_wiki_count": 3,
         "updated_at": "2026-04-08T11:42:00Z",
     }
 
@@ -165,7 +165,7 @@ def test_student_learning_self_returns_structured_console_snapshot(
     assert learning_note["course_id"] == "course-calculus-1"
     assert learning_note["class_id"] == "class-calculus-1-2026-spring-a"
     assert learning_note["concepts"] == ["chain rule", "product rule", "composition"]
-    assert len(learning_note["session_refs"]) == 3
+    assert len(learning_note["session_refs"]) == 2
 
     assert len(data["confusion_signals"]) == 2
     assert data["confusion_signals"][0]["linked_session_id"] == (
@@ -182,13 +182,13 @@ def test_student_learning_self_returns_structured_console_snapshot(
     related_page_ids = {item["page_id"] for item in data["related_wiki"]}
     assert related_page_ids == {
         "page-concepts-chain-rule",
+        "page-faq-homework-submission",
         "page-misconceptions-chain-rule-product-rule",
     }
 
     recent_sessions = data["recent_sessions"]
     assert [item["session_id"] for item in recent_sessions] == [
         "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260407T133000Z",
-        "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260408T091000Z",
         "ses-student-stu-kim-minji-class-calculus-1-2026-spring-a-20260408T114000Z",
     ]
     assert all(item["preview"] for item in recent_sessions)

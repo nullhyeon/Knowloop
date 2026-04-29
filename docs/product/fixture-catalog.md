@@ -7,7 +7,6 @@ This document defines the repository-safe fixture pack used for:
 - API contract tests
 - storage bootstrap tests
 - workflow integration tests
-- demo seeding
 
 Fixtures are not throwaway examples. They are part of the product contract.
 
@@ -41,13 +40,6 @@ Canonical actors:
 - `ops-academic-office`
 - `val-course-admin`
 
-Canonical frontend/bootstrap profiles:
-
-- `student-minji`
-- `instructor-calculus-team`
-- `operator-academic-office`
-- `validator-course-admin`
-
 Canonical scenario families:
 
 1. chain-rule vs product-rule confusion
@@ -59,7 +51,7 @@ Canonical scenario families:
 
 ```text
 data/fixtures/
-  context/
+  learning/
   sources/
   queries/
   sessions/
@@ -70,7 +62,7 @@ data/fixtures/
 
 Meaning:
 
-- `context/`: frontend/bootstrap demo profile registry that resolves canonical request contexts
+- `learning/`: student learning-note seeds for learning-console tests
 - `sources/`: raw source registration seeds
 - `queries/`: request and expected response-shape fixtures for `POST /api/v1/query/respond`
   including optional `setup_fixtures` for sequential scenarios and declarative error cases

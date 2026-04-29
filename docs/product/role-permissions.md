@@ -24,9 +24,9 @@
 - 어떤 행동은 반드시 승인 또는 audit을 남겨야 하는가
 
 현재 MVP 백엔드는 전체 사용자 로그인 시스템 대신 `trusted signed context adapter`를 둔다.
-개발/데모에서는 legacy context header를 유지하지만, production 환경은 서명되지 않은
-`X-Knowloop-*` 역할/범위 헤더를 신뢰하지 않는다. 데모용 context profile registry도
-명시적으로 demo mode가 켜진 경우에만 노출한다.
+개발에서는 legacy context header를 유지하지만, production 환경은 서명되지 않은
+`X-Knowloop-*` 역할/범위 헤더를 신뢰하지 않는다. 정적 context profile registry는
+runtime 계약에서 제거되었고, 운영 진입은 인증 또는 signed context에 묶어야 한다.
 
 ---
 

@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     data_root: Path = DATA_ROOT
     context_trust_mode: Literal["legacy_headers", "signed"] = "legacy_headers"
-    demo_context_profiles_enabled: bool | None = None
     trusted_context_secret: SecretStr | None = None
     trusted_context_max_age_seconds: int = 300
     llm_enabled: bool = False
@@ -32,7 +31,6 @@ class Settings(BaseSettings):
     meta_root: Path | None = None
     sessions_db_path: Path | None = None
     audit_db_path: Path | None = None
-    context_profiles_path: Path | None = None
     max_api_request_body_bytes: int = MAX_API_REQUEST_BODY_BYTES
 
     @field_validator(
@@ -40,7 +38,6 @@ class Settings(BaseSettings):
         "meta_root",
         "sessions_db_path",
         "audit_db_path",
-        "context_profiles_path",
         mode="before",
     )
     @classmethod
@@ -122,17 +119,9 @@ class Settings(BaseSettings):
             self.sessions_db_path = self.meta_root / "sessions.db"
         if self.audit_db_path is None:
             self.audit_db_path = self.meta_root / "audit.db"
-        if self.context_profiles_path is None:
-            self.context_profiles_path = (
-                REPO_ROOT / "data" / "fixtures" / "context" / "profiles.json"
-            )
         normalized_env = self.app_env.strip().lower()
-        if self.demo_context_profiles_enabled is None:
-            self.demo_context_profiles_enabled = normalized_env not in {"production", "prod"}
         if normalized_env in {"production", "prod"} and self.context_trust_mode != "signed":
             raise ValueError("context_trust_mode must be signed when app_env=production")
-        if normalized_env in {"production", "prod"} and self.demo_context_profiles_enabled:
-            raise ValueError("demo_context_profiles_enabled must be false when app_env=production")
         if self.context_trust_mode == "signed" and self.trusted_context_secret is None:
             raise ValueError("trusted_context_secret is required when context_trust_mode=signed")
         if self.context_trust_mode == "signed" and self.trusted_context_secret is not None:

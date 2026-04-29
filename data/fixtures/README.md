@@ -1,12 +1,12 @@
 # Fixture Data
 
-This directory stores repository-safe fixture files for demo seeds, API tests, and storage tests.
+This directory stores repository-safe fixture files for API tests and storage tests.
 
 Follow the catalog in `docs/product/fixture-catalog.md`.
 
 Canonical MVP fixture pack:
 
-- `context/`: frontend/bootstrap demo profiles that resolve to canonical Knowloop request contexts
+- `learning/`: student learning-note fixtures used by learning-console tests
 - `sources/`: lecture notes, announcements, and operations-safe source documents
 - `queries/`: request fixtures for `POST /api/v1/query/respond`
   and expected retrieval/write-back contracts
@@ -21,4 +21,4 @@ Rules:
 - use synthetic or anonymized content only
 - keep fixtures small and scenario-focused
 - do not place real student, instructor, or institutional data here
-- seed runtime data from these fixtures instead of editing runtime `data/` layers directly
+- seed test runtime data from these fixtures instead of editing runtime `data/` layers directly

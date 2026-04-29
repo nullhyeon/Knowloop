@@ -611,6 +611,7 @@ def respond_to_query(
             request=request,
             top_wiki_match=top_wiki_match,
             raw_source_hits=raw_source_hits,
+            class_sessions=class_sessions,
         )
         answer_basis = _build_answer_basis(
             context=context,
@@ -2452,83 +2453,6 @@ def _build_fallback_answer(
     answer_basis: list[str],
     learning_note: LearningNote | None,
 ) -> str:
-    message = request.message.lower()
-    if "homework" in message and any(
-        keyword in message for keyword in ("due", "deadline", "submit")
-    ):
-        if "raw_source_fallback" in answer_basis:
-            return _augment_with_learning_context(
-                _shape_answer(
-                    _build_homework_answer(raw_source_hits),
-                    response_mode=request.response_mode,
-                    context=context,
-                ),
-                answer_basis=answer_basis,
-                learning_note=learning_note,
-            )
-        if top_wiki_match is not None:
-            return _augment_with_learning_context(
-                _shape_answer(
-                    top_wiki_match.page.summary,
-                    response_mode=request.response_mode,
-                    context=context,
-                ),
-                answer_basis=answer_basis,
-                learning_note=learning_note,
-            )
-        return _augment_with_learning_context(
-            _shape_answer(
-                _build_homework_answer(raw_source_hits),
-                response_mode=request.response_mode,
-                context=context,
-            ),
-            answer_basis=answer_basis,
-            learning_note=learning_note,
-        )
-
-    if "chain rule" in message or "product rule" in message:
-        answer = (
-            "Use the chain rule when one function is nested inside another, "
-            "and use the product rule when two factors are multiplied. "
-            "If the expression looks like f(g(x)), differentiate the outer "
-            "function first and then multiply by the derivative of the inner function."
-        )
-        if request.response_mode is ResponseMode.TEACHING:
-            answer += (
-                " A quick check is to ask whether the expression is nested or simply multiplied."
-            )
-        return _augment_with_learning_context(
-            answer,
-            answer_basis=answer_basis,
-            learning_note=learning_note,
-        )
-
-    if "refund" in message:
-        answer = (
-            "Tell students that refund requests must follow the official "
-            "refund policy and the academic office "
-            "review process. Course staff should not promise refund approval directly."
-        )
-        return _augment_with_learning_context(
-            _shape_answer(answer, response_mode=request.response_mode, context=context),
-            answer_basis=answer_basis,
-            learning_note=learning_note,
-        )
-
-    if "substitution" in message or "integral" in message:
-        answer = (
-            "The current verified wiki does not establish that substitution "
-            "works for every integral. Based on the available source material, "
-            "substitution is introduced as a useful method, but the boundary "
-            "cases are not fully covered yet, so you should not assume it "
-            "applies in every case."
-        )
-        return _augment_with_learning_context(
-            _shape_answer(answer, response_mode=request.response_mode, context=context),
-            answer_basis=answer_basis,
-            learning_note=learning_note,
-        )
-
     if top_wiki_match is not None:
         return _augment_with_learning_context(
             _shape_answer(
@@ -2540,7 +2464,7 @@ def _build_fallback_answer(
             learning_note=learning_note,
         )
 
-    if "raw_source_fallback" in answer_basis and raw_source_hits:
+    if AnswerBasisLabel.RAW_SOURCE_FALLBACK.value in answer_basis and raw_source_hits:
         fallback_line = _find_line(raw_source_hits, keywords=tuple(_tokenize(request.message)))
         return _augment_with_learning_context(
             _shape_answer(
@@ -2659,28 +2583,8 @@ def _summarize_session_context_for_llm(session: SessionRecord) -> str | None:
     return f"- Prior topic: {normalized_question}"
 
 
-def _build_homework_answer(items: list[RawSourceHit]) -> str:
-    due_line = _find_line(items, keywords=("submitted by", "deadline", "due"))
-    submit_line = _find_line(items, keywords=("submit", "lms"))
-    if due_line is not None:
-        due_text = due_line.removeprefix("Homework 01 must be submitted by ").rstrip(".")
-        if submit_line is not None:
-            cleaned_submit_line = submit_line.rstrip(".")
-            return f"Homework 01 is due {due_text}. {cleaned_submit_line}."
-        return f"Homework 01 is due {due_text}."
-    if submit_line is not None:
-        return submit_line.rstrip(".") + "."
-    return "Submit Homework 01 through the LMS assignment page."
-
-
 def _shape_answer(answer: str, *, response_mode: str, context: RequestContext) -> str:
-    if response_mode == ResponseMode.CONCISE.value:
-        return answer
-    if response_mode == ResponseMode.TEACHING.value and context.role is ActorRole.STUDENT:
-        return (
-            answer
-            + " Try one nested-function example and one product example to test the difference."
-        )
+    del response_mode, context
     return answer
 
 
@@ -2767,20 +2671,12 @@ def _build_learning_proposal(
     if not concepts:
         return None
 
-    message = request.message.lower()
-    if "chain rule" in message and "product rule" in message:
-        gaps = [
-            "Distinguish nested chain-rule expressions from multiplied product-rule expressions."
-        ]
-        next_actions = [
-            "Compare one chain-rule example with one product-rule example "
-            "and explain why each rule applies."
-        ]
-    else:
-        gaps = [
-            "Clarify the main concept behind the current question before moving to new material."
-        ]
-        next_actions = ["Rewrite the matched concept in your own words and test it on one example."]
+    primary_concept = concepts[0]
+    gaps = [f"Clarify the boundary around {primary_concept} before moving to new material."]
+    next_actions = [
+        f"Compare the verified {primary_concept} guidance with one worked example "
+        "and explain why it applies."
+    ]
 
     learning_note_id = (
         existing_learning_note.learning_note_id
@@ -2838,6 +2734,9 @@ def _build_candidate_proposal(
 
     title, summary, tags, confidence, related_page_id = _candidate_metadata(
         candidate_kind=candidate_kind,
+        request=request,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=raw_source_hits,
         class_sessions=class_sessions,
     )
     source_refs = _collect_primary_source_refs(
@@ -2851,6 +2750,7 @@ def _build_candidate_proposal(
 
     related_sessions = _related_session_refs(
         candidate_kind=candidate_kind,
+        request=request,
         class_sessions=class_sessions,
         session_matches=session_matches,
         current_session_id=session_id,
@@ -3038,25 +2938,32 @@ def _infer_candidate_kind(
     request: QueryRequest,
     top_wiki_match: WikiPageMatch | None,
     raw_source_hits: list[RawSourceHit],
+    class_sessions: list[SessionRecord],
 ) -> CandidateKind | None:
     if context.role is ActorRole.VALIDATOR:
         return None
     message = request.message.lower()
     if context.domain is RequestDomain.OPERATIONS:
         return CandidateKind.OPERATIONS_NOTE
+    if context.role is ActorRole.INSTRUCTOR and top_wiki_match is not None:
+        related_class_sessions = _matching_class_sessions(
+            request=request,
+            class_sessions=class_sessions,
+        )
+        if len(related_class_sessions) >= 2:
+            return CandidateKind.FAQ
     if (
         context.role is ActorRole.INSTRUCTOR
-        and "homework" in message
-        and any(keyword in message for keyword in ("due", "deadline", "submit"))
+        and top_wiki_match is None
+        and len(_matching_class_sessions(request=request, class_sessions=class_sessions)) >= 2
+        and raw_source_hits
     ):
         return CandidateKind.FAQ
-    if ("chain rule" in message or "product rule" in message) and any(
+    if top_wiki_match is not None and any(
         marker in message for marker in CONCEPT_CONFUSION_MARKERS
     ):
         return CandidateKind.MISCONCEPTION
     if top_wiki_match is None and raw_source_hits:
-        return CandidateKind.UNRESOLVED_QUESTION
-    if "substitution" in message or "integral" in message:
         return CandidateKind.UNRESOLVED_QUESTION
     return None
 
@@ -3075,50 +2982,131 @@ def _should_write_learning_note_for_request(
 def _candidate_metadata(
     *,
     candidate_kind: CandidateKind,
+    request: QueryRequest,
+    top_wiki_match: WikiPageMatch | None,
+    raw_source_hits: list[RawSourceHit],
     class_sessions: list[SessionRecord],
 ) -> tuple[str, str, list[str], float, str | None]:
+    question_title = _question_title(request.message)
+    tags = _candidate_tags(
+        candidate_kind=candidate_kind,
+        request=request,
+        top_wiki_match=top_wiki_match,
+        raw_source_hits=raw_source_hits,
+    )
     if candidate_kind is CandidateKind.FAQ:
-        repeated_count = sum(
-            1
-            for session in class_sessions
-            if "homework" in session.question.lower()
-            and any(
-                keyword in session.question.lower() for keyword in ("due", "deadline", "submit")
-            )
+        repeated_count = len(
+            _matching_class_sessions(request=request, class_sessions=class_sessions)
+        )
+        title_source = top_wiki_match.page.title if top_wiki_match is not None else question_title
+        related_page_id = _candidate_related_page_id(
+            candidate_kind=candidate_kind,
+            title_source=title_source,
+            top_wiki_match=top_wiki_match,
         )
         return (
-            "Homework 01 submission deadline",
-            "Students repeatedly ask when Homework 01 is due and where it must be submitted.",
-            ["homework", "deadline", "faq"],
+            f"FAQ: {title_source}",
+            f"Students repeatedly ask a question covered by verified context: {question_title}.",
+            tags,
             0.91 if repeated_count >= 2 else 0.74,
-            "page-faq-homework-submission",
+            related_page_id,
         )
     if candidate_kind is CandidateKind.MISCONCEPTION:
+        title_source = top_wiki_match.page.title if top_wiki_match is not None else question_title
+        related_page_id = _candidate_related_page_id(
+            candidate_kind=candidate_kind,
+            title_source=title_source,
+            top_wiki_match=top_wiki_match,
+        )
         return (
-            "Chain rule and product rule confusion",
-            "Multiple students are mixing up the chain rule and the product "
-            "rule when expressions look similar.",
-            ["chain-rule", "product-rule", "misconception"],
+            f"Misconception: {title_source}",
+            f"Learners appear confused about verified material: {question_title}.",
+            tags,
             0.82,
-            "page-misconceptions-chain-rule-product-rule",
+            related_page_id,
         )
     if candidate_kind is CandidateKind.OPERATIONS_NOTE:
+        title_source = top_wiki_match.page.title if top_wiki_match is not None else question_title
+        related_page_id = _candidate_related_page_id(
+            candidate_kind=candidate_kind,
+            title_source=title_source,
+            top_wiki_match=top_wiki_match,
+        )
         return (
-            "Refund policy reminder",
-            "Operators need a consistent answer that explains the academic "
-            "office review process for refunds.",
-            ["operations", "refund"],
+            f"Operations note: {title_source}",
+            f"Operators need a consistent, verified answer for: {question_title}.",
+            tags,
             0.88,
-            "page-operations-refund-policy",
+            related_page_id,
         )
     return (
-        "When substitution is valid for every integral",
-        "The current verified wiki does not yet answer the scope limits "
-        "of substitution across later units.",
-        ["integrals", "unresolved"],
+        f"Unresolved question: {question_title}",
+        f"The verified knowledge base does not yet fully answer: {question_title}.",
+        tags,
         0.54,
         None,
     )
+
+
+def _candidate_related_page_id(
+    *,
+    candidate_kind: CandidateKind,
+    title_source: str,
+    top_wiki_match: WikiPageMatch | None,
+) -> str | None:
+    page_prefixes = {
+        CandidateKind.FAQ: "page-faq-",
+        CandidateKind.MISCONCEPTION: "page-misconceptions-",
+        CandidateKind.OPERATIONS_NOTE: "page-operations-",
+    }
+    expected_prefix = page_prefixes.get(candidate_kind)
+    if expected_prefix is None:
+        return None
+    if top_wiki_match is not None and top_wiki_match.page.page_id.startswith(expected_prefix):
+        return top_wiki_match.page.page_id
+    return f"{expected_prefix}{_page_id_slug(title_source)}"
+
+
+def _page_id_slug(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return normalized or "untitled"
+
+
+def _matching_class_sessions(
+    *,
+    request: QueryRequest,
+    class_sessions: list[SessionRecord],
+) -> list[SessionRecord]:
+    tokens = _tokenize(request.message)
+    return [
+        session
+        for session in class_sessions
+        if session.role is ActorRole.STUDENT and _score_session(session, tokens=tokens) >= 2
+    ]
+
+
+def _question_title(message: str) -> str:
+    normalized = re.sub(r"\s+", " ", message).strip().rstrip("?.!")
+    if not normalized:
+        return "Untitled question"
+    return normalized[:96].rstrip()
+
+
+def _candidate_tags(
+    *,
+    candidate_kind: CandidateKind,
+    request: QueryRequest,
+    top_wiki_match: WikiPageMatch | None,
+    raw_source_hits: list[RawSourceHit],
+) -> list[str]:
+    tags = [candidate_kind.value]
+    if top_wiki_match is not None:
+        tags.append(top_wiki_match.page.domain)
+        tags.extend(sorted(_tokenize(top_wiki_match.page.title))[:4])
+    for hit in raw_source_hits[:2]:
+        tags.append(hit.source.source_type.value.replace("_", "-"))
+    tags.extend(sorted(_tokenize(request.message))[:4])
+    return _deduplicate_strings(tags)
 
 
 def _collect_primary_source_refs(
@@ -3187,14 +3175,7 @@ def _load_linked_sources_for_page(settings: Settings, page: WikiPage) -> list[Ra
 def _score_source(source: RawSourceRecord, *, content: str, tokens: set[str]) -> int:
     haystack = " ".join([source.title, content]).lower()
     haystack_tokens = _tokenize(haystack)
-    score = sum(2 for token in tokens if token in haystack_tokens)
-    if "homework" in haystack and "deadline" in haystack:
-        score += 3
-    if "refund" in haystack:
-        score += 3
-    if "chain rule" in haystack:
-        score += 3
-    return score
+    return sum(2 for token in tokens if token in haystack_tokens)
 
 
 def _score_session(session: SessionRecord, *, tokens: set[str]) -> int:
@@ -3207,32 +3188,31 @@ def _score_session(session: SessionRecord, *, tokens: set[str]) -> int:
 def _related_session_refs(
     *,
     candidate_kind: CandidateKind,
+    request: QueryRequest,
     class_sessions: list[SessionRecord],
     session_matches: list[SessionRecord],
     current_session_id: str,
 ) -> list[str]:
     related: list[str] = [current_session_id]
     if candidate_kind is CandidateKind.FAQ:
-        for session in class_sessions:
-            message = session.question.lower()
-            if "homework" in message and any(
-                keyword in message for keyword in ("due", "deadline", "submit")
-            ):
-                related.append(session.session_id)
+        related.extend(
+            session.session_id
+            for session in _matching_class_sessions(
+                request=request,
+                class_sessions=class_sessions,
+            )
+        )
     else:
         related.extend(session.session_id for session in session_matches)
     return _deduplicate_strings(related)
 
 
 def _concepts_for_message(message: str, page: WikiPage | None) -> list[str]:
-    normalized = message.lower()
     concepts: list[str] = []
-    if "chain rule" in normalized:
-        concepts.append("chain rule")
-    if "product rule" in normalized:
-        concepts.append("product rule")
-    if not concepts and page is not None:
+    if page is not None:
         concepts.append(page.title.lower())
+    if not concepts:
+        concepts.extend(sorted(_tokenize(message))[:3])
     return concepts
 
 
@@ -3330,7 +3310,10 @@ def _find_line(items: list[RawSourceHit], *, keywords: tuple[str, ...]) -> str |
     for item in items:
         in_frontmatter = False
         for raw_line in item.content.splitlines():
-            line = raw_line.strip().lstrip("- ").strip()
+            stripped_line = raw_line.strip()
+            if stripped_line.startswith("#"):
+                continue
+            line = stripped_line.lstrip("- ").strip()
             if not line:
                 continue
             if line == "---":
@@ -3380,12 +3363,5 @@ def _infer_source_type_label(source_id: str) -> str:
 
 
 def _chunk_id_for_candidate(candidate_kind: CandidateKind | None) -> str | None:
-    if candidate_kind is CandidateKind.FAQ:
-        return "deadline"
-    if candidate_kind is CandidateKind.MISCONCEPTION:
-        return "compare-rules"
-    if candidate_kind is CandidateKind.OPERATIONS_NOTE:
-        return "policy"
-    if candidate_kind is CandidateKind.UNRESOLVED_QUESTION:
-        return "scope-gap"
+    del candidate_kind
     return None

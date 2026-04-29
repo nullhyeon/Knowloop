@@ -2671,6 +2671,22 @@ def test_query_build_answer_prefers_llm_output_when_enabled(monkeypatch, tmp_pat
         allow_raw_source_fallback=False,
         response_mode="teaching",
     )
+    top_wiki_match = query_service.WikiPageMatch(
+        page=query_service.WikiPage(
+            page_id="page-concepts-chain-rule",
+            domain="concepts",
+            title="Chain Rule",
+            course_id=context.course_id,
+            class_scope=context.class_id,
+            updated_at=_parse_timestamp("2026-04-08T10:40:00Z"),
+            source_refs=[],
+            candidate_refs=[],
+            summary="Use verified guidance for compositions.",
+            body_markdown="# Chain Rule\n\nUse verified guidance for compositions.",
+            path="data/wiki/concepts/class-calculus-1-2026-spring-a/chain-rule.md",
+        ),
+        score=10,
+    )
 
     monkeypatch.setattr(
         query_service,
@@ -2684,7 +2700,7 @@ def test_query_build_answer_prefers_llm_output_when_enabled(monkeypatch, tmp_pat
         settings,
         request=request,
         context=context,
-        top_wiki_match=None,
+        top_wiki_match=top_wiki_match,
         raw_source_hits=[],
         answer_basis=["formal_wiki"],
         learning_note=None,
@@ -2696,7 +2712,7 @@ def test_query_build_answer_prefers_llm_output_when_enabled(monkeypatch, tmp_pat
         == "Use the chain rule when one function is nested inside another."
     )
     assert answer.stored_answer != answer.response_answer
-    assert "product rule" in answer.stored_answer
+    assert answer.stored_answer == "Use verified guidance for compositions."
 
 
 def test_query_build_answer_falls_back_when_llm_runtime_returns_none(
@@ -2723,6 +2739,22 @@ def test_query_build_answer_falls_back_when_llm_runtime_returns_none(
         allow_raw_source_fallback=False,
         response_mode="teaching",
     )
+    top_wiki_match = query_service.WikiPageMatch(
+        page=query_service.WikiPage(
+            page_id="page-concepts-chain-rule",
+            domain="concepts",
+            title="Chain Rule",
+            course_id=context.course_id,
+            class_scope=context.class_id,
+            updated_at=_parse_timestamp("2026-04-08T10:40:00Z"),
+            source_refs=[],
+            candidate_refs=[],
+            summary="Use verified guidance for compositions.",
+            body_markdown="# Chain Rule\n\nUse verified guidance for compositions.",
+            path="data/wiki/concepts/class-calculus-1-2026-spring-a/chain-rule.md",
+        ),
+        score=10,
+    )
 
     monkeypatch.setattr(
         query_service,
@@ -2734,7 +2766,7 @@ def test_query_build_answer_falls_back_when_llm_runtime_returns_none(
         settings,
         request=request,
         context=context,
-        top_wiki_match=None,
+        top_wiki_match=top_wiki_match,
         raw_source_hits=[],
         answer_basis=["formal_wiki"],
         learning_note=None,
@@ -2742,7 +2774,64 @@ def test_query_build_answer_falls_back_when_llm_runtime_returns_none(
     )
 
     assert answer.response_answer == answer.stored_answer
-    assert "Use the chain rule when one function is nested inside another" in answer.response_answer
+    assert answer.response_answer == "Use verified guidance for compositions."
+
+
+def test_query_raw_source_fallback_skips_markdown_headings(tmp_path: Path) -> None:
+    _client, settings = build_client(tmp_path)
+    context = RequestContext(
+        role=ActorRole.STUDENT,
+        actor_id="stu-kim-minji",
+        course_id="course-calculus-1",
+        class_id="class-calculus-1-2026-spring-a",
+        domain=RequestDomain.ACADEMIC,
+        request_id="req-query-raw-heading-fallback",
+        idempotency_key=None,
+    )
+    request = query_service.QueryRequest(
+        message="When is Homework 01 due?",
+        attachment_source_ids=[],
+        allow_raw_source_fallback=True,
+        response_mode="concise",
+    )
+    raw_source_hits = [
+        query_service.RawSourceHit(
+            source=query_service.RawSourceRecord(
+                source_id="src-test-homework-heading",
+                source_type=SourceType.ANNOUNCEMENT,
+                domain=RequestDomain.ACADEMIC,
+                title="Homework 01 Deadline",
+                class_id=context.class_id,
+                course_id=context.course_id,
+                actor_role=ActorRole.INSTRUCTOR,
+                created_at=_parse_timestamp("2026-04-08T10:45:00Z"),
+                origin_path="raw/test-homework-heading.md",
+                checksum="sha256:test",
+                status="registered",
+            ),
+            content=(
+                "# Homework 01 Deadline\n\n"
+                "Homework 01 must be submitted by Friday 23:59 through the LMS."
+            ),
+            score=10,
+        )
+    ]
+
+    answer = query_service._build_answer(
+        settings,
+        request=request,
+        context=context,
+        top_wiki_match=None,
+        raw_source_hits=raw_source_hits,
+        answer_basis=["raw_source_fallback"],
+        learning_note=None,
+        session_matches=[],
+    )
+
+    assert "# Homework 01 Deadline" not in answer.stored_answer
+    assert "Homework 01 must be submitted by Friday 23:59 through the LMS" in (
+        answer.stored_answer
+    )
 
 
 def test_query_builds_minimized_llm_evidence_blocks(tmp_path: Path) -> None:

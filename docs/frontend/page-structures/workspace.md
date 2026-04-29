@@ -23,7 +23,7 @@ Help the user answer one question immediately:
 ### Main Structure
 
 - top: page title and short explanation
-- center: profile / role selection cards
+- center: role and scope selection cards
 - lower section: recent contexts and recommended entry points
 
 ### Recommended Composition
@@ -33,12 +33,11 @@ Help the user answer one question immediately:
 
 ## Required Data
 
-- context profiles
 - canonical resolved context
 
 ## Required UI Elements
 
-- profile cards
+- role/scope cards
 - role badge
 - course/class labels
 - domain label
@@ -53,11 +52,11 @@ Help the user answer one question immediately:
 
 ### Empty
 
-- if no recent contexts exist, guide the user to choose a profile manually
+- if no recent contexts exist, guide the user to choose a role and scope manually
 
 ### Error
 
-- if context profiles cannot load, show retry and explain the entry setup failed
+- if context cannot resolve, show retry and explain the entry setup failed
 
 ## Guardrails
 

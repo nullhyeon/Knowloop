@@ -55,21 +55,18 @@ Request bounds:
 ## 4. Request Context Boundary
 
 Protected non-system routes use request context fields. The fields may arrive through a
-trusted signed-header adapter or through the legacy development/demo header adapter.
-`GET /api/v1/context/profiles` is the one bootstrap exception: it does not resolve a
-request context and is guarded only by `demo_context_profiles_enabled`.
+trusted signed-header adapter or through the legacy development header adapter.
 
 Runtime modes:
 
 - `context_trust_mode=legacy_headers`
-  - development and local demo compatibility mode
+  - development compatibility mode
   - accepts bare `X-Knowloop-*` context headers
   - must not be used for production
 - `context_trust_mode=signed`
   - production-safe adapter for deployments that do not yet have full user authentication
   - accepts the same logical context headers only when the request also carries a valid trusted context signature
   - `app_env=production` refuses to start unless this mode is enabled
-  - `app_env=production` also refuses to start when demo context profiles are enabled
 
 The signed-header adapter requires:
 
@@ -94,7 +91,6 @@ knowloop-context-v1
 <UPPERCASE_HTTP_METHOD>
 <API_PATH_ONLY>
 <UNIX_EPOCH_SECONDS>
-x-knowloop-profile-id:<value-or-empty>
 x-knowloop-role:<value-or-empty>
 x-knowloop-actor-id:<value-or-empty>
 x-knowloop-course-id:<value-or-empty>
@@ -120,7 +116,6 @@ Required headers:
 
 Optional headers:
 
-- `X-Knowloop-Profile-Id`
 - `X-Knowloop-Domain`
 - `X-Request-Id`
 - `Idempotency-Key`
@@ -144,13 +139,6 @@ Header notes:
 - `Idempotency-Key` is the replay-safe mutation key for routes that support retry semantics.
 - `Idempotency-Key` is trimmed before replay ownership is evaluated; accepted characters are letters, digits, `.`, `_`, `:`, `/`, and `-`, and the maximum length is `128`.
 - duplicate or comma-joined `Idempotency-Key` values fail with `422 validation_failed` because replay ownership requires one canonical key per HTTP attempt.
-- `X-Knowloop-Profile-Id` is a frontend/bootstrap adapter for demo and local UI flows:
-  - it is accepted only when `demo_context_profiles_enabled=true`
-  - when present, the API resolves the role, actor, course, class, and default domain from the checked-in context profile registry
-  - when omitted, the route still uses the explicit `X-Knowloop-*` header contract
-  - if `X-Knowloop-Profile-Id` is sent together with explicit `X-Knowloop-*` values, every provided explicit field must match the profile exactly or the request fails with `422 validation_failed`
-  - `X-Knowloop-Profile-Id` does not replace `Idempotency-Key` or the tracing headers; it only resolves the scoped actor context
-  - when demo profiles are disabled, any use of `X-Knowloop-Profile-Id` fails with `403 demo_profiles_disabled`
 - role and domain combinations must satisfy the role-permission contract.
 - when `X-Knowloop-Domain` is omitted, the shared request-context dependency first resolves the role's default domain using `Request Context Default Domains v1` only for roles listed in that table
 - `system` has no shared request-context default domain; omitted-domain behavior for `system` must be declared per route family
@@ -166,13 +154,8 @@ Header notes:
 
 Context bootstrap routes:
 
-- `GET /api/v1/context/profiles`
-  - returns the demo/frontend profile registry that can be used to seed UI role switching without handcrafting verbose request headers
-  - available only when `demo_context_profiles_enabled=true`
-  - otherwise fails with `403 demo_profiles_disabled`
 - `GET /api/v1/context/self`
   - resolves and returns the canonical request context for the current request
-  - supports `X-Knowloop-Profile-Id` only in demo-profile mode
   - supports explicit `X-Knowloop-*` context headers through either the legacy or signed adapter, depending on `context_trust_mode`
 
 ## 5. Response Envelopes
@@ -215,7 +198,7 @@ Error envelope rules:
 
 Authorization precedence:
 
-- invalid trusted-context signature, missing signed-context metadata in signed mode, or disabled demo profile usage -> `403` (`untrusted_context` or `demo_profiles_disabled`)
+- invalid trusted-context signature or missing signed-context metadata in signed mode -> `403 untrusted_context`
 - malformed or missing shared request-context headers, including route families that require an explicit header the shared context cannot infer -> `422` (`missing_context` or `validation_failed`)
 - syntactically valid but role-disallowed explicit `X-Knowloop-Domain` override -> `422 validation_failed`
 - valid request with the wrong route scope/domain -> `403 forbidden_scope`
@@ -248,7 +231,6 @@ Common error codes:
 - `insufficient_verified_context`
 - `storage_busy`
 - `untrusted_context`
-- `demo_profiles_disabled`
 - `body_too_large`
 - `internal_error`
 
@@ -274,30 +256,12 @@ Purpose:
 
 ## 6.2 Context Bootstrap APIs
 
-### `GET /api/v1/context/profiles`
-
-Purpose:
-
-- expose the checked-in demo/frontend profile registry
-- let the frontend switch personas without handcrafting the full `X-Knowloop-*` header bundle
-
-Response highlights:
-
-- `profile_id`
-- `label`
-- `role`
-- `actor_id`
-- `course_id`
-- `class_id`
-- `domain`
-- `landing_surface`
-
 ### `GET /api/v1/context/self`
 
 Purpose:
 
 - resolve the canonical request context for the current request
-- verify whether the request was resolved from `X-Knowloop-Profile-Id` or from explicit `X-Knowloop-*` headers
+- verify whether the request was resolved through the legacy development adapter or the signed adapter
 
 Response highlights:
 

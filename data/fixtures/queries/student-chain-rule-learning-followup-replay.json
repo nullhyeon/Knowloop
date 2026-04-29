@@ -67,7 +67,7 @@
                      "candidate":  {
                                        "kind":  "misconception",
                                        "status":  "open",
-                                       "related_page_id":  "page-misconceptions-chain-rule-product-rule",
+                                        "related_page_id":  "page-misconceptions-chain-rule",
                                        "min_confidence":  0.8,
                                        "min_source_ref_count":  2,
                                        "min_session_ref_count":  3
