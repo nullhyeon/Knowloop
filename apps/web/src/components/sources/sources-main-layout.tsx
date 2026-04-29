@@ -1,9 +1,9 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
+import { getDomainLabel, getRoleLabel } from "@/lib/workspace-context";
 import {
   buildDefaultSourceRegistrationDraft,
   buildSourceRegistrationFingerprint,
@@ -64,9 +64,9 @@ function EmptyPanel({ title, description }: { title: string; description: string
 }
 
 export function SourcesMainLayout() {
-  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
-  const sourcesAllowed = Boolean(activeProfile && ["instructor", "operator", "validator"].includes(activeProfile.role));
-  const canRegister = activeProfile?.role === "instructor" || activeProfile?.role === "operator";
+  const { activeContext, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const sourcesAllowed = Boolean(activeContext && ["instructor", "operator", "validator"].includes(activeContext.role));
+  const canRegister = activeContext?.role === "instructor" || activeContext?.role === "operator";
 
   const [sourceRecords, setSourceRecords] = useState<SourceBrowserRecord[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState("");
@@ -82,7 +82,7 @@ export function SourcesMainLayout() {
   const [traceability, setTraceability] = useState<SourceTraceabilityIndex>(createEmptyTraceability());
   const [traceabilityWarning, setTraceabilityWarning] = useState<string | null>(null);
   const [registerMode, setRegisterMode] = useState(false);
-  const [registerDraft, setRegisterDraft] = useState<SourceRegistrationDraft>(buildDefaultSourceRegistrationDraft(activeProfile));
+  const [registerDraft, setRegisterDraft] = useState<SourceRegistrationDraft>(buildDefaultSourceRegistrationDraft(activeContext));
   const [registerLoading, setRegisterLoading] = useState(false);
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [registerSuccess, setRegisterSuccess] = useState<string | null>(null);
@@ -92,15 +92,15 @@ export function SourcesMainLayout() {
   const detailRequestRef = useRef(0);
 
   useEffect(() => {
-    setRegisterDraft(buildDefaultSourceRegistrationDraft(activeProfile));
+    setRegisterDraft(buildDefaultSourceRegistrationDraft(activeContext));
     setRegisterFingerprint("");
     setRegisterIdempotencyKey(createSourceRegistrationIdempotencyKey());
     setRegisterMode(false);
     setRegisterError(null);
     setRegisterSuccess(null);
-  }, [activeProfile]);
+  }, [activeContext]);
   const loadCatalog = useCallback(async () => {
-    if (!activeProfile || !sourcesAllowed) {
+    if (!activeContext || !sourcesAllowed) {
       catalogRequestRef.current += 1;
       detailRequestRef.current += 1;
       setCatalogLoading(false);
@@ -123,7 +123,7 @@ export function SourcesMainLayout() {
 
     try {
       try {
-        nextTraceability = await fetchSourceTraceability({ profileId: activeProfile.profileId }, self, activeProfile);
+        nextTraceability = await fetchSourceTraceability({ contextId: activeContext.contextId }, self, activeContext);
       } catch (caughtError) {
         const message = caughtError instanceof Error ? caughtError.message : "wiki 또는 candidate 연결 정보를 일부 불러오지 못했습니다.";
         nextTraceability = createEmptyTraceability();
@@ -132,7 +132,7 @@ export function SourcesMainLayout() {
         }
       }
 
-      const nextRecords = await fetchSourceCatalog({ profileId: activeProfile.profileId }, self, activeProfile, nextTraceability);
+      const nextRecords = await fetchSourceCatalog({ contextId: activeContext.contextId }, self, activeContext, nextTraceability);
       if (requestId !== catalogRequestRef.current) return;
 
       setTraceability(nextTraceability);
@@ -150,7 +150,7 @@ export function SourcesMainLayout() {
         setCatalogLoading(false);
       }
     }
-  }, [activeProfile, self, sourcesAllowed]);
+  }, [activeContext, self, sourcesAllowed]);
 
   useEffect(() => {
     void loadCatalog();
@@ -189,7 +189,7 @@ export function SourcesMainLayout() {
   }, [filteredSources, selectedSourceId]);
 
   useEffect(() => {
-    if (!activeProfile || !sourcesAllowed || !displayedSourceId) {
+    if (!activeContext || !sourcesAllowed || !displayedSourceId) {
       detailRequestRef.current += 1;
       setSelectedSource(null);
       setDetailLoading(false);
@@ -202,7 +202,7 @@ export function SourcesMainLayout() {
     setDetailLoading(true);
     setDetailError(null);
 
-    void fetchSourceDetail({ profileId: activeProfile.profileId }, displayedSourceId, self, activeProfile, traceability)
+    void fetchSourceDetail({ contextId: activeContext.contextId }, displayedSourceId, self, activeContext, traceability)
       .then((detail) => {
         if (requestId !== detailRequestRef.current) return;
         setSelectedSource(detail);
@@ -218,10 +218,10 @@ export function SourcesMainLayout() {
           setDetailLoading(false);
         }
       });
-  }, [activeProfile, displayedSourceId, self, sourcesAllowed, traceability]);
+  }, [activeContext, displayedSourceId, self, sourcesAllowed, traceability]);
 
   async function handleRegisterSource() {
-    if (!activeProfile || !canRegister) return;
+    if (!activeContext || !canRegister) return;
 
     if (!registerDraft.title.trim() || !registerDraft.content.trim()) {
       setRegisterError("자료 제목과 본문은 반드시 입력해야 합니다.");
@@ -242,18 +242,18 @@ export function SourcesMainLayout() {
 
     try {
       const createdSource = await registerSource(
-        { profileId: activeProfile.profileId },
+        { contextId: activeContext.contextId },
         registerDraft,
         nextKey,
         self,
-        activeProfile,
+        activeContext,
         traceability,
       );
 
       setSelectedSourceId(createdSource.sourceId);
       setRegisterMode(false);
       setRegisterSuccess(`${createdSource.title} 자료를 source registry에 등록했습니다.`);
-      setRegisterDraft(buildDefaultSourceRegistrationDraft(activeProfile));
+      setRegisterDraft(buildDefaultSourceRegistrationDraft(activeContext));
       setRegisterFingerprint("");
       setRegisterIdempotencyKey(createSourceRegistrationIdempotencyKey());
       await loadCatalog();
@@ -265,11 +265,11 @@ export function SourcesMainLayout() {
     }
   }
 
-  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
-  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
-  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
-  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? "academic");
-  const profileId = activeProfile?.profileId ?? null;
+  const roleLabel = activeContext ? getRoleLabel(activeContext.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeContext?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeContext?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeContext?.domain ?? "academic");
+  const contextId = activeContext?.contextId ?? null;
   function renderDetailPanel() {
     if (detailLoading) {
       return <SourcesSkeleton />;
@@ -326,13 +326,13 @@ export function SourcesMainLayout() {
           <article className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
             <p className="text-sm font-semibold text-[var(--foreground)]">Linked wiki pages</p>
             <div className="mt-4 flex flex-wrap gap-2">
-              {selectedSource.linkedWikiPages.length ? selectedSource.linkedWikiPages.map((page) => profileId ? <Link key={page.pageId} href={`/wiki?profile=${profileId}&page=${page.pageId}`} className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--primary)]">{page.title}</Link> : <span key={page.pageId} className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--primary)]">{page.title}</span>) : <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">아직 연결된 wiki 없음</span>}
+              {selectedSource.linkedWikiPages.length ? selectedSource.linkedWikiPages.map((page) => contextId ? <Link key={page.pageId} href={`/wiki?context=${contextId}&page=${page.pageId}`} className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--primary)]">{page.title}</Link> : <span key={page.pageId} className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--primary)]">{page.title}</span>) : <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">아직 연결된 wiki 없음</span>}
             </div>
           </article>
           <article className="rounded-[20px] border border-[var(--border)] bg-[var(--surface)] px-4 py-4">
             <p className="text-sm font-semibold text-[var(--foreground)]">Linked candidates</p>
             <div className="mt-4 space-y-2">
-              {selectedSource.linkedCandidates.length ? selectedSource.linkedCandidates.map((candidate) => <div key={candidate.candidateId} className="rounded-[16px] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3"><div className="flex items-center justify-between gap-3">{profileId ? <Link href={`/review?profile=${profileId}&candidate=${candidate.candidateId}`} className="text-sm font-semibold text-[var(--foreground)] hover:text-[var(--primary)]">{candidate.title}</Link> : <p className="text-sm font-semibold text-[var(--foreground)]">{candidate.title}</p>}<span className="rounded-full bg-[var(--review-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--review)]">{candidate.lifecycleState}</span></div><p className="mt-2 text-xs font-medium text-[var(--muted)]">{candidate.kindLabel}</p></div>) : <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">아직 연결된 candidate 없음</span>}
+              {selectedSource.linkedCandidates.length ? selectedSource.linkedCandidates.map((candidate) => <div key={candidate.candidateId} className="rounded-[16px] border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3"><div className="flex items-center justify-between gap-3">{contextId ? <Link href={`/review?context=${contextId}&candidate=${candidate.candidateId}`} className="text-sm font-semibold text-[var(--foreground)] hover:text-[var(--primary)]">{candidate.title}</Link> : <p className="text-sm font-semibold text-[var(--foreground)]">{candidate.title}</p>}<span className="rounded-full bg-[var(--review-soft)] px-2.5 py-1 text-[11px] font-semibold text-[var(--review)]">{candidate.lifecycleState}</span></div><p className="mt-2 text-xs font-medium text-[var(--muted)]">{candidate.kindLabel}</p></div>) : <span className="rounded-full bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] font-semibold text-[var(--muted)]">아직 연결된 candidate 없음</span>}
             </div>
           </article>
         </div>
@@ -341,8 +341,8 @@ export function SourcesMainLayout() {
   }
 
   function renderRegisterPanel() {
-    if (!activeProfile || !canRegister) return null;
-    const sourceTypeOptions = getSourceTypeOptions({ role: activeProfile.role === "operator" ? "operator" : "instructor" });
+    if (!activeContext || !canRegister) return null;
+    const sourceTypeOptions = getSourceTypeOptions({ role: activeContext.role === "operator" ? "operator" : "instructor" });
 
     return (
       <div className="scrollbar-thin flex-1 overflow-y-auto px-4 py-4">

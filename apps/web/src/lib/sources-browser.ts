@@ -1,5 +1,5 @@
-﻿import type { BootstrapContextSelf, BootstrapProfile } from "@/lib/context-bootstrap";
-import { getDomainLabel, type KnowloopDomain, type KnowloopRole } from "@/lib/demo-data";
+import type { BootstrapContextSelf, BootstrapContext } from "@/lib/context-bootstrap";
+import { buildKnowloopContextHeaders, getDomainLabel, type KnowloopDomain, type KnowloopRole } from "@/lib/workspace-context";
 import { fetchWikiPageDetail, fetchWikiPageList } from "@/lib/wiki-browser";
 
 type ApiEnvelope<T> = {
@@ -62,7 +62,7 @@ type ReviewCandidateListApi = {
 };
 
 type SourceFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 type SourceTraceabilityIndex = {
@@ -165,7 +165,7 @@ function buildHeaders(context: SourceFetchContext, options?: { idempotencyKey?: 
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
     "X-Request-Id": options?.requestId ?? buildRequestId("sources"),
     ...(options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
   };
@@ -226,12 +226,12 @@ function formatTimestamp(value: string): string {
 function resolveScopeLabel(
   domain: SourceDomainApi,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   courseId: string,
   classId: string,
 ): string {
-  const courseLabel = self?.courseId === courseId ? self.courseLabel : activeProfile?.courseId === courseId ? activeProfile.courseLabel : courseId;
-  const classLabel = self?.classId === classId ? self.classLabel : activeProfile?.classId === classId ? activeProfile.classLabel : classId;
+  const courseLabel = self?.courseId === courseId ? self.courseLabel : activeContext?.courseId === courseId ? activeContext.courseLabel : courseId;
+  const classLabel = self?.classId === classId ? self.classLabel : activeContext?.classId === classId ? activeContext.classLabel : classId;
   const domainLabel = getDomainLabel(domain as KnowloopDomain);
   return [courseLabel, classLabel, domainLabel].filter(Boolean).join(" · ");
 }
@@ -333,7 +333,7 @@ function resolveStatusLabel(source: SourceRecordApi, traceability: SourceTraceab
 function mapSourceRecord(
   source: SourceRecordApi,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   traceability: SourceTraceabilityIndex,
 ): SourceBrowserRecord {
   return {
@@ -343,7 +343,7 @@ function mapSourceRecord(
     sourceTypeLabel: getSourceTypeOption(source.source_type).label,
     domain: source.domain,
     domainLabel: getDomainLabel(source.domain as KnowloopDomain),
-    scopeLabel: resolveScopeLabel(source.domain, self, activeProfile, source.course_id, source.class_id),
+    scopeLabel: resolveScopeLabel(source.domain, self, activeContext, source.course_id, source.class_id),
     statusLabel: resolveStatusLabel(source, traceability),
     registeredAt: formatTimestamp(source.created_at),
     ownerLabel: formatOwnerLabel(source),
@@ -355,7 +355,7 @@ function mapSourceRecord(
     filename: source.filename,
     mimeType: source.mime_type,
     tags: source.tags,
-    canRegister: activeProfile?.role === "instructor" || activeProfile?.role === "operator",
+    canRegister: activeContext?.role === "instructor" || activeContext?.role === "operator",
   };
 }
 
@@ -413,15 +413,15 @@ async function fetchReviewCandidatesByStatus(context: SourceFetchContext, status
 export async function fetchSourceTraceability(
   context: SourceFetchContext,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<SourceTraceabilityIndex> {
   const [candidateGroups, wikiPages] = await Promise.all([
     Promise.all(REVIEW_STATUS_ORDER.map((status) => fetchReviewCandidatesByStatus(context, status))),
-    fetchWikiPageList(context, "", self, activeProfile),
+    fetchWikiPageList(context, "", self, activeContext),
   ]);
 
   const wikiDetails = await Promise.all(
-    wikiPages.map((page) => fetchWikiPageDetail(context, page.pageId, self, activeProfile)),
+    wikiPages.map((page) => fetchWikiPageDetail(context, page.pageId, self, activeContext)),
   );
 
   const wikiBySourceId: Record<string, SourceTraceabilityWikiLink[]> = {};
@@ -455,24 +455,24 @@ export async function fetchSourceTraceability(
 export async function fetchSourceCatalog(
   context: SourceFetchContext,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   traceability: SourceTraceabilityIndex,
 ): Promise<SourceBrowserRecord[]> {
   const sources = await fetchAllSourceRecords(context);
-  return sources.map((source) => mapSourceRecord(source, self, activeProfile, traceability));
+  return sources.map((source) => mapSourceRecord(source, self, activeContext, traceability));
 }
 
 export async function fetchSourceDetail(
   context: SourceFetchContext,
   sourceId: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   traceability: SourceTraceabilityIndex,
 ): Promise<SourceBrowserRecord> {
   const envelope = await fetchEnvelope<SourceRecordApi>(`/api/v1/sources/${sourceId}`, {
     headers: buildHeaders(context, { requestId: buildRequestId("sources-detail") }),
   });
-  return mapSourceRecord(envelope.data, self, activeProfile, traceability);
+  return mapSourceRecord(envelope.data, self, activeContext, traceability);
 }
 
 export async function registerSource(
@@ -480,7 +480,7 @@ export async function registerSource(
   draft: SourceRegistrationDraft,
   idempotencyKey: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   traceability: SourceTraceabilityIndex,
 ): Promise<SourceBrowserRecord> {
   const normalizedTags = normalizeTagInput(draft.tags);
@@ -509,11 +509,11 @@ export async function registerSource(
     body: JSON.stringify(payload),
   });
 
-  return mapSourceRecord(envelope.data, self, activeProfile, traceability);
+  return mapSourceRecord(envelope.data, self, activeContext, traceability);
 }
 
-export function buildDefaultSourceRegistrationDraft(activeProfile: Pick<BootstrapProfile, "role"> | null): SourceRegistrationDraft {
-  const defaultType = getSourceTypeOptions(activeProfile)[0]?.value ?? "lecture_note";
+export function buildDefaultSourceRegistrationDraft(activeContext: Pick<BootstrapContext, "role"> | null): SourceRegistrationDraft {
+  const defaultType = getSourceTypeOptions(activeContext)[0]?.value ?? "lecture_note";
   return {
     sourceType: defaultType,
     title: "",
@@ -524,12 +524,12 @@ export function buildDefaultSourceRegistrationDraft(activeProfile: Pick<Bootstra
   };
 }
 
-export function getSourceTypeOptions(activeProfile: Pick<BootstrapProfile, "role"> | null): SourceTypeOption[] {
-  if (!activeProfile) {
+export function getSourceTypeOptions(activeContext: Pick<BootstrapContext, "role"> | null): SourceTypeOption[] {
+  if (!activeContext) {
     return [SOURCE_TYPE_OPTIONS.lecture_note];
   }
 
-  switch (activeProfile.role) {
+  switch (activeContext.role) {
     case "instructor":
       return [
         SOURCE_TYPE_OPTIONS.lecture_note,

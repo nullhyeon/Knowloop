@@ -1,7 +1,7 @@
-﻿import type { ReactNode } from "react";
+import type { ReactNode } from "react";
 import Link from "next/link";
 
-import { withProfile } from "@/lib/demo-data";
+import { withContext } from "@/lib/workspace-context";
 
 const valueCards = [
   {
@@ -56,12 +56,12 @@ const workflowSteps = [
 
 const entryCards = [
   {
-    profileId: "student-minji",
-    title: "학생용 샘플 데이터로 시작",
+    contextId: "student-calculus-a",
+    title: "학생 컨텍스트로 시작",
     description:
-      "이미 질문 기록과 학습 노트가 채워진 학생 관점으로 들어가 Ask, Learning, Wiki 흐름을 바로 체험합니다.",
-    href: withProfile("/ask", "student-minji"),
-    eyebrow: "Student sample",
+      "학생 역할과 현재 수업 스코프로 들어가 Ask, Learning, Wiki 흐름을 바로 확인합니다.",
+    href: withContext("/ask", "student-calculus-a"),
+    eyebrow: "Student context",
     bullets: [
       "Ask에서 실제 질문, 근거, write-back 흐름 보기",
       "Learning에서 confusion, gap, next action 확인",
@@ -69,12 +69,12 @@ const entryCards = [
     ],
   },
   {
-    profileId: "instructor-calculus-team",
-    title: "교강사용 샘플 데이터로 시작",
+    contextId: "instructor-calculus-a",
+    title: "교강사 컨텍스트로 시작",
     description:
-      "반복 질문과 후보 지식이 이미 쌓인 교강사 관점으로 들어가 Insights, Review, Wiki 흐름을 바로 체험합니다.",
-    href: withProfile("/insights", "instructor-calculus-team"),
-    eyebrow: "Instructor sample",
+      "교강사 역할과 현재 수업 스코프로 들어가 Insights, Review, Wiki 흐름을 바로 확인합니다.",
+    href: withContext("/insights", "instructor-calculus-a"),
+    eyebrow: "Instructor context",
     bullets: [
       "Insights에서 반복 confusion 패턴 보기",
       "Review에서 candidate 검토와 patch preview 보기",
@@ -125,12 +125,12 @@ export function HomeEntryPage() {
             </div>
             <div>
               <p className="text-sm font-semibold text-[var(--foreground)]">Knowloop</p>
-              <p className="text-xs text-[var(--muted)]">교육용 지식 운영 콘솔 데모</p>
+              <p className="text-xs text-[var(--muted)]">교육용 지식 운영 콘솔</p>
             </div>
           </div>
 
           <Link
-            href="/workspace?profile=student-minji"
+            href="/workspace?context=student-calculus-a"
             className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-semibold text-[var(--body)] transition hover:border-[var(--border-strong)]"
           >
             Workspace 보기
@@ -247,7 +247,7 @@ export function HomeEntryPage() {
                 질문 {"->"} 축적 {"->"} 검토 {"->"} 승격 {"->"} 탐색
               </h2>
               <p className="mt-3 text-sm leading-7 text-[var(--body)]">
-                심사위원은 아래 흐름을 먼저 이해한 뒤, 학생/교강사 샘플 데이터로 바로 들어가 이미 축적된 결과를 체험할 수 있습니다.
+                사용자는 아래 흐름을 먼저 이해한 뒤, 역할별 컨텍스트로 들어가 실제 서비스 화면을 확인할 수 있습니다.
               </p>
             </div>
             <p className="text-sm font-medium text-[var(--muted)]">
@@ -296,7 +296,7 @@ export function HomeEntryPage() {
                   {card.title}
                 </Link>
                 <Link
-                  href={withProfile("/workspace", card.profileId)}
+                  href={withContext("/workspace", card.contextId)}
                   className="inline-flex items-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm font-semibold text-[var(--body)] transition hover:border-[var(--border-strong)]"
                 >
                   먼저 Workspace 보기

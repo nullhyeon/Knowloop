@@ -1,4 +1,4 @@
-﻿import type { ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { ContextBootstrapProvider } from "@/components/console/context-bootstrap-provider";
 import { ConsoleShell } from "@/components/console/console-shell";

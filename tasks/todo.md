@@ -141,6 +141,7 @@
 - [x] P1 Codex Builder: make wiki CAS conflicts during approval recoverable so a promoted candidate cannot be stranded in `pending` sync state after target-page drift
 - [x] P1 Codex Builder: revalidate source registration collision and path state after durable source/manifest lock acquisition for multi-worker safety
 - [x] P1 Codex Builder: remove backend demo seed/profile runtime paths and replace hardcoded demo query/review behavior with service-contract-driven fallbacks
+- [x] P1 Codex Builder: remove frontend demo/profile dependencies, static mock data bundle, profile query routing, and `X-Knowloop-Profile-Id` browser headers
 - [ ] P2 Codex Builder: validate candidate IDs before glob/path lookup so wildcard or traversal-like IDs cannot produce ambiguous candidate reads
 - [ ] P2 Codex Builder: write formal wiki pages atomically under the existing wiki lock
 - [ ] P2 Codex Builder: detect raw-source backing-file checksum drift in maintenance reports

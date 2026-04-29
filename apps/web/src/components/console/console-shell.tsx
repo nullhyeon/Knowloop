@@ -1,10 +1,10 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { getDomainLabel, getNavigationForRole, getRoleLabel, withProfile } from "@/lib/demo-data";
+import { defaultContextId, getDomainLabel, getNavigationForRole, getRoleLabel, withContext } from "@/lib/workspace-context";
 
 import { useContextBootstrap } from "@/components/console/context-bootstrap-provider";
 
@@ -28,25 +28,28 @@ function ShellSkeleton() {
 export function ConsoleShell({ children }: ConsoleShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const { profiles, activeProfile, self, loading, error, refresh } = useContextBootstrap();
-  const visibleNavigationItems = activeProfile ? getNavigationForRole(activeProfile.role) : [];
+  const searchParams = useSearchParams();
+  const { contexts, activeContext, self, loading, error, refresh } = useContextBootstrap();
+  const visibleNavigationItems = activeContext ? getNavigationForRole(activeContext.role) : [];
 
-  function resolveProfileHref(profileId: string) {
-    const profile = profiles.find((candidate) => candidate.profileId === profileId);
+  function resolveContextHref(contextId: string) {
+    const context = contexts.find((candidate) => candidate.contextId === contextId);
 
-    if (!profile) {
-      return withProfile("/workspace", profileId);
+    if (!context) {
+      return withContext("/workspace", contextId);
     }
 
-    const canStayOnCurrentPath = getNavigationForRole(profile.role).some(
+    const canStayOnCurrentPath = getNavigationForRole(context.role).some(
       (item) => pathname === item.href || pathname.startsWith(`${item.href}/`),
     );
-    const targetPath = canStayOnCurrentPath ? pathname : profile.landingSurface;
-    return withProfile(targetPath, profile.profileId);
+    const currentQueryString = searchParams.toString();
+    const currentHref = currentQueryString ? `${pathname}?${currentQueryString}` : pathname;
+    const targetPath = canStayOnCurrentPath ? currentHref : context.landingSurface;
+    return withContext(targetPath, context.contextId);
   }
 
-  function handleProfileChange(profileId: string) {
-    router.push(resolveProfileHref(profileId));
+  function handleContextChange(contextId: string) {
+    router.push(resolveContextHref(contextId));
   }
 
   return (
@@ -55,19 +58,19 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
         <aside className="panel-card sticky top-4 hidden h-[calc(100vh-2rem)] flex-col overflow-hidden lg:flex">
           <div className="border-b border-[var(--border)] px-5 py-5">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Knowloop</p>
-            {loading && !activeProfile ? (
+            {loading && !activeContext ? (
               <div className="mt-3 animate-pulse">
                 <ShellSkeleton />
               </div>
-            ) : activeProfile ? (
+            ) : activeContext ? (
               <>
                 <div className="mt-3 space-y-1">
-                  <h2 className="text-lg font-semibold text-[var(--foreground)]">{activeProfile.label}</h2>
+                  <h2 className="text-lg font-semibold text-[var(--foreground)]">{activeContext.label}</h2>
                   <p className="text-sm leading-6 text-[var(--muted)]">
-                    {getRoleLabel(activeProfile.role)} 워크스페이스 · {activeProfile.classLabel}
+                    {getRoleLabel(activeContext.role)} 워크스페이스 · {activeContext.classLabel}
                   </p>
                 </div>
-                <p className="mt-3 text-sm leading-6 text-[var(--body)]">{activeProfile.description}</p>
+                <p className="mt-3 text-sm leading-6 text-[var(--body)]">{activeContext.description}</p>
               </>
             ) : (
               <div className="mt-3 rounded-[20px] border border-dashed border-[var(--border-strong)] bg-[var(--surface-muted)] px-4 py-4 text-sm leading-6 text-[var(--body)]">
@@ -90,19 +93,19 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
                   다시 불러오기
                 </button>
               </div>
-            ) : loading && !profiles.length ? (
+            ) : loading && !contexts.length ? (
               <div className="mt-3 space-y-2 animate-pulse">
                 <div className="h-16 rounded-[20px] bg-[var(--surface-muted)]" />
                 <div className="h-16 rounded-[20px] bg-[var(--surface-muted)]" />
               </div>
             ) : (
               <div className="mt-3 space-y-2">
-                {profiles.map((profile) => {
-                  const active = profile.profileId === activeProfile?.profileId;
+                {contexts.map((context) => {
+                  const active = context.contextId === activeContext?.contextId;
                   return (
                     <Link
-                      key={profile.profileId}
-                      href={resolveProfileHref(profile.profileId)}
+                      key={context.contextId}
+                      href={resolveContextHref(context.contextId)}
                       className={`block rounded-2xl border px-3 py-3 transition ${
                         active
                           ? "border-[var(--primary)] bg-[var(--primary-soft)]"
@@ -111,13 +114,13 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-semibold text-[var(--foreground)]">{profile.label}</p>
+                          <p className="text-sm font-semibold text-[var(--foreground)]">{context.label}</p>
                           <p className="mt-1 text-xs text-[var(--muted)]">
-                            {getRoleLabel(profile.role)} · {profile.classLabel}
+                            {getRoleLabel(context.role)} · {context.classLabel}
                           </p>
                         </div>
                         <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-semibold text-[var(--body)]">
-                          {getDomainLabel(profile.domain)}
+                          {getDomainLabel(context.domain)}
                         </span>
                       </div>
                     </Link>
@@ -129,7 +132,7 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
 
           <nav className="scrollbar-thin flex-1 overflow-y-auto px-3 py-4">
             <p className="px-2 pb-3 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Navigation</p>
-            {loading && !activeProfile ? (
+            {loading && !activeContext ? (
               <div className="space-y-2 px-1 animate-pulse">
                 <div className="h-10 rounded-2xl bg-[var(--surface-muted)]" />
                 <div className="h-10 rounded-2xl bg-[var(--surface-muted)]" />
@@ -142,7 +145,7 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
                   return (
                     <Link
                       key={item.href}
-                      href={withProfile(item.href, activeProfile?.profileId ?? "student-minji")}
+                      href={withContext(item.href, activeContext?.contextId ?? defaultContextId)}
                       className={`flex items-center justify-between rounded-2xl px-3 py-2.5 text-sm font-medium transition ${
                         active
                           ? "bg-[var(--primary-soft)] text-[var(--primary)]"
@@ -161,16 +164,16 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
           <div className="border-t border-[var(--border)] bg-[var(--surface-muted)] px-5 py-4">
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Current scope</p>
-              {loading && !activeProfile ? (
+              {loading && !activeContext ? (
                 <div className="animate-pulse space-y-2">
                   <div className="h-4 w-24 rounded-full bg-[var(--surface)]" />
                   <div className="h-4 w-36 rounded-full bg-[var(--surface)]" />
                 </div>
-              ) : activeProfile ? (
+              ) : activeContext ? (
                 <>
-                  <p className="text-sm font-semibold text-[var(--foreground)]">{self?.courseLabel ?? activeProfile.courseLabel}</p>
+                  <p className="text-sm font-semibold text-[var(--foreground)]">{self?.courseLabel ?? activeContext.courseLabel}</p>
                   <p className="text-sm leading-6 text-[var(--muted)]">
-                    {getDomainLabel(self?.domain ?? activeProfile.domain)} · {self?.actorId ?? activeProfile.actorId}
+                    {getDomainLabel(self?.domain ?? activeContext.domain)} · {self?.actorId ?? activeContext.actorId}
                   </p>
                 </>
               ) : (
@@ -185,32 +188,32 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Knowloop</p>
-                <h2 className="mt-2 text-lg font-semibold text-[var(--foreground)]">{activeProfile?.label ?? "워크스페이스 로딩 중"}</h2>
+                <h2 className="mt-2 text-lg font-semibold text-[var(--foreground)]">{activeContext?.label ?? "워크스페이스 로딩 중"}</h2>
                 <p className="mt-1 text-sm text-[var(--muted)]">
-                  {activeProfile
-                    ? `${getRoleLabel(activeProfile.role)} · ${self?.courseLabel ?? activeProfile.courseLabel} · ${self?.classLabel ?? activeProfile.classLabel}`
+                  {activeContext
+                    ? `${getRoleLabel(activeContext.role)} · ${self?.courseLabel ?? activeContext.courseLabel} · ${self?.classLabel ?? activeContext.classLabel}`
                     : "현재 역할과 수업 맥락을 불러오는 중입니다."}
                 </p>
               </div>
               <span className="rounded-full bg-[var(--primary-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">
-                {activeProfile ? getDomainLabel(self?.domain ?? activeProfile.domain) : "Loading"}
+                {activeContext ? getDomainLabel(self?.domain ?? activeContext.domain) : "Loading"}
               </span>
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="mobile-profile-switcher" className="muted-label">
+              <label htmlFor="mobile-context-switcher" className="muted-label">
                 역할과 맥락 전환
               </label>
               <select
-                id="mobile-profile-switcher"
+                id="mobile-context-switcher"
                 className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3 text-sm font-medium text-[var(--body)] outline-none"
-                value={activeProfile?.profileId ?? ""}
-                onChange={(event) => handleProfileChange(event.target.value)}
-                disabled={!profiles.length}
+                value={activeContext?.contextId ?? ""}
+                onChange={(event) => handleContextChange(event.target.value)}
+                disabled={!contexts.length}
               >
-                {profiles.map((profile) => (
-                  <option key={profile.profileId} value={profile.profileId}>
-                    {profile.label} · {getRoleLabel(profile.role)}
+                {contexts.map((context) => (
+                  <option key={context.contextId} value={context.contextId}>
+                    {context.label} · {getRoleLabel(context.role)}
                   </option>
                 ))}
               </select>
@@ -236,7 +239,7 @@ export function ConsoleShell({ children }: ConsoleShellProps) {
                 return (
                   <Link
                     key={item.href}
-                    href={withProfile(item.href, activeProfile?.profileId ?? "student-minji")}
+                    href={withContext(item.href, activeContext?.contextId ?? defaultContextId)}
                     className={`shrink-0 rounded-full px-3 py-2 text-sm font-medium transition ${
                       active
                         ? "bg-[var(--primary)] text-white"

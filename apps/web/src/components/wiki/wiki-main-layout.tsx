@@ -1,9 +1,9 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
+import { getDomainLabel, getRoleLabel } from "@/lib/workspace-context";
 import {
   fetchWikiPageDetail,
   fetchWikiPageList,
@@ -17,18 +17,18 @@ import { ScopeHeader } from "@/components/console/scope-header";
 import { WikiMetaPanel } from "@/components/wiki/wiki-meta-panel";
 
 type WikiCatalogSnapshot = {
-  profileId: string;
+  contextId: string;
   items: WikiBrowserListItem[];
 };
 
 type WikiSearchSnapshot = {
-  profileId: string;
+  contextId: string;
   query: string;
   items: WikiBrowserListItem[];
 };
 
 type WikiErrorState = {
-  profileId: string;
+  contextId: string;
   query: string;
   message: string;
 };
@@ -47,8 +47,8 @@ function WikiPanelSkeleton({ count = 3 }: { count?: number }) {
   );
 }
 
-function buildDetailCacheKey(profileId: string, pageId: string) {
-  return `${profileId}:${pageId}`;
+function buildDetailCacheKey(contextId: string, pageId: string) {
+  return `${contextId}:${pageId}`;
 }
 
 function getOverlapScore(selectedPage: WikiBrowserDetail, candidatePage: WikiBrowserDetail): number {
@@ -103,7 +103,7 @@ export function WikiMainLayout() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const { activeContext, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
   const [selectedPageId, setSelectedPageId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSection, setActiveSection] = useState("전체");
@@ -130,34 +130,34 @@ export function WikiMainLayout() {
   const normalizedQuery = searchQuery.trim();
 
   useEffect(() => {
-    if (!activeProfile) {
+    if (!activeContext) {
       return;
     }
 
     const requestId = catalogRequestRef.current + 1;
     catalogRequestRef.current = requestId;
-    const profileId = activeProfile.profileId;
+    const contextId = activeContext.contextId;
 
-    void fetchWikiPageList({ profileId }, "", self, activeProfile)
+    void fetchWikiPageList({ contextId }, "", self, activeContext)
       .then((pages) => {
         if (requestId !== catalogRequestRef.current) {
           return;
         }
 
-        setCatalogSnapshot({ profileId, items: pages });
+        setCatalogSnapshot({ contextId, items: pages });
         setErrorState((current) => {
-          if (!current || current.profileId !== profileId || current.query !== "") {
+          if (!current || current.contextId !== contextId || current.query !== "") {
             return current;
           }
           return null;
         });
         setDetailCache((current) => {
-          const allowedKeys = new Set(pages.map((page) => buildDetailCacheKey(profileId, page.pageId)));
-          return Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${profileId}:`) || allowedKeys.has(key)));
+          const allowedKeys = new Set(pages.map((page) => buildDetailCacheKey(contextId, page.pageId)));
+          return Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${contextId}:`) || allowedKeys.has(key)));
         });
         setDetailErrors((current) => {
-          const allowedKeys = new Set(pages.map((page) => buildDetailCacheKey(profileId, page.pageId)));
-          return Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${profileId}:`) || allowedKeys.has(key)));
+          const allowedKeys = new Set(pages.map((page) => buildDetailCacheKey(contextId, page.pageId)));
+          return Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${contextId}:`) || allowedKeys.has(key)));
         });
       })
       .catch((caughtError) => {
@@ -166,28 +166,28 @@ export function WikiMainLayout() {
         }
 
         const message = caughtError instanceof Error ? caughtError.message : "위키 목록을 불러오지 못했습니다.";
-        setErrorState({ profileId, query: "", message });
+        setErrorState({ contextId, query: "", message });
       });
-  }, [activeProfile, self]);
+  }, [activeContext, self]);
 
   useEffect(() => {
-    if (!activeProfile || !normalizedQuery) {
+    if (!activeContext || !normalizedQuery) {
       return;
     }
 
     const requestId = searchRequestRef.current + 1;
     searchRequestRef.current = requestId;
-    const profileId = activeProfile.profileId;
+    const contextId = activeContext.contextId;
 
-    void fetchWikiPageList({ profileId }, normalizedQuery, self, activeProfile)
+    void fetchWikiPageList({ contextId }, normalizedQuery, self, activeContext)
       .then((pages) => {
         if (requestId !== searchRequestRef.current) {
           return;
         }
 
-        setSearchSnapshot({ profileId, query: normalizedQuery, items: pages });
+        setSearchSnapshot({ contextId, query: normalizedQuery, items: pages });
         setErrorState((current) => {
-          if (!current || current.profileId !== profileId || current.query !== normalizedQuery) {
+          if (!current || current.contextId !== contextId || current.query !== normalizedQuery) {
             return current;
           }
           return null;
@@ -199,16 +199,16 @@ export function WikiMainLayout() {
         }
 
         const message = caughtError instanceof Error ? caughtError.message : "위키 검색 결과를 불러오지 못했습니다.";
-        setErrorState({ profileId, query: normalizedQuery, message });
+        setErrorState({ contextId, query: normalizedQuery, message });
       });
-  }, [activeProfile, normalizedQuery, self]);
+  }, [activeContext, normalizedQuery, self]);
 
   const currentCatalogError = useMemo(() => {
-    if (!activeProfile || !errorState) {
+    if (!activeContext || !errorState) {
       return null;
     }
 
-    if (errorState.profileId !== activeProfile.profileId) {
+    if (errorState.contextId !== activeContext.contextId) {
       return null;
     }
 
@@ -217,24 +217,24 @@ export function WikiMainLayout() {
     }
 
     return errorState.message;
-  }, [activeProfile, errorState]);
+  }, [activeContext, errorState]);
 
   const currentSearchError = useMemo(() => {
-    if (!activeProfile || !errorState || !normalizedQuery) {
+    if (!activeContext || !errorState || !normalizedQuery) {
       return null;
     }
 
-    if (errorState.profileId !== activeProfile.profileId || errorState.query !== normalizedQuery) {
+    if (errorState.contextId !== activeContext.contextId || errorState.query !== normalizedQuery) {
       return null;
     }
 
     return errorState.message;
-  }, [activeProfile, errorState, normalizedQuery]);
+  }, [activeContext, errorState, normalizedQuery]);
 
-  const hasFreshCatalog = Boolean(activeProfile && catalogSnapshot && catalogSnapshot.profileId === activeProfile.profileId);
+  const hasFreshCatalog = Boolean(activeContext && catalogSnapshot && catalogSnapshot.contextId === activeContext.contextId);
   const catalogPages = useMemo(() => (hasFreshCatalog ? catalogSnapshot?.items ?? [] : []), [catalogSnapshot, hasFreshCatalog]);
   const hasFreshSearch = Boolean(
-    !normalizedQuery || (activeProfile && searchSnapshot && searchSnapshot.profileId === activeProfile.profileId && searchSnapshot.query === normalizedQuery),
+    !normalizedQuery || (activeContext && searchSnapshot && searchSnapshot.contextId === activeContext.contextId && searchSnapshot.query === normalizedQuery),
   );
   const activePageSet = useMemo(() => {
     if (!normalizedQuery) {
@@ -258,7 +258,7 @@ export function WikiMainLayout() {
   const effectiveActiveSection = availableSections.includes(activeSection) ? activeSection : "전체";
   const listLoading = Boolean(
     bootstrapLoading ||
-      (activeProfile &&
+      (activeContext &&
         (normalizedQuery
           ? !hasFreshSearch && !currentSearchError
           : !hasFreshCatalog && !currentCatalogError)),
@@ -266,13 +266,13 @@ export function WikiMainLayout() {
   const currentListError = normalizedQuery ? currentSearchError : currentCatalogError;
 
   useEffect(() => {
-    if (!activeProfile || !detailSourcePages.length) {
+    if (!activeContext || !detailSourcePages.length) {
       return;
     }
 
-    const profileId = activeProfile.profileId;
+    const contextId = activeContext.contextId;
     const pagesToPrefetch = detailSourcePages.filter((page) => {
-      const cacheKey = buildDetailCacheKey(profileId, page.pageId);
+      const cacheKey = buildDetailCacheKey(contextId, page.pageId);
       return !detailCache[cacheKey] && !detailErrors[cacheKey];
     });
     if (!pagesToPrefetch.length) {
@@ -284,9 +284,9 @@ export function WikiMainLayout() {
 
     void Promise.all(
       pagesToPrefetch.map(async (page) => {
-        const cacheKey = buildDetailCacheKey(profileId, page.pageId);
+        const cacheKey = buildDetailCacheKey(contextId, page.pageId);
         try {
-          const detail = await fetchWikiPageDetail({ profileId }, page.pageId, self, activeProfile);
+          const detail = await fetchWikiPageDetail({ contextId }, page.pageId, self, activeContext);
           return { ok: true as const, cacheKey, detail };
         } catch (caughtError) {
           const message = caughtError instanceof Error ? caughtError.message : "위키 문서를 불러오지 못했습니다.";
@@ -320,7 +320,7 @@ export function WikiMainLayout() {
         return next;
       });
     });
-  }, [activeProfile, detailCache, detailErrors, detailSourcePages, self]);
+  }, [activeContext, detailCache, detailErrors, detailSourcePages, self]);
 
   const filteredPages = useMemo(() => {
     return activePageSet.filter((page) => effectiveActiveSection === "전체" || page.section === effectiveActiveSection);
@@ -338,20 +338,20 @@ export function WikiMainLayout() {
     return filteredPages[0]?.pageId ?? "";
   }, [filteredPages, requestedPageId, selectedPageId]);
 
-  const currentDetailCacheKey = activeProfile && displayedPageId ? buildDetailCacheKey(activeProfile.profileId, displayedPageId) : null;
+  const currentDetailCacheKey = activeContext && displayedPageId ? buildDetailCacheKey(activeContext.contextId, displayedPageId) : null;
   const selectedPage = currentDetailCacheKey ? detailCache[currentDetailCacheKey] ?? null : null;
   const currentDetailError = currentDetailCacheKey ? detailErrors[currentDetailCacheKey] ?? null : null;
-  const detailLoading = Boolean(!listLoading && activeProfile && displayedPageId && !selectedPage && !currentDetailError);
+  const detailLoading = Boolean(!listLoading && activeContext && displayedPageId && !selectedPage && !currentDetailError);
 
   const relatedPages = useMemo(() => {
-    if (!selectedPage || !activeProfile) {
+    if (!selectedPage || !activeContext) {
       return [];
     }
 
-    const profilePrefix = `${activeProfile.profileId}:`;
+    const contextPrefix = `${activeContext.contextId}:`;
     const relationSourcePages = detailSourcePages.length ? detailSourcePages : activePageSet;
     const relatedDetails = Object.entries(detailCache)
-      .filter(([cacheKey, page]) => cacheKey.startsWith(profilePrefix) && page.pageId !== selectedPage.pageId)
+      .filter(([cacheKey, page]) => cacheKey.startsWith(contextPrefix) && page.pageId !== selectedPage.pageId)
       .map(([, page]) => ({ page, score: getOverlapScore(selectedPage, page) }))
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score)
@@ -360,7 +360,7 @@ export function WikiMainLayout() {
     return relatedDetails
       .map(({ page }) => relationSourcePages.find((candidate) => candidate.pageId === page.pageId))
       .filter((candidate): candidate is WikiBrowserListItem => Boolean(candidate));
-  }, [activePageSet, activeProfile, detailCache, detailSourcePages, selectedPage]);
+  }, [activePageSet, activeContext, detailCache, detailSourcePages, selectedPage]);
 
   function handleSelectPage(pageId: string) {
     setSearchQuery("");
@@ -369,10 +369,10 @@ export function WikiMainLayout() {
     syncPageQuery(pageId);
   }
 
-  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
-  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
-  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
-  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? "academic");
+  const roleLabel = activeContext ? getRoleLabel(activeContext.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeContext?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeContext?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeContext?.domain ?? "academic");
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">

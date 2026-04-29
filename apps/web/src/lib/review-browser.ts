@@ -1,5 +1,5 @@
-﻿import type { BootstrapContextSelf, BootstrapProfile } from "@/lib/context-bootstrap";
-import { getDomainLabel, type KnowloopDomain } from "@/lib/demo-data";
+import type { BootstrapContextSelf, BootstrapContext } from "@/lib/context-bootstrap";
+import { buildKnowloopContextHeaders, getDomainLabel, type KnowloopDomain } from "@/lib/workspace-context";
 
 type ApiEnvelope<T> = {
   status: string;
@@ -175,7 +175,7 @@ export type ReviewActionDraft = {
 };
 
 type ReviewFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 const REVIEW_STATUS_ORDER: CandidateStatusApi[] = ["open", "promoted", "merged", "dropped"];
@@ -189,7 +189,7 @@ function buildHeaders(context: ReviewFetchContext, options?: { idempotencyKey?: 
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
     "X-Request-Id": options?.requestId ?? buildRequestId("review"),
     ...(options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
   };
@@ -275,12 +275,12 @@ function formatLifecycleState(candidate: ReviewCandidateApi): ReviewLifecycleLab
 function resolveScopeLabel(
   reviewDomain: ReviewDomainApi,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   courseId: string,
   classId: string,
 ): string {
-  const courseLabel = self?.courseId === courseId ? self.courseLabel : activeProfile?.courseId === courseId ? activeProfile.courseLabel : courseId;
-  const classLabel = self?.classId === classId ? self.classLabel : activeProfile?.classId === classId ? activeProfile.classLabel : classId;
+  const courseLabel = self?.courseId === courseId ? self.courseLabel : activeContext?.courseId === courseId ? activeContext.courseLabel : courseId;
+  const classLabel = self?.classId === classId ? self.classLabel : activeContext?.classId === classId ? activeContext.classLabel : classId;
   const domainLabel = getDomainLabel(reviewDomain as KnowloopDomain);
 
   return [courseLabel, classLabel, domainLabel].filter(Boolean).join(" · ");
@@ -416,7 +416,7 @@ function mapReviewAction(action: ReviewActionApi): ReviewAction {
   }
 }
 
-function mapCandidateSummary(candidate: ReviewCandidateApi, self: BootstrapContextSelf | null, activeProfile: BootstrapProfile | null): ReviewCandidateSummary {
+function mapCandidateSummary(candidate: ReviewCandidateApi, self: BootstrapContextSelf | null, activeContext: BootstrapContext | null): ReviewCandidateSummary {
   const target = resolveTargetLabel(candidate);
   return {
     candidateId: candidate.candidate_id,
@@ -432,7 +432,7 @@ function mapCandidateSummary(candidate: ReviewCandidateApi, self: BootstrapConte
     targetPage: target.page,
     targetPageId: candidate.related_page_id ?? "",
     targetPath: candidate.wiki_sync_target_path ?? "",
-    scopeLabel: resolveScopeLabel(candidate.review_domain, self, activeProfile, candidate.course_id, candidate.class_id),
+    scopeLabel: resolveScopeLabel(candidate.review_domain, self, activeContext, candidate.course_id, candidate.class_id),
     updatedAt: formatTimestamp(candidate.updated_at),
     sourceRefs: candidate.source_refs.map(formatSourceRef),
     sessionRefs: candidate.session_refs ?? [],
@@ -441,8 +441,8 @@ function mapCandidateSummary(candidate: ReviewCandidateApi, self: BootstrapConte
   };
 }
 
-function mapCandidateDetail(detail: ReviewDetailApi, self: BootstrapContextSelf | null, activeProfile: BootstrapProfile | null): ReviewCandidateDetail {
-  const summary = mapCandidateSummary(detail.candidate, self, activeProfile);
+function mapCandidateDetail(detail: ReviewDetailApi, self: BootstrapContextSelf | null, activeContext: BootstrapContext | null): ReviewCandidateDetail {
+  const summary = mapCandidateSummary(detail.candidate, self, activeContext);
   return {
     ...summary,
     evidenceNote: summarizeEvidence(detail.candidate),
@@ -576,7 +576,7 @@ async function fetchCandidatesByStatus(
   context: ReviewFetchContext,
   status: CandidateStatusApi,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<Array<{ candidate: ReviewCandidateSummary; updatedAtValue: string }>> {
   const limit = 100;
   let offset = 0;
@@ -595,7 +595,7 @@ async function fetchCandidatesByStatus(
 
     entries.push(
       ...envelope.data.map((candidate) => ({
-        candidate: mapCandidateSummary(candidate, self, activeProfile),
+        candidate: mapCandidateSummary(candidate, self, activeContext),
         updatedAtValue: candidate.updated_at,
       })),
     );
@@ -613,9 +613,9 @@ async function fetchCandidatesByStatus(
 export async function fetchReviewCandidateList(
   context: ReviewFetchContext,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<ReviewCandidateSummary[]> {
-  const groups = await Promise.all(REVIEW_STATUS_ORDER.map((status) => fetchCandidatesByStatus(context, status, self, activeProfile)));
+  const groups = await Promise.all(REVIEW_STATUS_ORDER.map((status) => fetchCandidatesByStatus(context, status, self, activeContext)));
   const deduped = new Map<string, { candidate: ReviewCandidateSummary; updatedAtValue: string }>();
   groups.flat().forEach((entry) => {
     deduped.set(entry.candidate.candidateId, entry);
@@ -630,13 +630,13 @@ export async function fetchReviewCandidateDetail(
   context: ReviewFetchContext,
   candidateId: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<ReviewCandidateDetail> {
   const envelope = await fetchEnvelope<ReviewDetailApi>(`/api/v1/review/candidates/${candidateId}`, {
     headers: buildHeaders(context, { requestId: buildRequestId("review-detail") }),
   });
 
-  return mapCandidateDetail(envelope.data, self, activeProfile);
+  return mapCandidateDetail(envelope.data, self, activeContext);
 }
 
 export async function fetchReviewPatchPreview(
@@ -689,7 +689,7 @@ export async function approveReviewCandidate(
   payload: { targetPageId?: string; targetPath?: string; notes?: string },
   idempotencyKey: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<ReviewMutationResult> {
   const response = await postReviewMutation(context, candidateId, "approve", {
     ...(payload.targetPageId?.trim() ? { target_page_id: payload.targetPageId.trim() } : {}),
@@ -697,7 +697,7 @@ export async function approveReviewCandidate(
     ...(payload.notes?.trim() ? { approval_notes: payload.notes.trim() } : {}),
   }, idempotencyKey);
   return {
-    candidate: mapCandidateSummary(response.candidate, self, activeProfile),
+    candidate: mapCandidateSummary(response.candidate, self, activeContext),
     summary: "candidate가 공식 위키 승격 흐름으로 이동했습니다.",
   };
 }
@@ -708,14 +708,14 @@ export async function mergeReviewCandidate(
   payload: { targetCandidateId: string; notes?: string },
   idempotencyKey: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<ReviewMutationResult> {
   const response = await postReviewMutation(context, candidateId, "merge", {
     target_candidate_id: payload.targetCandidateId,
     ...(payload.notes?.trim() ? { merge_notes: payload.notes.trim() } : {}),
   }, idempotencyKey);
   return {
-    candidate: mapCandidateSummary(response.candidate, self, activeProfile),
+    candidate: mapCandidateSummary(response.candidate, self, activeContext),
     summary: "candidate가 다른 canonical 후보로 병합되었습니다.",
   };
 }
@@ -726,14 +726,14 @@ export async function dropReviewCandidate(
   payload: { reason: DropReasonApi; notes?: string },
   idempotencyKey: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<ReviewMutationResult> {
   const response = await postReviewMutation(context, candidateId, "drop", {
     reason: payload.reason,
     ...(payload.notes?.trim() ? { drop_notes: payload.notes.trim() } : {}),
   }, idempotencyKey);
   return {
-    candidate: mapCandidateSummary(response.candidate, self, activeProfile),
+    candidate: mapCandidateSummary(response.candidate, self, activeContext),
     summary: "candidate가 review workflow에서 종료되었습니다.",
   };
 }
@@ -744,13 +744,13 @@ export async function resumeReviewCandidateSync(
   payload: { notes?: string },
   idempotencyKey: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<ReviewMutationResult> {
   const response = await postReviewMutation(context, candidateId, "resume-sync", {
     ...(payload.notes?.trim() ? { resume_notes: payload.notes.trim() } : {}),
   }, idempotencyKey);
   return {
-    candidate: mapCandidateSummary(response.candidate, self, activeProfile),
+    candidate: mapCandidateSummary(response.candidate, self, activeContext),
     summary: "중단된 wiki sync 재개를 요청했습니다.",
   };
 }

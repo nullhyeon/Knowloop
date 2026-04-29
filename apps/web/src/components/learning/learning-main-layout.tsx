@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,9 +12,9 @@ import {
   type LearningSummaryTone,
 } from "@/lib/learning-browser";
 
-function appendProfileToHref(href: string, profileId: string): string {
+function appendContextToHref(href: string, contextId: string): string {
   const separator = href.includes("?") ? "&" : "?";
-  return `${href}${separator}profile=${encodeURIComponent(profileId)}`;
+  return `${href}${separator}context=${encodeURIComponent(contextId)}`;
 }
 
 function formatRoleLabel(role: string): string {
@@ -157,8 +157,8 @@ function SectionHeader({
 }
 
 export function LearningMainLayout() {
-  const { activeProfile, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
-  const learningAllowed = activeProfile?.role === "student";
+  const { activeContext, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const learningAllowed = activeContext?.role === "student";
 
   const [overview, setOverview] = useState<LearningOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -166,7 +166,7 @@ export function LearningMainLayout() {
   const requestRef = useRef(0);
 
   const loadLearningOverview = useCallback(async () => {
-    if (!activeProfile) {
+    if (!activeContext) {
       requestRef.current += 1;
       setOverview(null);
       setLoading(bootstrapLoading);
@@ -188,7 +188,7 @@ export function LearningMainLayout() {
     setError(null);
 
     try {
-      const nextOverview = await fetchLearningOverview({ profileId: activeProfile.profileId });
+      const nextOverview = await fetchLearningOverview({ contextId: activeContext.contextId });
       if (requestId !== requestRef.current) {
         return;
       }
@@ -206,7 +206,7 @@ export function LearningMainLayout() {
         setLoading(false);
       }
     }
-  }, [activeProfile, bootstrapLoading, learningAllowed]);
+  }, [activeContext, bootstrapLoading, learningAllowed]);
 
   useEffect(() => {
     void loadLearningOverview();
@@ -228,7 +228,7 @@ export function LearningMainLayout() {
     wikiLinks.length > 0 ||
     recentSessions.length > 0;
 
-  if (bootstrapLoading || (activeProfile && loading && !overview && !error)) {
+  if (bootstrapLoading || (activeContext && loading && !overview && !error)) {
     return <LoadingPanel />;
   }
 
@@ -244,12 +244,12 @@ export function LearningMainLayout() {
     );
   }
 
-  if (!activeProfile) {
+  if (!activeContext) {
     return (
       <NoticePanel
         eyebrow="Learning access"
-        title="현재 학습 허브를 열 수 있는 프로필이 없습니다."
-        description="프로필 bootstrap이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
+        title="현재 학습 허브를 열 수 있는 컨텍스트가 없습니다."
+        description="컨텍스트 bootstrap이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
         actionLabel="Workspace로 이동"
         actionHref="/workspace"
       />
@@ -261,9 +261,9 @@ export function LearningMainLayout() {
       <NoticePanel
         eyebrow="Role guard"
         title="이 화면은 학생 개인 학습 허브입니다."
-        description={`${formatRoleLabel(activeProfile.role)} 역할에서는 개인 학습 데이터를 직접 열 수 없습니다. Ask, Review, Insights 같은 역할별 화면으로 이어서 확인해 주세요.`}
-        actionLabel={`${formatRoleLabel(activeProfile.role)} 화면으로 이동`}
-        actionHref={appendProfileToHref(activeProfile.landingSurface || "/workspace", activeProfile.profileId)}
+        description={`${formatRoleLabel(activeContext.role)} 역할에서는 개인 학습 데이터를 직접 열 수 없습니다. Ask, Review, Insights 같은 역할별 화면으로 이어서 확인해 주세요.`}
+        actionLabel={`${formatRoleLabel(activeContext.role)} 화면으로 이동`}
+        actionHref={appendContextToHref(activeContext.landingSurface || "/workspace", activeContext.contextId)}
       />
     );
   }
@@ -275,7 +275,7 @@ export function LearningMainLayout() {
         title="학습 허브 데이터를 불러오지 못했습니다."
         description={error}
         actionLabel="다시 시도하기"
-        actionHref={appendProfileToHref("/learning", activeProfile.profileId)}
+        actionHref={appendContextToHref("/learning", activeContext.contextId)}
       />
     );
   }
@@ -297,10 +297,10 @@ export function LearningMainLayout() {
       <ScopeHeader
         title="Learning"
         description={scopeDescription}
-        role={activeProfile.label ?? formatRoleLabel(activeProfile.role)}
-        course={activeProfile.courseLabel}
-        classNameLabel={activeProfile.classLabel}
-        domain={formatDomainLabel(activeProfile.domain)}
+        role={activeContext.label ?? formatRoleLabel(activeContext.role)}
+        course={activeContext.courseLabel}
+        classNameLabel={activeContext.classLabel}
+        domain={formatDomainLabel(activeContext.domain)}
       />
 
       <section className="panel-card flex items-center justify-between gap-4 px-6 py-5 lg:px-7">
@@ -481,7 +481,7 @@ export function LearningMainLayout() {
                 nextActions.map((action) => (
                   <Link
                     key={action.title}
-                    href={action.href ?? appendProfileToHref("/ask", activeProfile.profileId)}
+                    href={action.href ?? appendContextToHref("/ask", activeContext.contextId)}
                     className="block rounded-[20px] border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-4 transition hover:border-[var(--border-strong)]"
                   >
                     <div className="flex items-center justify-between gap-3">
@@ -513,7 +513,7 @@ export function LearningMainLayout() {
                 wikiLinks.map((item) => (
                   <Link
                     key={item.itemId}
-                    href={item.href ?? appendProfileToHref("/wiki", activeProfile.profileId)}
+                    href={item.href ?? appendContextToHref("/wiki", activeContext.contextId)}
                     className="block rounded-[20px] border border-[var(--border)] bg-[var(--surface-muted)] px-4 py-4 transition hover:border-[var(--border-strong)]"
                   >
                     <div className="flex items-center justify-between gap-3">

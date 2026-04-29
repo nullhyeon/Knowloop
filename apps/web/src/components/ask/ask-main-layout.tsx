@@ -13,7 +13,7 @@ import {
   type AskResponseMode,
   type AskSessionHistoryItem,
 } from "@/lib/ask-console";
-import { getDomainLabel, getRoleLabel, withProfile } from "@/lib/demo-data";
+import { defaultContextId, getDomainLabel, getRoleLabel, withContext } from "@/lib/workspace-context";
 
 import { AskEvidencePanel } from "@/components/ask/ask-evidence-panel";
 import { useContextBootstrap } from "@/components/console/context-bootstrap-provider";
@@ -66,14 +66,14 @@ function AskComposer({
   onResponseModeChange,
   promptExamples,
   modeOptions,
-  profileLabel,
+  contextLabel,
   courseLabel,
   classLabel,
   onSubmit,
   submitLoading,
   submitError,
   disabled,
-  profileId,
+  contextId,
 }: {
   draft: string;
   onDraftChange: (value: string) => void;
@@ -81,14 +81,14 @@ function AskComposer({
   onResponseModeChange: (value: AskResponseMode) => void;
   promptExamples: string[];
   modeOptions: ReturnType<typeof getAskResponseModeOptions>;
-  profileLabel: string;
+  contextLabel: string;
   courseLabel: string;
   classLabel: string;
   onSubmit: () => void;
   submitLoading: boolean;
   submitError: string | null;
   disabled: boolean;
-  profileId: string;
+  contextId: string;
 }) {
   return (
     <div className="rounded-[24px] border border-[var(--border-strong)] bg-[var(--surface-muted)] px-5 py-5">
@@ -96,7 +96,7 @@ function AskComposer({
         <div>
           <p className="text-sm font-semibold text-[var(--foreground)]">질문 작성</p>
           <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
-            현재 스코프는 {profileLabel}, {courseLabel}, {classLabel}입니다.
+            현재 스코프는 {contextLabel}, {courseLabel}, {classLabel}입니다.
           </p>
         </div>
         <span className="rounded-full bg-[var(--primary-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">
@@ -172,7 +172,7 @@ function AskComposer({
           {submitLoading ? "질문 처리 중..." : "질문 보내기"}
         </button>
         <Link
-          href={withProfile("/wiki", profileId)}
+          href={withContext("/wiki", contextId)}
           className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--body)]"
         >
           관련 wiki 보기
@@ -210,7 +210,7 @@ function AccessNote({ message }: { message: string }) {
 }
 
 export function AskMainLayout() {
-  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const { activeContext, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
 
   const [draft, setDraft] = useState("");
   const [responseMode, setResponseMode] = useState<AskResponseMode>("teaching");
@@ -225,7 +225,7 @@ export function AskMainLayout() {
   const sessionRequestRef = useRef(0);
   const submitRequestRef = useRef(0);
 
-  const role = activeProfile?.role ?? "student";
+  const role = activeContext?.role ?? "student";
   const promptExamples = useMemo(() => getAskPromptExamples(role), [role]);
   const responseModeOptions = useMemo(() => getAskResponseModeOptions(role), [role]);
 
@@ -240,7 +240,7 @@ export function AskMainLayout() {
   }, [promptExamples, responseModeOptions]);
 
   const loadSessionHistory = useCallback(async (queryOverride?: string) => {
-    if (!activeProfile) {
+    if (!activeContext) {
       sessionRequestRef.current += 1;
       setSessionHistory([]);
       setSelectedSessionId("");
@@ -259,7 +259,7 @@ export function AskMainLayout() {
     try {
       const effectiveQuery = queryOverride ?? searchQuery;
       const nextHistory = await fetchAskSessionHistory(
-        { profileId: activeProfile.profileId },
+        { contextId: activeContext.contextId },
         { query: effectiveQuery, limit: 12 },
       );
 
@@ -285,7 +285,7 @@ export function AskMainLayout() {
         setSessionLoading(false);
       }
     }
-  }, [activeProfile, searchQuery]);
+  }, [activeContext, searchQuery]);
 
   useEffect(() => {
     void loadSessionHistory();
@@ -298,7 +298,7 @@ export function AskMainLayout() {
   const askTopics = useMemo(() => extractAskTopics(sessionHistory), [sessionHistory]);
 
   async function handleSubmitQuery() {
-    if (!activeProfile || !draft.trim()) {
+    if (!activeContext || !draft.trim()) {
       return;
     }
 
@@ -309,11 +309,11 @@ export function AskMainLayout() {
 
     try {
       const nextResult = await submitAskQuery(
-        { profileId: activeProfile.profileId },
+        { contextId: activeContext.contextId },
         {
           message: draft.trim(),
           responseMode,
-          role: activeProfile.role,
+          role: activeContext.role,
           allowRawSourceFallback: true,
         },
       );
@@ -341,11 +341,11 @@ export function AskMainLayout() {
     }
   }
 
-  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
-  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
-  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
-  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? "academic");
-  const profileId = activeProfile?.profileId ?? "student-minji";
+  const roleLabel = activeContext ? getRoleLabel(activeContext.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeContext?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeContext?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeContext?.domain ?? "academic");
+  const contextId = activeContext?.contextId ?? defaultContextId;
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">
@@ -382,7 +382,7 @@ export function AskMainLayout() {
                 onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder="연쇄법칙, 과제 제출, refund policy처럼 검색"
                 className="mt-2 w-full rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-3 text-sm text-[var(--body)] outline-none focus-visible:border-[var(--primary)] focus-visible:ring-2 focus-visible:ring-[var(--primary-soft)]"
-                disabled={!activeProfile}
+                disabled={!activeContext}
               />
               <p className="mt-2 text-xs leading-5 text-[var(--muted)]">
                 검색어가 없으면 `/sessions/recent`, 입력하면 `/sessions/search` 결과를 사용합니다.
@@ -491,14 +491,14 @@ export function AskMainLayout() {
                 onResponseModeChange={setResponseMode}
                 promptExamples={promptExamples}
                 modeOptions={responseModeOptions}
-                profileLabel={activeProfile?.label ?? "현재 프로필"}
+                contextLabel={activeContext?.label ?? "현재 컨텍스트"}
                 courseLabel={courseLabel}
                 classLabel={classLabel}
                 onSubmit={handleSubmitQuery}
                 submitLoading={submitLoading}
                 submitError={submitError}
-                disabled={!activeProfile}
-                profileId={profileId}
+                disabled={!activeContext}
+                contextId={contextId}
               />
             </div>
 

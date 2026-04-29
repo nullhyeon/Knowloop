@@ -48,7 +48,7 @@ Help the user answer one question immediately:
 
 ### Loading
 
-- loading skeleton for profile cards and recent contexts
+- loading skeleton for context cards and recent contexts
 
 ### Empty
 

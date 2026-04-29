@@ -1,4 +1,4 @@
-﻿import {
+import {
   getDropReasonLabel,
   getDropReasonOptions,
   type ReviewAction,

@@ -2,29 +2,24 @@
 
 ## Purpose
 
-Introduce Knowloop clearly and help judges start with seeded sample data immediately.
+Introduce Knowloop clearly and help evaluators start with a role-aware workspace context immediately.
 
 This page is not a generic marketing landing page.
-It is a product-entry page for a live demo environment.
-
-Implementation note:
-
-- the current live root route may still redirect into `/workspace` until this slice is implemented
-- this document defines the target contract for the next homepage build
+It is a product-entry page for the service console.
 
 The page must explain three things quickly:
 
 1. what Knowloop is
 2. how the workflow works
-3. where the judge should click first
+3. which role context the evaluator should open first
 
 ---
 
 ## Primary Users
 
-- judges
+- evaluators
 - first-time evaluators
-- demo viewers
+- service reviewers
 
 Secondary users:
 
@@ -36,7 +31,7 @@ Secondary users:
 
 Answer:
 
-`What does this product do, why is it different from a chatbot, and which sample experience should I open first?`
+`What does this product do, why is it different from a chatbot, and which role context should I open first?`
 
 ---
 
@@ -62,7 +57,7 @@ Do not build a centered AI chat hero.
 
 - top: concise hero with one strong headline, one support paragraph, and product screenshot or product collage
 - second: `How it works` sequence with 4-5 steps
-- third: two seeded sample entry cards
+- third: two role context entry cards
 - fourth: trust section explaining evidence, review gate, and maintained wiki
 - optional final strip: compact note about Korean education workflow fit
 
@@ -80,8 +75,8 @@ Must communicate:
 
 The CTA area must prioritize:
 
-- `학생용 샘플 데이터로 시작`
-- `교강사용 샘플 데이터로 시작`
+- `학생 컨텍스트로 시작`
+- `교강사 컨텍스트로 시작`
 
 There should not be more than two primary buttons in the first viewport.
 
@@ -111,24 +106,24 @@ Suggested copy direction:
 - 공식 위키가 갱신된다
 - 다음 질문부터 더 안정적인 답변을 제공한다
 
-### 4. Seeded Demo Entry
+### 4. Role Context Entry
 
 Show exactly two role-entry cards:
 
-#### Student sample start
+#### Student context start
 
-- button label: `학생용 샘플 데이터로 시작`
-- supporting text: explain that the viewer will see Ask, Learning, and Wiki with pre-seeded study history
+- button label: `학생 컨텍스트로 시작`
+- supporting text: explain that the viewer will see Ask, Learning, and Wiki under the student role and current class scope
 
-#### Instructor sample start
+#### Instructor context start
 
-- button label: `교강사용 샘플 데이터로 시작`
-- supporting text: explain that the viewer will see Insights, Review, and Wiki with pre-seeded class patterns
+- button label: `교강사 컨텍스트로 시작`
+- supporting text: explain that the viewer will see Insights, Review, and Wiki under the instructor role and current class scope
 
 Rules:
 
 - cards should feel trustworthy and product-like
-- make the difference between the two sample experiences obvious
+- make the difference between the two role contexts obvious
 - do not mention operator as a primary entry on this page
 
 ### 5. Trust and Quality
@@ -146,12 +141,12 @@ This section should feel calm and precise, not defensive.
 ## Required Data
 
 The page itself may use static explanatory copy.
-The entry buttons must hand off to authenticated or signed context setup.
+The entry buttons must hand off to workspace context setup and the service context contract.
 
 Expected target behavior:
 
 - role entry routes must resolve context through the service context contract
-- static sample profile deep-links are not part of the production flow
+- static mock role deep-links are not part of the production flow
 
 ---
 
@@ -196,7 +191,7 @@ Bad tone:
 ### Loading
 
 - not important for static hero content
-- if profile/bootstrap metadata is needed, keep loading minimal and quiet
+- if context/bootstrap metadata is needed, keep loading minimal and quiet
 
 ### Empty
 
@@ -204,7 +199,7 @@ Bad tone:
 
 ### Error
 
-- if sample entry metadata fails, keep the message short and action-oriented
+- if context entry metadata fails, keep the message short and action-oriented
 - do not show technical backend wording on the hero
 
 ---
@@ -212,7 +207,7 @@ Bad tone:
 ## Guardrails
 
 - do not make the page feel unrelated to the authenticated console
-- do not bury the sample entry buttons under long feature sections
+- do not bury the role context entry buttons under long feature sections
 - do not overexplain architecture before the viewer sees the product
 - do not treat the page as a generic signup screen
 - do not overuse gradient backgrounds or decorative AI imagery
@@ -225,4 +220,4 @@ In under one minute, a judge should understand:
 
 1. this is not just a chatbot
 2. the product turns questions into maintained knowledge
-3. they can start with either student or instructor sample data immediately
+3. they can start with either student or instructor context immediately

@@ -1,4 +1,4 @@
-﻿import type { WikiBrowserDetail, WikiBrowserListItem } from "@/lib/wiki-browser";
+import type { WikiBrowserDetail, WikiBrowserListItem } from "@/lib/wiki-browser";
 
 function StateBadge({ stateLabel }: { stateLabel: string }) {
   const className =

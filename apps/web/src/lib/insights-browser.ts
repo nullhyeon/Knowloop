@@ -1,4 +1,6 @@
 
+import { buildKnowloopContextHeaders } from "@/lib/workspace-context";
+
 type ApiEnvelope<T> = {
   status: string;
   data: T;
@@ -48,7 +50,7 @@ type InstructorOverviewApi = {
 };
 
 type InsightsFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 export type InsightSummaryCard = {
@@ -92,7 +94,7 @@ export type InsightsDashboardData = {
 function buildHeaders(context: InsightsFetchContext): HeadersInit {
   return {
     Accept: "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
   };
 }
 
@@ -151,8 +153,8 @@ function kindLabel(kind: CandidateKindApi): string {
   }
 }
 
-function buildProfileHref(basePath: string, profileId: string, extraParams?: Record<string, string | null | undefined>): string {
-  const params = new URLSearchParams({ profile: profileId });
+function buildContextHref(basePath: string, contextId: string, extraParams?: Record<string, string | null | undefined>): string {
+  const params = new URLSearchParams({ context: contextId });
   Object.entries(extraParams ?? {}).forEach(([key, value]) => {
     if (value) {
       params.set(key, value);
@@ -188,14 +190,14 @@ function actionLabelForPattern(pattern: InsightPatternApi): string {
   return "Review 후보 열기";
 }
 
-function hrefForPattern(pattern: InsightPatternApi, profileId: string): string {
+function hrefForPattern(pattern: InsightPatternApi, contextId: string): string {
   if (pattern.candidate_ids[0]) {
-    return buildProfileHref("/review", profileId, { candidate: pattern.candidate_ids[0] });
+    return buildContextHref("/review", contextId, { candidate: pattern.candidate_ids[0] });
   }
   if (pattern.related_page_id) {
-    return buildProfileHref("/wiki", profileId, { page: pattern.related_page_id });
+    return buildContextHref("/wiki", contextId, { page: pattern.related_page_id });
   }
-  return buildProfileHref("/review", profileId);
+  return buildContextHref("/review", contextId);
 }
 
 function buildSummaryCards(overview: InstructorOverviewApi): InsightSummaryCard[] {
@@ -227,7 +229,7 @@ function buildSummaryCards(overview: InstructorOverviewApi): InsightSummaryCard[
   ];
 }
 
-function buildPatternCards(patterns: InsightPatternApi[], profileId: string): InsightPatternCard[] {
+function buildPatternCards(patterns: InsightPatternApi[], contextId: string): InsightPatternCard[] {
   return patterns.slice(0, 4).map((pattern) => ({
     patternId: pattern.pattern_id,
     title: pattern.title,
@@ -235,14 +237,14 @@ function buildPatternCards(patterns: InsightPatternApi[], profileId: string): In
     signal: summarizePatternSignal(pattern),
     stateLabel: stateLabelForPattern(pattern),
     actionLabel: actionLabelForPattern(pattern),
-    href: hrefForPattern(pattern, profileId),
+    href: hrefForPattern(pattern, contextId),
   }));
 }
 
 function buildPriorityActions(
   overview: InstructorOverviewApi,
   patterns: InsightPatternApi[],
-  profileId: string,
+  contextId: string,
 ): InsightPriorityAction[] {
   const actions: InsightPriorityAction[] = [];
   const topPattern = patterns[0] ?? overview.top_patterns[0];
@@ -257,8 +259,8 @@ function buildPriorityActions(
       owner: "강사",
       nextSurface: "Wiki",
       href: topPattern.related_page_id
-        ? buildProfileHref("/wiki", profileId, { page: topPattern.related_page_id })
-        : buildProfileHref("/review", profileId, { candidate: topPattern.candidate_ids[0] }),
+        ? buildContextHref("/wiki", contextId, { page: topPattern.related_page_id })
+        : buildContextHref("/review", contextId, { candidate: topPattern.candidate_ids[0] }),
       tone: "primary",
     });
   }
@@ -270,7 +272,7 @@ function buildPriorityActions(
       summary: `${faqPattern.title}는 반복 문의와 직접 연결되어 있어, 먼저 후보를 정리하면 답변 일관성을 크게 높일 수 있습니다.`,
       owner: "강사 + 검토자",
       nextSurface: "Review",
-      href: buildProfileHref("/review", profileId, { candidate: faqPattern.candidate_ids[0] }),
+      href: buildContextHref("/review", contextId, { candidate: faqPattern.candidate_ids[0] }),
       tone: "review",
     });
   }
@@ -285,7 +287,7 @@ function buildPriorityActions(
       summary: `${unresolvedPattern.title}가 아직 공식 지식으로 정리되지 않았습니다. review를 통해 위키 보강이 필요한지 먼저 판단해야 합니다.`,
       owner: "검토자 협업",
       nextSurface: "Review",
-      href: buildProfileHref("/review", profileId, { candidate: unresolvedPattern.candidate_ids[0] }),
+      href: buildContextHref("/review", contextId, { candidate: unresolvedPattern.candidate_ids[0] }),
       tone: "warning",
     });
   }
@@ -363,8 +365,8 @@ export async function fetchInsightsDashboard(context: InsightsFetchContext): Pro
 
   return {
     summaryCards: buildSummaryCards(overview),
-    patterns: buildPatternCards(patterns, context.profileId),
-    priorityActions: buildPriorityActions(overview, patterns, context.profileId),
+    patterns: buildPatternCards(patterns, context.contextId),
+    priorityActions: buildPriorityActions(overview, patterns, context.contextId),
     nextClassBrief: buildNextClassBrief(overview),
     decisionFraming: buildDecisionFraming(overview, patterns),
     topicHighlights: buildTopicHighlights(overview.top_topics),

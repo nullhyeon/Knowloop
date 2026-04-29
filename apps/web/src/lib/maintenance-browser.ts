@@ -1,5 +1,5 @@
-﻿import type { BootstrapContextSelf, BootstrapProfile } from "@/lib/context-bootstrap";
-import { getDomainLabel, type KnowloopDomain } from "@/lib/demo-data";
+import type { BootstrapContextSelf, BootstrapContext } from "@/lib/context-bootstrap";
+import { buildKnowloopContextHeaders, getDomainLabel, type KnowloopDomain } from "@/lib/workspace-context";
 
 type ApiEnvelope<T> = {
   status: string;
@@ -59,7 +59,7 @@ type MaintenanceReportPayloadApi = {
 };
 
 type MaintenanceFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 export type MaintenanceSeverityLabel = "Error" | "Warning" | "Info";
@@ -101,7 +101,7 @@ export type MaintenanceConsoleData = {
 function buildHeaders(context: MaintenanceFetchContext): HeadersInit {
   return {
     Accept: "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
   };
 }
 
@@ -165,12 +165,12 @@ function mapStatusLabel(status: MaintenanceStatusApi): MaintenanceStatusLabel {
 function resolveScopeLabel(
   domain: KnowloopDomain,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   courseId: string,
   classId: string,
 ): string {
-  const courseLabel = self?.courseId === courseId ? self.courseLabel : activeProfile?.courseId === courseId ? activeProfile.courseLabel : courseId;
-  const classLabel = self?.classId === classId ? self.classLabel : activeProfile?.classId === classId ? activeProfile.classLabel : classId;
+  const courseLabel = self?.courseId === courseId ? self.courseLabel : activeContext?.courseId === courseId ? activeContext.courseLabel : courseId;
+  const classLabel = self?.classId === classId ? self.classLabel : activeContext?.classId === classId ? activeContext.classLabel : classId;
   const domainLabel = getDomainLabel(domain);
   return [courseLabel, classLabel, domainLabel].filter(Boolean).join(" · ");
 }
@@ -371,12 +371,12 @@ function buildConsoleData(
   payload: MaintenanceStatusPayloadApi | MaintenanceReportPayloadApi,
   options: {
     self: BootstrapContextSelf | null;
-    activeProfile: BootstrapProfile | null;
+    activeContext: BootstrapContext | null;
     validatorView: boolean;
   },
 ): MaintenanceConsoleData {
-  const { self, activeProfile, validatorView } = options;
-  const domain = (self?.domain ?? activeProfile?.domain ?? (validatorView ? "review" : "academic")) as KnowloopDomain;
+  const { self, activeContext, validatorView } = options;
+  const domain = (self?.domain ?? activeContext?.domain ?? (validatorView ? "review" : "academic")) as KnowloopDomain;
 
   const findings = validatorView && "entity_id" in (payload.checks[0] ?? {})
     ? (payload.checks as MaintenanceReportCheckApi[]).map((check, index) => mapReportFinding(check, index))
@@ -391,7 +391,7 @@ function buildConsoleData(
     summary: summarizeStatus(payload, validatorView),
     summaryCards: buildSummaryCards(payload, validatorView),
     findings,
-    scopeLabel: resolveScopeLabel(domain, self, activeProfile, payload.course_id, payload.class_id),
+    scopeLabel: resolveScopeLabel(domain, self, activeContext, payload.course_id, payload.class_id),
     generatedBy: validatorView ? "validator full maintenance report" : "read-only maintenance status",
     redactionNote: validatorView ? undefined : "강사 화면에서는 entity id, 내부 경로, 세부 detail을 가린 요약만 제공합니다.",
   };
@@ -400,7 +400,7 @@ function buildConsoleData(
 export async function fetchMaintenanceStatus(
   context: MaintenanceFetchContext,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<MaintenanceConsoleData> {
   const envelope = await fetchEnvelope<MaintenanceStatusPayloadApi>("/api/v1/maintenance/status", {
     headers: buildHeaders(context),
@@ -408,7 +408,7 @@ export async function fetchMaintenanceStatus(
 
   return buildConsoleData(envelope.data, {
     self,
-    activeProfile,
+    activeContext,
     validatorView: false,
   });
 }
@@ -416,7 +416,7 @@ export async function fetchMaintenanceStatus(
 export async function fetchMaintenanceReport(
   context: MaintenanceFetchContext,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<MaintenanceConsoleData> {
   const envelope = await fetchEnvelope<MaintenanceReportPayloadApi>("/api/v1/maintenance/report", {
     headers: buildHeaders(context),
@@ -424,7 +424,7 @@ export async function fetchMaintenanceReport(
 
   return buildConsoleData(envelope.data, {
     self,
-    activeProfile,
+    activeContext,
     validatorView: true,
   });
 }

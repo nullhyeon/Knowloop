@@ -1,6 +1,7 @@
-﻿"use client";
+"use client";
 
-import type { BootstrapContextSelf, BootstrapProfile } from "@/lib/context-bootstrap";
+import type { BootstrapContextSelf, BootstrapContext } from "@/lib/context-bootstrap";
+import { buildKnowloopContextHeaders } from "@/lib/workspace-context";
 
 type ApiEnvelope<T> = {
   status: string;
@@ -62,13 +63,13 @@ export type WikiBrowserDetail = WikiBrowserListItem & {
 };
 
 type WikiFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 function buildRequestHeaders(context: WikiFetchContext): HeadersInit {
   return {
     Accept: "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
   };
 }
 
@@ -194,23 +195,23 @@ function parseMarkdownBlocks(bodyMarkdown: string): WikiBodyBlock[] {
 function resolveScopeLabel(
   domain: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
   courseId?: string,
   classScope?: string,
 ): string {
-  const resolvedCourseId = courseId ?? self?.courseId ?? activeProfile?.courseId ?? "";
-  const resolvedClassScope = classScope ?? self?.classId ?? activeProfile?.classId ?? "";
+  const resolvedCourseId = courseId ?? self?.courseId ?? activeContext?.courseId ?? "";
+  const resolvedClassScope = classScope ?? self?.classId ?? activeContext?.classId ?? "";
   const courseLabel =
     resolvedCourseId && self?.courseId === resolvedCourseId
       ? self.courseLabel
-      : activeProfile?.courseId === resolvedCourseId
-        ? activeProfile.courseLabel
+      : activeContext?.courseId === resolvedCourseId
+        ? activeContext.courseLabel
         : resolvedCourseId;
   const classLabel =
     resolvedClassScope && self?.classId === resolvedClassScope
       ? self.classLabel
-      : activeProfile?.classId === resolvedClassScope
-        ? activeProfile.classLabel
+      : activeContext?.classId === resolvedClassScope
+        ? activeContext.classLabel
         : resolvedClassScope;
 
   return [courseLabel, classLabel, formatDomainTag(domain)].filter(Boolean).join(" · ");
@@ -220,17 +221,17 @@ function mapListItem(
   page: WikiPageListItemApi,
   options: {
     self: BootstrapContextSelf | null;
-    activeProfile: BootstrapProfile | null;
+    activeContext: BootstrapContext | null;
   },
 ): WikiBrowserListItem {
-  const { self, activeProfile } = options;
+  const { self, activeContext } = options;
   return {
     pageId: page.page_id,
     domain: page.domain,
     title: page.title,
     summary: page.summary,
     section: formatDomainTag(page.domain),
-    scopeLabel: resolveScopeLabel(page.domain, self, activeProfile),
+    scopeLabel: resolveScopeLabel(page.domain, self, activeContext),
     updatedAt: formatTimestamp(page.updated_at),
   };
 }
@@ -239,17 +240,17 @@ function mapDetail(
   detail: WikiPageDetailApi,
   options: {
     self: BootstrapContextSelf | null;
-    activeProfile: BootstrapProfile | null;
+    activeContext: BootstrapContext | null;
   },
 ): WikiBrowserDetail {
-  const { self, activeProfile } = options;
+  const { self, activeContext } = options;
   return {
     pageId: detail.page_id,
     domain: detail.domain,
     title: detail.title,
     summary: detail.summary,
     section: formatDomainTag(detail.domain),
-    scopeLabel: resolveScopeLabel(detail.domain, self, activeProfile, detail.course_id, detail.class_scope),
+    scopeLabel: resolveScopeLabel(detail.domain, self, activeContext, detail.course_id, detail.class_scope),
     updatedAt: formatTimestamp(detail.updated_at),
     sourceRefs: detail.source_refs,
     candidateRefs: detail.candidate_refs,
@@ -281,7 +282,7 @@ export async function fetchWikiPageList(
   context: WikiFetchContext,
   query: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<WikiBrowserListItem[]> {
   const normalizedQuery = query.trim();
   const limit = 50;
@@ -312,18 +313,18 @@ export async function fetchWikiPageList(
     offset += envelope.data.length;
   }
 
-  return pages.map((page) => mapListItem(page, { self, activeProfile }));
+  return pages.map((page) => mapListItem(page, { self, activeContext }));
 }
 
 export async function fetchWikiPageDetail(
   context: WikiFetchContext,
   pageId: string,
   self: BootstrapContextSelf | null,
-  activeProfile: BootstrapProfile | null,
+  activeContext: BootstrapContext | null,
 ): Promise<WikiBrowserDetail> {
   const envelope = await fetchEnvelope<WikiPageDetailApi>(`/api/v1/wiki/pages/${pageId}`, {
     headers: buildRequestHeaders(context),
   });
 
-  return mapDetail(envelope.data, { self, activeProfile });
+  return mapDetail(envelope.data, { self, activeContext });
 }

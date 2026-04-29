@@ -1,4 +1,6 @@
-﻿"use client";
+"use client";
+
+import { buildKnowloopContextHeaders } from "@/lib/workspace-context";
 
 type ApiEnvelope<T> = {
   status: string;
@@ -159,7 +161,7 @@ export type LearningOverview = {
 };
 
 type LearningFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 const LEARNING_OVERVIEW_PATH = "/api/v1/learning/self";
@@ -176,14 +178,14 @@ function buildHeaders(context: LearningFetchContext, requestId?: string): Header
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
     "X-Request-Id": requestId ?? buildRequestId("learning"),
   };
 }
 
-function appendProfileToHref(href: string, profileId: string): string {
+function appendContextToHref(href: string, contextId: string): string {
   const separator = href.includes("?") ? "&" : "?";
-  return `${href}${separator}profile=${encodeURIComponent(profileId)}`;
+  return `${href}${separator}context=${encodeURIComponent(contextId)}`;
 }
 
 function formatDateLabel(value: string | null): string {
@@ -215,7 +217,7 @@ function mapStateLabel(state: string): string {
   }
 }
 
-function normalizeLearningOverview(data: LearningOverviewApi, profileId: string): LearningOverview {
+function normalizeLearningOverview(data: LearningOverviewApi, contextId: string): LearningOverview {
   const hasContent =
     data.learning_notes.length > 0 ||
     data.gaps.length > 0 ||
@@ -225,7 +227,7 @@ function normalizeLearningOverview(data: LearningOverviewApi, profileId: string)
     data.confusion_signals.length > 0;
 
   const primaryWikiHref = data.related_wiki[0]
-    ? appendProfileToHref(`/wiki?page=${encodeURIComponent(data.related_wiki[0].page_id)}`, profileId)
+    ? appendContextToHref(`/wiki?page=${encodeURIComponent(data.related_wiki[0].page_id)}`, contextId)
     : undefined;
 
   return {
@@ -296,7 +298,7 @@ function normalizeLearningOverview(data: LearningOverviewApi, profileId: string)
       href:
         action.target_kind === "wiki"
           ? primaryWikiHref
-          : appendProfileToHref("/ask", profileId),
+          : appendContextToHref("/ask", contextId),
     })),
     wikiLinks: data.related_wiki.map((item) => ({
       itemId: item.item_id,
@@ -304,7 +306,7 @@ function normalizeLearningOverview(data: LearningOverviewApi, profileId: string)
       summary: item.summary,
       reason: item.reason,
       badge: "Wiki",
-      href: appendProfileToHref(`/wiki?page=${encodeURIComponent(item.page_id)}`, profileId),
+      href: appendContextToHref(`/wiki?page=${encodeURIComponent(item.page_id)}`, contextId),
     })),
     recentSessions: data.recent_sessions.map((session) => ({
       sessionId: session.session_id,
@@ -341,5 +343,5 @@ async function fetchEnvelope<T>(path: string, context: LearningFetchContext): Pr
 
 export async function fetchLearningOverview(context: LearningFetchContext): Promise<LearningOverview> {
   const envelope = await fetchEnvelope<LearningOverviewApi>(LEARNING_OVERVIEW_PATH, context);
-  return normalizeLearningOverview(envelope.data, context.profileId);
+  return normalizeLearningOverview(envelope.data, context.contextId);
 }

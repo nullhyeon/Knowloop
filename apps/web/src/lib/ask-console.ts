@@ -1,6 +1,6 @@
 "use client";
 
-import type { KnowloopRole } from "@/lib/demo-data";
+import { buildKnowloopContextHeaders, type KnowloopRole } from "@/lib/workspace-context";
 
 type ApiEnvelope<T> = {
   status: string;
@@ -70,7 +70,7 @@ type QueryRuntimeMetaApi = {
 };
 
 type AskFetchContext = {
-  profileId: string;
+  contextId: string;
 };
 
 export type AskResponseMode = ResponseModeApi;
@@ -178,7 +178,7 @@ function buildHeaders(
   return {
     Accept: "application/json",
     "Content-Type": "application/json",
-    "X-Knowloop-Profile-Id": context.profileId,
+    ...buildKnowloopContextHeaders(context.contextId),
     "X-Request-Id": options?.requestId ?? buildRequestId("ask"),
     ...(options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
   };
@@ -192,9 +192,9 @@ function buildRequestId(prefix: string): string {
   return `web-${prefix}-${suffix}`;
 }
 
-function appendProfileToHref(href: string, profileId: string): string {
+function appendContextToHref(href: string, contextId: string): string {
   const separator = href.includes("?") ? "&" : "?";
-  return `${href}${separator}profile=${encodeURIComponent(profileId)}`;
+  return `${href}${separator}context=${encodeURIComponent(contextId)}`;
 }
 
 export function createAskMutationIdempotencyKey(): string {
@@ -400,7 +400,7 @@ function formatSourceRef(sourceRef: QueryRetrievalRefApi["source_refs"][number])
 
 function buildEvidenceItem(
   ref: QueryRetrievalRefApi,
-  profileId: string,
+  contextId: string,
 ): AskEvidenceItem {
   const objectType =
     ref.entity_type === "wiki_page"
@@ -418,9 +418,9 @@ function buildEvidenceItem(
         : "supporting";
   const href =
     ref.entity_type === "wiki_page"
-      ? appendProfileToHref(`/wiki?page=${encodeURIComponent(ref.entity_id)}`, profileId)
+      ? appendContextToHref(`/wiki?page=${encodeURIComponent(ref.entity_id)}`, contextId)
       : ref.entity_type === "learning_note"
-        ? appendProfileToHref("/learning", profileId)
+        ? appendContextToHref("/learning", contextId)
         : undefined;
 
   return {
@@ -518,7 +518,7 @@ function formatWritebackStatus(status: string): string {
 function buildLearningUpdate(
   writebackPlan: QueryWritebackPlanItemApi[],
   answerBasis: string[],
-  profileId: string,
+  contextId: string,
 ): AskPanelData["learningUpdate"] {
   const learningItem = writebackPlan.find((item) => item.kind === "learning_note");
 
@@ -532,7 +532,7 @@ function buildLearningUpdate(
         "질문 맥락은 session history에만 남았습니다.",
       ],
       nextActionLabel: "Learning 열기",
-      nextActionHref: appendProfileToHref("/learning", profileId),
+      nextActionHref: appendContextToHref("/learning", contextId),
     };
   }
 
@@ -547,13 +547,13 @@ function buildLearningUpdate(
     summary: learningItem.explanation,
     highlights,
     nextActionLabel: "Learning에서 확인",
-    nextActionHref: appendProfileToHref("/learning", profileId),
+    nextActionHref: appendContextToHref("/learning", contextId),
   };
 }
 
 function buildCandidateOutcome(
   writebackPlan: QueryWritebackPlanItemApi[],
-  profileId: string,
+  contextId: string,
   role: KnowloopRole,
 ): AskPanelData["candidateOutcome"] {
   const candidateItem = writebackPlan.find((item) => item.kind === "candidate");
@@ -580,7 +580,7 @@ function buildCandidateOutcome(
       ? "Review queue에서 승격, 병합, 드롭 여부를 바로 확인할 수 있습니다."
       : "이 후보는 review queue에 쌓이며, instructor 또는 validator가 후속 검토합니다.",
     href: reviewAllowed
-      ? appendProfileToHref(`/review?candidate=${encodeURIComponent(candidateItem.target_id)}`, profileId)
+      ? appendContextToHref(`/review?candidate=${encodeURIComponent(candidateItem.target_id)}`, contextId)
       : undefined,
   };
 }
@@ -743,10 +743,10 @@ export async function submitAskQuery(
     ...summarizeCurrentAnswer(response, runtime),
     panelData: {
       answerBasis: basisSummary,
-      evidenceItems: response.retrieval_refs.map((item) => buildEvidenceItem(item, context.profileId)),
+      evidenceItems: response.retrieval_refs.map((item) => buildEvidenceItem(item, context.contextId)),
       runtimeDetails: buildRuntimeDetails(runtime),
-      learningUpdate: buildLearningUpdate(response.writeback_plan, response.answer_basis, context.profileId),
-      candidateOutcome: buildCandidateOutcome(response.writeback_plan, context.profileId, request.role),
+      learningUpdate: buildLearningUpdate(response.writeback_plan, response.answer_basis, context.contextId),
+      candidateOutcome: buildCandidateOutcome(response.writeback_plan, context.contextId, request.role),
       writebackTrail: buildWritebackTrail(response.writeback_plan),
     },
   };

@@ -1,9 +1,9 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
+import { getDomainLabel, getRoleLabel } from "@/lib/workspace-context";
 import {
   approveReviewCandidate,
   createReviewMutationIdempotencyKey,
@@ -75,8 +75,8 @@ export function ReviewMainLayout() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
-  const reviewAllowed = activeProfile ? ["instructor", "operator", "validator"].includes(activeProfile.role) : false;
+  const { activeContext, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const reviewAllowed = activeContext ? ["instructor", "operator", "validator"].includes(activeContext.role) : false;
   const [candidateItems, setCandidateItems] = useState<ReviewCandidateSummary[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,7 +118,7 @@ export function ReviewMainLayout() {
   }, [pathname, router, searchParams]);
 
   const loadCandidates = useCallback(async () => {
-    if (!activeProfile || !reviewAllowed) {
+    if (!activeContext || !reviewAllowed) {
       setCandidateItems([]);
       setListLoading(false);
       setListError(null);
@@ -131,7 +131,7 @@ export function ReviewMainLayout() {
     setListError(null);
 
     try {
-      const items = await fetchReviewCandidateList({ profileId: activeProfile.profileId }, self, activeProfile);
+      const items = await fetchReviewCandidateList({ contextId: activeContext.contextId }, self, activeContext);
       if (requestId !== listRequestRef.current) {
         return;
       }
@@ -148,11 +148,11 @@ export function ReviewMainLayout() {
         setListLoading(false);
       }
     }
-  }, [activeProfile, reviewAllowed, self]);
+  }, [activeContext, reviewAllowed, self]);
 
   const runPreview = useCallback(
     async (candidate: ReviewCandidateDetail, nextDraft: ReviewActionDraft) => {
-      if (!activeProfile) {
+      if (!activeContext) {
         return;
       }
       if (!nextDraft.targetPageId.trim() && !nextDraft.targetPath.trim()) {
@@ -169,7 +169,7 @@ export function ReviewMainLayout() {
 
       try {
         const nextPreview = await fetchReviewPatchPreview(
-          { profileId: activeProfile.profileId },
+          { contextId: activeContext.contextId },
           candidate.candidateId,
           {
             targetPageId: nextDraft.targetPageId,
@@ -194,7 +194,7 @@ export function ReviewMainLayout() {
         }
       }
     },
-    [activeProfile],
+    [activeContext],
   );
 
   const mergeOptions = useMemo(() => {
@@ -213,7 +213,7 @@ export function ReviewMainLayout() {
 
   const loadCandidateDetail = useCallback(
     async (candidateId: string, options?: { preserveMessages?: boolean }) => {
-      if (!activeProfile || !reviewAllowed || !candidateId) {
+      if (!activeContext || !reviewAllowed || !candidateId) {
         setSelectedCandidate(null);
         setDetailLoading(false);
         setDetailError(null);
@@ -236,7 +236,7 @@ export function ReviewMainLayout() {
       }
 
       try {
-        const detail = await fetchReviewCandidateDetail({ profileId: activeProfile.profileId }, candidateId, self, activeProfile);
+        const detail = await fetchReviewCandidateDetail({ contextId: activeContext.contextId }, candidateId, self, activeContext);
         if (requestId !== detailRequestRef.current) {
           return;
         }
@@ -268,7 +268,7 @@ export function ReviewMainLayout() {
         }
       }
     },
-    [activeProfile, candidateItems, reviewAllowed, runPreview, self],
+    [activeContext, candidateItems, reviewAllowed, runPreview, self],
   );
 
   useEffect(() => {
@@ -329,7 +329,7 @@ export function ReviewMainLayout() {
   }, [selectedAction, selectedCandidate]);
 
   const handleRunAction = useCallback(async () => {
-    if (!activeProfile || !selectedCandidate || !selectedAction) {
+    if (!activeContext || !selectedCandidate || !selectedAction) {
       return;
     }
     if (selectedAction === "merge" && !draft.mergeTargetCandidateId.trim()) {
@@ -350,7 +350,7 @@ export function ReviewMainLayout() {
       switch (selectedAction) {
         case "approve":
           result = await approveReviewCandidate(
-            { profileId: activeProfile.profileId },
+            { contextId: activeContext.contextId },
             selectedCandidate.candidateId,
             {
               targetPageId: draft.targetPageId,
@@ -359,12 +359,12 @@ export function ReviewMainLayout() {
             },
             actionIdempotencyKey,
             self,
-            activeProfile,
+            activeContext,
           );
           break;
         case "merge":
           result = await mergeReviewCandidate(
-            { profileId: activeProfile.profileId },
+            { contextId: activeContext.contextId },
             selectedCandidate.candidateId,
             {
               targetCandidateId: draft.mergeTargetCandidateId,
@@ -372,12 +372,12 @@ export function ReviewMainLayout() {
             },
             actionIdempotencyKey,
             self,
-            activeProfile,
+            activeContext,
           );
           break;
         case "drop":
           result = await dropReviewCandidate(
-            { profileId: activeProfile.profileId },
+            { contextId: activeContext.contextId },
             selectedCandidate.candidateId,
             {
               reason: draft.dropReason,
@@ -385,17 +385,17 @@ export function ReviewMainLayout() {
             },
             actionIdempotencyKey,
             self,
-            activeProfile,
+            activeContext,
           );
           break;
         case "resume_sync":
           result = await resumeReviewCandidateSync(
-            { profileId: activeProfile.profileId },
+            { contextId: activeContext.contextId },
             selectedCandidate.candidateId,
             { notes: draft.notes },
             actionIdempotencyKey,
             self,
-            activeProfile,
+            activeContext,
           );
           break;
         default:
@@ -419,12 +419,12 @@ export function ReviewMainLayout() {
     } finally {
       setActionLoading(false);
     }
-  }, [actionIdempotencyKey, activeProfile, draft, loadCandidateDetail, loadCandidates, selectedAction, selectedCandidate, self, syncCandidateQuery]);
+  }, [actionIdempotencyKey, activeContext, draft, loadCandidateDetail, loadCandidates, selectedAction, selectedCandidate, self, syncCandidateQuery]);
 
-  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
-  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
-  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
-  const domainLabel = getDomainLabel((self?.domain ?? activeProfile?.domain ?? "review") as Parameters<typeof getDomainLabel>[0]);
+  const roleLabel = activeContext ? getRoleLabel(activeContext.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeContext?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeContext?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel((self?.domain ?? activeContext?.domain ?? "review") as Parameters<typeof getDomainLabel>[0]);
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">

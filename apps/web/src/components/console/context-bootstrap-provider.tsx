@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   createContext,
@@ -13,19 +13,19 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import {
-  fetchContextProfiles,
   fetchContextSelf,
+  fetchWorkspaceContexts,
+  type BootstrapContext,
   type BootstrapContextSelf,
-  type BootstrapProfile,
 } from "@/lib/context-bootstrap";
 
 type ContextBootstrapState = {
-  profiles: BootstrapProfile[];
-  activeProfile: BootstrapProfile | null;
+  contexts: BootstrapContext[];
+  activeContext: BootstrapContext | null;
   self: BootstrapContextSelf | null;
   loading: boolean;
   error: string | null;
-  requestedProfileId: string | null;
+  requestedContextId: string | null;
   refresh: () => Promise<void>;
 };
 
@@ -35,10 +35,10 @@ export function ContextBootstrapProvider({ children }: { children: ReactNode }) 
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const requestedProfileId = searchParams.get("profile");
+  const requestedContextId = searchParams.get("context");
   const queryString = searchParams.toString();
 
-  const [profiles, setProfiles] = useState<BootstrapProfile[]>([]);
+  const [contexts, setContexts] = useState<BootstrapContext[]>([]);
   const [self, setSelf] = useState<BootstrapContextSelf | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,31 +53,34 @@ export function ContextBootstrapProvider({ children }: { children: ReactNode }) 
     setSelf(null);
 
     try {
-      const nextProfiles = await fetchContextProfiles();
+      const nextContexts = await fetchWorkspaceContexts();
 
       if (requestSequence !== requestSequenceRef.current) {
         return;
       }
 
-      if (!nextProfiles.length) {
-        setProfiles([]);
+      if (!nextContexts.length) {
+        setContexts([]);
         setSelf(null);
-        setError("No context profiles are available for this frontend.");
+        setError("No workspace contexts are available for this frontend.");
         setLoading(false);
         return;
       }
 
-      const resolvedProfile = nextProfiles.find((profile) => profile.profileId === requestedProfileId) ?? nextProfiles[0];
+      const resolvedContext =
+        nextContexts.find((context) => context.contextId === requestedContextId) ??
+        nextContexts[0];
 
-      setProfiles(nextProfiles);
+      setContexts(nextContexts);
 
-      if (resolvedProfile.profileId !== requestedProfileId) {
+      if (resolvedContext.contextId !== requestedContextId) {
         const nextParams = new URLSearchParams(queryString);
-        nextParams.set("profile", resolvedProfile.profileId);
+        nextParams.set("context", resolvedContext.contextId);
+        nextParams.delete("profile");
         router.replace(`${pathname}?${nextParams.toString()}`, { scroll: false });
       }
 
-      const nextSelf = await fetchContextSelf(resolvedProfile.profileId);
+      const nextSelf = await fetchContextSelf(resolvedContext.contextId);
 
       if (requestSequence !== requestSequenceRef.current) {
         return;
@@ -90,46 +93,46 @@ export function ContextBootstrapProvider({ children }: { children: ReactNode }) 
           ? caughtError.message
           : "Failed to load the context bootstrap state.";
       setError(message);
-      setProfiles([]);
+      setContexts([]);
       setSelf(null);
     } finally {
       if (requestSequence === requestSequenceRef.current) {
         setLoading(false);
       }
     }
-  }, [pathname, queryString, requestedProfileId, router]);
+  }, [pathname, queryString, requestedContextId, router]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const activeProfile = useMemo(() => {
-    if (loading && requestedProfileId) {
-      return profiles.find((profile) => profile.profileId === requestedProfileId) ?? null;
+  const activeContext = useMemo(() => {
+    if (loading && requestedContextId) {
+      return contexts.find((context) => context.contextId === requestedContextId) ?? null;
     }
 
-    if (self?.profileId) {
-      return profiles.find((profile) => profile.profileId === self.profileId) ?? null;
+    if (self?.contextId) {
+      return contexts.find((context) => context.contextId === self.contextId) ?? null;
     }
 
-    if (requestedProfileId) {
-      return profiles.find((profile) => profile.profileId === requestedProfileId) ?? null;
+    if (requestedContextId) {
+      return contexts.find((context) => context.contextId === requestedContextId) ?? null;
     }
 
-    return profiles[0] ?? null;
-  }, [loading, profiles, requestedProfileId, self?.profileId]);
+    return contexts[0] ?? null;
+  }, [contexts, loading, requestedContextId, self?.contextId]);
 
   const value = useMemo<ContextBootstrapState>(
     () => ({
-      profiles,
-      activeProfile,
+      contexts,
+      activeContext,
       self,
       loading,
       error,
-      requestedProfileId,
+      requestedContextId,
       refresh,
     }),
-    [profiles, activeProfile, self, loading, error, requestedProfileId, refresh],
+    [contexts, activeContext, self, loading, error, requestedContextId, refresh],
   );
 
   return <ContextBootstrapContext.Provider value={value}>{children}</ContextBootstrapContext.Provider>;

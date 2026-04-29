@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getDomainLabel, getRoleLabel } from "@/lib/demo-data";
+import { getDomainLabel, getRoleLabel } from "@/lib/workspace-context";
 import {
   fetchInsightsDashboard,
   type InsightPriorityAction,
@@ -96,8 +96,8 @@ function ErrorPanel({ message }: { message: string }) {
 }
 
 export function InsightsMainLayout() {
-  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
-  const insightsAllowed = activeProfile?.role === "instructor";
+  const { activeContext, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const insightsAllowed = activeContext?.role === "instructor";
 
   const [dashboard, setDashboard] = useState<InsightsDashboardData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -105,7 +105,7 @@ export function InsightsMainLayout() {
   const requestSequenceRef = useRef(0);
 
   const loadDashboard = useCallback(async () => {
-    if (!activeProfile || !insightsAllowed) {
+    if (!activeContext || !insightsAllowed) {
       requestSequenceRef.current += 1;
       setDashboard(null);
       setLoading(false);
@@ -119,7 +119,7 @@ export function InsightsMainLayout() {
     setError(null);
 
     try {
-      const nextDashboard = await fetchInsightsDashboard({ profileId: activeProfile.profileId });
+      const nextDashboard = await fetchInsightsDashboard({ contextId: activeContext.contextId });
       if (requestSequence !== requestSequenceRef.current) {
         return;
       }
@@ -136,17 +136,17 @@ export function InsightsMainLayout() {
         setLoading(false);
       }
     }
-  }, [activeProfile, insightsAllowed]);
+  }, [activeContext, insightsAllowed]);
 
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
 
-  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
-  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
-  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
-  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? "academic");
-  const profileId = activeProfile?.profileId ?? null;
+  const roleLabel = activeContext ? getRoleLabel(activeContext.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeContext?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeContext?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeContext?.domain ?? "academic");
+  const contextId = activeContext?.contextId ?? null;
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">
@@ -237,13 +237,13 @@ export function InsightsMainLayout() {
                   <p className="mt-3 text-[15px] leading-8 text-[var(--body)]">{dashboard.nextClassBrief}</p>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <Link
-                      href={profileId ? `/wiki?profile=${profileId}` : "/wiki"}
+                      href={contextId ? `/wiki?context=${contextId}` : "/wiki"}
                       className="rounded-2xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
                     >
                       관련 Wiki 열기
                     </Link>
                     <Link
-                      href={profileId ? `/ask?profile=${profileId}` : "/ask"}
+                      href={contextId ? `/ask?context=${contextId}` : "/ask"}
                       className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm font-semibold text-[var(--body)] transition hover:border-[var(--border-strong)]"
                     >
                       Ask에서 설명 재현

@@ -1,8 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getDomainLabel, getRoleLabel, type KnowloopRole } from "@/lib/demo-data";
+import { getDomainLabel, getRoleLabel, type KnowloopRole } from "@/lib/workspace-context";
 import {
   fetchMaintenanceReport,
   fetchMaintenanceStatus,
@@ -137,7 +137,7 @@ function AccessPanel({ role }: { role: KnowloopRole | null }) {
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Maintenance access</p>
         <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">이 화면은 유지보수 상태를 읽는 운영 surface입니다.</h2>
         <p className="mt-3 text-sm leading-7 text-[var(--body)]">
-          현재 프로필은 {role ? getRoleLabel(role) : "알 수 없는 역할"}로 인식되었습니다. maintenance 전체 보고서는 validator가 보고, instructor는 읽기 전용 상태만 확인합니다.
+          현재 컨텍스트는 {role ? getRoleLabel(role) : "알 수 없는 역할"}로 인식되었습니다. maintenance 전체 보고서는 validator가 보고, instructor는 읽기 전용 상태만 확인합니다.
         </p>
       </div>
     </div>
@@ -145,9 +145,9 @@ function AccessPanel({ role }: { role: KnowloopRole | null }) {
 }
 
 export function MaintenanceMainLayout() {
-  const { activeProfile, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
-  const maintenanceAllowed = Boolean(activeProfile && ["instructor", "validator"].includes(activeProfile.role));
-  const validatorView = activeProfile?.role === "validator";
+  const { activeContext, self, loading: bootstrapLoading, error: bootstrapError } = useContextBootstrap();
+  const maintenanceAllowed = Boolean(activeContext && ["instructor", "validator"].includes(activeContext.role));
+  const validatorView = activeContext?.role === "validator";
 
   const [maintenanceData, setMaintenanceData] = useState<MaintenanceConsoleData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -157,7 +157,7 @@ export function MaintenanceMainLayout() {
   const requestSequenceRef = useRef(0);
 
   const loadMaintenance = useCallback(async () => {
-    if (!activeProfile || !maintenanceAllowed) {
+    if (!activeContext || !maintenanceAllowed) {
       requestSequenceRef.current += 1;
       setMaintenanceData(null);
       setLoading(false);
@@ -173,8 +173,8 @@ export function MaintenanceMainLayout() {
 
     try {
       const nextData = validatorView
-        ? await fetchMaintenanceReport({ profileId: activeProfile.profileId }, self, activeProfile)
-        : await fetchMaintenanceStatus({ profileId: activeProfile.profileId }, self, activeProfile);
+        ? await fetchMaintenanceReport({ contextId: activeContext.contextId }, self, activeContext)
+        : await fetchMaintenanceStatus({ contextId: activeContext.contextId }, self, activeContext);
 
       if (requestSequence !== requestSequenceRef.current) {
         return;
@@ -195,7 +195,7 @@ export function MaintenanceMainLayout() {
         setLoading(false);
       }
     }
-  }, [activeProfile, maintenanceAllowed, self, validatorView]);
+  }, [activeContext, maintenanceAllowed, self, validatorView]);
 
   useEffect(() => {
     void loadMaintenance();
@@ -220,10 +220,10 @@ export function MaintenanceMainLayout() {
     return filteredFindings.find((finding) => finding.findingId === displayedFindingId) ?? filteredFindings[0] ?? null;
   }, [displayedFindingId, filteredFindings]);
 
-  const roleLabel = activeProfile ? getRoleLabel(activeProfile.role) : "로딩 중";
-  const courseLabel = self?.courseLabel ?? activeProfile?.courseLabel ?? "과목 로딩 중";
-  const classLabel = self?.classLabel ?? activeProfile?.classLabel ?? "반 로딩 중";
-  const domainLabel = getDomainLabel(self?.domain ?? activeProfile?.domain ?? (validatorView ? "review" : "academic"));
+  const roleLabel = activeContext ? getRoleLabel(activeContext.role) : "로딩 중";
+  const courseLabel = self?.courseLabel ?? activeContext?.courseLabel ?? "과목 로딩 중";
+  const classLabel = self?.classLabel ?? activeContext?.classLabel ?? "반 로딩 중";
+  const domainLabel = getDomainLabel(self?.domain ?? activeContext?.domain ?? (validatorView ? "review" : "academic"));
 
   return (
     <div className="flex flex-1 flex-col gap-5 pb-6">
@@ -237,7 +237,7 @@ export function MaintenanceMainLayout() {
       />
 
       {!maintenanceAllowed ? (
-        <AccessPanel role={activeProfile?.role ?? null} />
+        <AccessPanel role={activeContext?.role ?? null} />
       ) : bootstrapLoading || loading ? (
         <MaintenanceSkeleton />
       ) : bootstrapError ? (
